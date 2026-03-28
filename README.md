@@ -386,11 +386,24 @@ Example `.margins.json`:
 
 ## Global Config File
 
-The global config is stored at:
+The CLI resolves the config directory in this order:
 
-- **macOS:** `~/Library/Preferences/margins/config.json`
-- **Linux:** `~/.config/margins/config.json`
-- **Override:** set `MARGINS_CONFIG_DIR` to any directory path (used in tests)
+| Priority | Condition | Path used |
+|---|---|---|
+| 1 | `MARGINS_CONFIG_DIR` env var is set | `$MARGINS_CONFIG_DIR/config.json` |
+| 2 | `~/.config/margins/config.json` already exists | `~/.config/margins/config.json` |
+| 3 | Platform default (fallback) | macOS: `~/Library/Preferences/margins/config.json` · Linux/XDG: `~/.config/margins/config.json` · Windows: `%APPDATA%/margins/Config/config.json` |
+
+**Preferred location on all platforms:** `~/.config/margins/config.json`
+
+If that file exists (e.g. you created it manually, or you're on Linux), it takes precedence over the macOS `~/Library/Preferences/` default. To migrate on macOS:
+
+```sh
+mkdir -p ~/.config/margins
+cp ~/Library/Preferences/margins/config.json ~/.config/margins/config.json
+```
+
+The `MARGINS_CONFIG_DIR` override is intended for tests and CI — it fully isolates the config from your user profile.
 
 | Field | Set by | Description |
 |---|---|---|

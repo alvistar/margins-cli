@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
+import { _resetStore } from '../src/lib/config.js'
 import {
   AuthExpired, ForbiddenError, NotFoundError, ServerError,
   NetworkError, ResponseParseError,
 } from '../src/lib/errors.js'
+
+// Isolate config store — prevents token refresh tests from writing to the
+// real user config at ~/Library/Preferences/margins/config.json
+const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'margins-api-client-test')
+process.env['MARGINS_CONFIG_DIR'] = TEST_CONFIG_DIR
 
 const baseConfig = (): ResolvedConfig => ({
   apiKey: 'mrgn_testkey123',
@@ -115,7 +123,7 @@ describe('api client — basic auth', () => {
 })
 
 describe('api client — Keycloak token refresh', () => {
-  afterEach(() => { vi.unstubAllGlobals() })
+  afterEach(() => { vi.unstubAllGlobals(); _resetStore() })
 
   it('refreshes expired access token before request', async () => {
     const fetchMock = vi.fn()

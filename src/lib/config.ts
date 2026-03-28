@@ -1,5 +1,6 @@
 import Conf from 'conf'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { ConfigParseError } from './errors.js'
 
@@ -55,9 +56,25 @@ let _store: InstanceType<typeof Conf<GlobalConfig>> | null = null
 
 function getStore(): InstanceType<typeof Conf<GlobalConfig>> {
   if (!_store) {
-    // MARGINS_CONFIG_DIR overrides the storage location — used by tests to
-    // avoid touching the real user config at ~/Library/Preferences/margins/.
-    const cwd = process.env['MARGINS_CONFIG_DIR']
+    // Config directory resolution order:
+    //   1. MARGINS_CONFIG_DIR env var — explicit override (tests, CI)
+    //   2. $XDG_CONFIG_HOME/margins/ or ~/.config/margins/ — if config.json already
+    //      exists there (migration path; Linux default via env-paths)
+    //   3. Platform default via conf/env-paths:
+    //        macOS  → ~/Library/Preferences/margins/
+    //        Linux  → ~/.config/margins/  (XDG)
+    //        Windows → %APPDATA%/margins/Config/
+    const explicitDir = process.env['MARGINS_CONFIG_DIR']
+    let cwd: string | undefined = explicitDir
+
+    if (!cwd) {
+      const xdgBase = process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config')
+      const xdgConfig = path.join(xdgBase, 'margins', 'config.json')
+      if (fs.existsSync(xdgConfig)) {
+        cwd = path.dirname(xdgConfig)
+      }
+    }
+
     _store = new Conf<GlobalConfig>({
       projectName: 'margins',
       projectSuffix: '', // no '-nodejs' suffix
