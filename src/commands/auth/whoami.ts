@@ -29,7 +29,8 @@ export async function handleWhoami(cfg: ResolvedConfig): Promise<void> {
 
   const { user, key } = data
 
-  const expiresAt = key?.expiresAt
+  // JSON output uses ISO-8601 (script-friendly); human output uses locale date string
+  const expiresAtHuman = key?.expiresAt
     ? new Date(key.expiresAt).toLocaleDateString()
     : 'never'
 
@@ -42,7 +43,7 @@ export async function handleWhoami(cfg: ResolvedConfig): Promise<void> {
       key: key ? {
         label: key.label,
         role: key.role,
-        expiresAt,
+        expiresAt: key.expiresAt ?? null,
       } : null,
     }))
     return
@@ -59,7 +60,7 @@ export async function handleWhoami(cfg: ResolvedConfig): Promise<void> {
       ['Key label', key.label ?? '(unlabeled)'],
       ['Role', key.role],
       ['API key', maskKey(cfg.apiKey)],
-      ['Expires', expiresAt],
+      ['Expires', expiresAtHuman],
       ['Last used', key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : 'never'],
     )
   } else {

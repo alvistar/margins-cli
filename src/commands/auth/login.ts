@@ -62,7 +62,7 @@ function waitForCallback(port: number, expectedState: string): Promise<URLSearch
         res.writeHead(400, { 'Content-Type': 'text/html' })
         res.end('<html><body><h2>Login failed: security check failed.</h2></body></html>', () => {
           closeServer()
-          reject(new OAuthError('state mismatch'))
+          reject(new OAuthError('Security error: state mismatch. Try again.'))
         })
         return
       }
