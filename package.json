@@ -1,5 +1,5 @@
 {
-  "name": "@alvistar/margins-cli",
+  "name": "margins-cli",
   "version": "0.1.0",
   "description": "CLI for Margins — review layer for Markdown in Git",
   "type": "module",
@@ -12,22 +12,19 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/alvistar/ai-review.git",
-    "directory": "margins-cli"
+    "url": "https://github.com/alvistar/margins-cli.git"
   },
-  "homepage": "https://github.com/alvistar/ai-review/tree/main/margins-cli#readme",
+  "homepage": "https://github.com/alvistar/margins-cli#readme",
   "bugs": {
-    "url": "https://github.com/alvistar/ai-review/issues"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "url": "https://github.com/alvistar/margins-cli/issues"
   },
   "scripts": {
     "build": "tsdown",
+    "prepare": "npm run build",
     "dev": "node --import=tsx/esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",

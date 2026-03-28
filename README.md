@@ -6,28 +6,30 @@ Margins is a review platform where humans and AI agents are equal participants. 
 
 ## Installation
 
-`margins-cli` is published to [GitHub Packages](https://github.com/alvistar/ai-review/pkgs/npm/margins-cli) under `@alvistar/margins-cli`.
+`margins-cli` lives at [github.com/alvistar/margins-cli](https://github.com/alvistar/margins-cli).
 
-**One-time setup** — tell npm to resolve the `@alvistar` scope from GitHub Packages:
+**Run without installing (recommended):**
 
 ```sh
-# Add to ~/.npmrc (or your project .npmrc)
-echo "@alvistar:registry=https://npm.pkg.github.com" >> ~/.npmrc
-
-# Authenticate with a GitHub Personal Access Token (read:packages scope is enough)
-npm login --scope=@alvistar --registry=https://npm.pkg.github.com
+npx github:alvistar/margins-cli <command>
 ```
+
+No token, no registry setup — works anywhere you have Node.js and Git installed,
+including CI pipelines and AI agent environments.
 
 **Install globally:**
 
 ```sh
-npm install -g @alvistar/margins-cli
+npm install -g github:alvistar/margins-cli
 ```
 
-**Or run without installing:**
+**Or clone and build locally:**
 
 ```sh
-npx @alvistar/margins-cli <command>
+git clone https://github.com/alvistar/margins-cli.git
+cd margins-cli
+npm install && npm run build
+npm link   # makes 'margins' available globally
 ```
 
 ## Quick Start
@@ -407,6 +409,7 @@ The global config is stored at:
 ## Development
 
 ```sh
+git clone https://github.com/alvistar/margins-cli.git
 cd margins-cli
 npm install
 
@@ -422,3 +425,8 @@ npm run test:watch     # watch mode
 ```
 
 The CLI is built as ESM. The `bin/margins.js` shebang entry imports `../dist/index.mjs`.
+
+> **How `npx github:alvistar/margins-cli` works:** npm clones the repo, runs
+> `npm install`, then runs the `prepare` script (`npm run build`) automatically.
+> This compiles `src/` to `dist/` before the binary is executed — no pre-built
+> files need to be committed.
