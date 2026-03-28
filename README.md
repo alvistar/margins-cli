@@ -430,3 +430,4 @@ The CLI is built as ESM. The `bin/margins.js` shebang entry imports `../dist/ind
 > `npm install`, then runs the `prepare` script (`npm run build`) automatically.
 > This compiles `src/` to `dist/` before the binary is executed — no pre-built
 > files need to be committed.
+
