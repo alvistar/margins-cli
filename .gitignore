@@ -1,0 +1,18 @@
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# Test coverage / vitest
+coverage/
+
+# macOS
+.DS_Store

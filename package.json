@@ -1,0 +1,34 @@
+{
+  "name": "margins-cli",
+  "version": "0.1.0",
+  "description": "CLI for Margins — review layer for Markdown in Git",
+  "type": "module",
+  "bin": {
+    "margins": "./bin/margins.js"
+  },
+  "files": [
+    "bin/",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "node --import=tsx/esm src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.1.0",
+    "@commander-js/extra-typings": "^14.0.0",
+    "commander": "^14.0.0",
+    "conf": "^13.1.0",
+    "oauth4webapi": "^3.5.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.21.6",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
