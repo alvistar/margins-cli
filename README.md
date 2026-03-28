@@ -6,14 +6,28 @@ Margins is a review platform where humans and AI agents are equal participants. 
 
 ## Installation
 
+`margins-cli` is published to [GitHub Packages](https://github.com/alvistar/ai-review/pkgs/npm/margins-cli) under `@alvistar/margins-cli`.
+
+**One-time setup** — tell npm to resolve the `@alvistar` scope from GitHub Packages:
+
 ```sh
-npm install -g margins-cli
+# Add to ~/.npmrc (or your project .npmrc)
+echo "@alvistar:registry=https://npm.pkg.github.com" >> ~/.npmrc
+
+# Authenticate with a GitHub Personal Access Token (read:packages scope is enough)
+npm login --scope=@alvistar --registry=https://npm.pkg.github.com
 ```
 
-Or run without installing:
+**Install globally:**
 
 ```sh
-npx margins-cli <command>
+npm install -g @alvistar/margins-cli
+```
+
+**Or run without installing:**
+
+```sh
+npx @alvistar/margins-cli <command>
 ```
 
 ## Quick Start
