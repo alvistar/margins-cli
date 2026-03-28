@@ -431,3 +431,4 @@ The CLI is built as ESM. The `bin/margins.js` shebang entry imports `../dist/ind
 > This compiles `src/` to `dist/` before the binary is executed — no pre-built
 > files need to be committed.
 
+
