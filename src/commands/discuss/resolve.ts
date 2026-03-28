@@ -2,7 +2,8 @@ import type { ResolvedConfig } from '../../lib/config.js'
 import { readLocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
-import { ValidationError, ConflictError, NotFoundError, WorkspaceNotFoundError, DiscussionNotFoundError } from '../../lib/errors.js'
+import { ValidationError, ConflictError, NotFoundError, DiscussionNotFoundError } from '../../lib/errors.js'
+import { resolveWorkspaceBySlug } from '../../lib/resolve-workspace.js'
 
 export async function handleDiscussResolve(
   cfg: ResolvedConfig,
@@ -15,13 +16,7 @@ export async function handleDiscussResolve(
   }
 
   const client = createApiClient(cfg)
-  let workspace: { id: string }
-  try {
-    workspace = await client.get(`/api/workspaces/by-slug/${resolvedSlug}`) as { id: string }
-  } catch (err) {
-    if (err instanceof NotFoundError) throw new WorkspaceNotFoundError(resolvedSlug)
-    throw err
-  }
+  const workspace = await resolveWorkspaceBySlug(client, resolvedSlug)
 
   let updated: unknown
   try {

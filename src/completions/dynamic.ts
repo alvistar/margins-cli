@@ -1,5 +1,6 @@
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient } from '../lib/api-client.js'
+import { resolveWorkspaceBySlug } from '../lib/resolve-workspace.js'
 
 interface Workspace { slug: string }
 interface Discussion { id: string }
@@ -16,7 +17,7 @@ export async function handleDynamicCompletions(cfg: ResolvedConfig, type: string
 
     if (type === 'discussion-ids') {
       if (!opts.workspace) return
-      const workspace = await client.get(`/api/workspaces/by-slug/${opts.workspace}`) as { id: string }
+      const workspace = await resolveWorkspaceBySlug(client, opts.workspace)
       const discussions = await client.get(
         `/api/workspaces/${workspace.id}/artifacts`,
         { discussions: 'true' },

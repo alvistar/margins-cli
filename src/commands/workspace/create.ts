@@ -15,16 +15,20 @@ interface WorkspaceCreateResponse {
 }
 
 export async function handleCreate(cfg: ResolvedConfig, repoUrl: string): Promise<void> {
+  let parsedUrl: URL
   try {
-    new URL(repoUrl)
+    parsedUrl = new URL(repoUrl)
   } catch {
     throw new ValidationError(`Invalid repository URL: ${repoUrl}`)
   }
 
+  // Derive name from the last path segment of the URL (e.g. "ai-review" from ".../ai-review")
+  const name = parsedUrl.pathname.split('/').filter(Boolean).pop()?.replace(/\.git$/, '') ?? repoUrl
+
   const client = createApiClient(cfg)
   let workspace: CreatedWorkspace
   try {
-    const result = await client.post('/api/workspaces', { repoUrl }) as CreatedWorkspace | WorkspaceCreateResponse
+    const result = await client.post('/api/workspaces', { repoUrl, name }) as CreatedWorkspace | WorkspaceCreateResponse
     workspace = 'workspace' in result ? result.workspace : result
   } catch (err) {
     if (err instanceof ConflictError) {

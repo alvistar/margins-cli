@@ -3,12 +3,8 @@ import type { ResolvedConfig } from '../../lib/config.js'
 import { readLocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
-import { ValidationError, NotFoundError, WorkspaceNotFoundError, ConflictError } from '../../lib/errors.js'
-
-interface WorkspaceDetail {
-  id: string
-  slug: string
-}
+import { ValidationError, ConflictError } from '../../lib/errors.js'
+import { resolveWorkspaceBySlug } from '../../lib/resolve-workspace.js'
 
 interface SyncResult {
   artifactsUpdated?: number
@@ -22,15 +18,7 @@ export async function handleSync(cfg: ResolvedConfig, slug: string | undefined, 
   }
 
   const client = createApiClient(cfg)
-
-  // Resolve slug to UUID
-  let workspace: WorkspaceDetail
-  try {
-    workspace = await client.get(`/api/workspaces/by-slug/${resolvedSlug}`) as WorkspaceDetail
-  } catch (err) {
-    if (err instanceof NotFoundError) throw new WorkspaceNotFoundError(resolvedSlug)
-    throw err
-  }
+  const workspace = await resolveWorkspaceBySlug(client, resolvedSlug)
 
   if (!cfg.json) {
     const spinner = p.spinner()
