@@ -11,8 +11,7 @@ import {
 
 // Isolate config store — prevents token refresh tests from writing to the
 // real user config at ~/Library/Preferences/margins/config.json
-const TEST_CONFIG_DIR = path.join(os.tmpdir(), 'margins-api-client-test')
-process.env['MARGINS_CONFIG_DIR'] = TEST_CONFIG_DIR
+vi.stubEnv('MARGINS_CONFIG_DIR', path.join(os.tmpdir(), 'margins-api-client-test'))
 
 const baseConfig = (): ResolvedConfig => ({
   apiKey: 'mrgn_testkey123',

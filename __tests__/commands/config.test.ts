@@ -5,11 +5,10 @@ import { handleSetKey } from '../../src/commands/config/set-key.js'
 import { handleSetUrl } from '../../src/commands/config/set-url.js'
 import * as os from 'node:os'
 
-// Isolate conf store to a unique directory per test file
-vi.stubEnv('MARGINS_CONFIG_DIR', os.tmpdir() + '/margins-config-test')
+const CONFIG_DIR = os.tmpdir() + '/margins-config-test'
 
 describe('config set-key', () => {
-  beforeEach(() => { _resetStore(); clearGlobalConfig() })
+  beforeEach(() => { vi.stubEnv('MARGINS_CONFIG_DIR', CONFIG_DIR); _resetStore(); clearGlobalConfig() })
   afterEach(() => { vi.unstubAllEnvs(); _resetStore() })
 
   it('stores API key in global config', () => {
@@ -19,7 +18,7 @@ describe('config set-key', () => {
 })
 
 describe('config set-url', () => {
-  beforeEach(() => { _resetStore(); clearGlobalConfig() })
+  beforeEach(() => { vi.stubEnv('MARGINS_CONFIG_DIR', CONFIG_DIR); _resetStore(); clearGlobalConfig() })
   afterEach(() => { vi.unstubAllEnvs(); _resetStore() })
 
   it('stores server URL in global config', () => {
@@ -29,7 +28,7 @@ describe('config set-url', () => {
 })
 
 describe('config show', () => {
-  beforeEach(() => { _resetStore(); clearGlobalConfig() })
+  beforeEach(() => { vi.stubEnv('MARGINS_CONFIG_DIR', CONFIG_DIR); _resetStore(); clearGlobalConfig() })
   afterEach(() => { vi.unstubAllEnvs(); _resetStore() })
 
   it('masks the API key in output', () => {
