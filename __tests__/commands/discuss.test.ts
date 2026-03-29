@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { execSync } from 'node:child_process'
 import * as os from 'node:os'
 
+vi.mock('node:child_process')
 vi.stubEnv('MARGINS_CONFIG_DIR', os.tmpdir() + '/margins-cmd-test')
 
 const baseCfg = () => ({
@@ -8,7 +10,7 @@ const baseCfg = () => ({
   json: false, verbose: false, noColor: false,
 })
 
-const mockWorkspace = { id: 'ws-uuid' }
+const mockWorkspace = { id: 'ws-uuid', defaultBranch: 'main' }
 const mockDiscussion = { id: 'disc-uuid', path: 'README.md', body: 'Test', status: 'open', authorName: 'Agent', anchorHeadingText: 'Setup' }
 
 describe('discuss list', () => {
@@ -47,6 +49,48 @@ describe('discuss create', () => {
     )
   })
   afterEach(() => { vi.unstubAllGlobals() })
+
+  it('outputs deep-link View at URL with /-/branch/ separator, path, and discussion id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockWorkspace), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'new-disc' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { handleDiscussCreate } = await import('../../src/commands/discuss/create.js')
+    await handleDiscussCreate(baseCfg(), 'gh/owner/repo', { path: 'openspec/decisions/test.md', body: 'body' })
+    const output = spy.mock.calls.map((c) => c.join('')).join('\n')
+    expect(output).toContain('/-/')
+    expect(output).toContain('openspec/decisions/test.md')
+    expect(output).toContain('#discussion-new-disc')
+    spy.mockRestore()
+  })
+
+  it('uses explicit --branch option in URL instead of workspace default', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockWorkspace), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'new-disc' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { handleDiscussCreate } = await import('../../src/commands/discuss/create.js')
+    await handleDiscussCreate(baseCfg(), 'gh/owner/repo', { path: 'docs/x.md', body: 'body', branch: 'feature-x' })
+    const output = spy.mock.calls.map((c) => c.join('')).join('\n')
+    expect(output).toContain('/-/feature-x/')
+    spy.mockRestore()
+  })
+
+  it('uses current git branch in URL when --branch not provided', async () => {
+    vi.mocked(execSync).mockReturnValue('git-test-branch\n' as any)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(mockWorkspace), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'new-disc' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { handleDiscussCreate } = await import('../../src/commands/discuss/create.js')
+    await handleDiscussCreate(baseCfg(), 'gh/owner/repo', { path: 'docs/x.md', body: 'body' })
+    const output = spy.mock.calls.map((c) => c.join('')).join('\n')
+    expect(output).toContain('/-/git-test-branch/')
+    spy.mockRestore()
+  })
 
   it('creates discussion with heading anchor', async () => {
     const fetchMock = vi.fn()

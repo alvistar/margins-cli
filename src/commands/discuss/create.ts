@@ -1,9 +1,19 @@
+import { execSync } from 'node:child_process'
 import type { ResolvedConfig } from '../../lib/config.js'
 import { readLocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
 import { resolveWorkspaceBySlug } from '../../lib/resolve-workspace.js'
+
+function detectGitBranch(): string | undefined {
+  try {
+    const branch = execSync('git branch --show-current', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return branch || undefined
+  } catch {
+    return undefined
+  }
+}
 
 interface Discussion {
   id: string
@@ -12,7 +22,7 @@ interface Discussion {
 export async function handleDiscussCreate(
   cfg: ResolvedConfig,
   slug: string | undefined,
-  opts: { path: string; body: string; anchorHeading?: string; anchorText?: string },
+  opts: { path: string; body: string; anchorHeading?: string; anchorText?: string; branch?: string },
 ): Promise<void> {
   const resolvedSlug = slug ?? readLocalConfig()?.workspace_slug
   if (!resolvedSlug) {
@@ -41,6 +51,8 @@ export async function handleDiscussCreate(
     return
   }
 
+  const branch = opts.branch ?? detectGitBranch() ?? workspace.defaultBranch ?? 'main'
+
   console.log(`Discussion created: ${discussion.id}`)
-  console.log(`View at: ${cfg.serverUrl}/w/${resolvedSlug}`)
+  console.log(`View at: ${cfg.serverUrl}/w/${resolvedSlug}/-/${branch}/${opts.path}#discussion-${discussion.id}`)
 }

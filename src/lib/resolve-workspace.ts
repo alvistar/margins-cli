@@ -3,6 +3,7 @@ import { NotFoundError, WorkspaceNotFoundError } from './errors.js'
 
 interface WorkspaceRef {
   id: string
+  defaultBranch?: string
 }
 
 /**

@@ -203,6 +203,7 @@ discussCmd
   .requiredOption('--body <body>', 'Discussion body')
   .option('--anchor-heading <heading>', 'Anchor to heading')
   .option('--anchor-text <text>', 'Anchor to selected text')
+  .option('--branch <branch>', 'Branch the artifact lives on (default: current git branch)')
   .action(async (slug, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleDiscussCreate } = await import('./commands/discuss/create.js')
