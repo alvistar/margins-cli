@@ -4,8 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-// Isolate conf store to a unique directory per test file
-vi.stubEnv('MARGINS_CONFIG_DIR', os.tmpdir() + '/margins-config-unit-test')
+const CONFIG_DIR = os.tmpdir() + '/margins-config-unit-test'
 
 describe('config module exports', () => {
   it('exports resolveConfig', () => {
@@ -63,7 +62,10 @@ describe('readLocalConfig', () => {
 
 describe('resolveConfig', () => {
   beforeEach(() => {
-    // Reset store so it re-reads the temp MARGINS_CONFIG_DIR location
+    // Stub MARGINS_CONFIG_DIR first — must happen before _resetStore() + clearGlobalConfig()
+    // so the store initialises to the temp dir, not ~/Library/Preferences/margins/.
+    // vi.unstubAllEnvs() in afterEach tears this down after each test, so we re-apply here.
+    vi.stubEnv('MARGINS_CONFIG_DIR', CONFIG_DIR)
     _resetStore()
     clearGlobalConfig()
     vi.stubEnv('MARGINS_API_KEY', '')
