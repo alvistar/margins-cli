@@ -1,5 +1,5 @@
-# Build output
-dist/
+# Build output — dist/ is committed so npm install from git works without devDependencies
+# dist/
 
 # Dependencies
 node_modules/

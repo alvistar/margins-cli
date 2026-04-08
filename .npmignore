@@ -1,0 +1,13 @@
+# Only exclude dev/build files from npm package
+src/
+__tests__/
+*.tsbuildinfo
+.env
+.env.local
+coverage/
+.DS_Store
+.claude-plugin/
+margins-plugin/
+tsdown.config.ts
+tsconfig.json
+vitest.config.ts

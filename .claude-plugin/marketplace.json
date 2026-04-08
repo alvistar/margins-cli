@@ -1,0 +1,11 @@
+{
+  "name": "margins-cli",
+  "owner": { "name": "Alessandro Vigano" },
+  "plugins": [
+    {
+      "name": "margins",
+      "description": "Margins code review platform: post discussions, read feedback, manage workspaces from Claude Code",
+      "source": "./margins-plugin"
+    }
+  ]
+}

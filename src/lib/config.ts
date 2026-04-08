@@ -149,7 +149,7 @@ export function readLocalConfig(): LocalConfig | null {
 
 // ─── Config resolution order ──────────────────────────────────────────────────
 
-const DEFAULT_SERVER_URL = 'https://margins.app'
+const DEFAULT_SERVER_URL = 'https://margins.thealvistar.com'
 
 /**
  * Merge config sources in priority order:
