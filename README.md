@@ -41,6 +41,9 @@ margins auth login
 # See your workspaces
 margins workspace list
 
+# Push local markdown to a brand-new workspace (no GitHub repo needed)
+margins workspace push --project my-docs --dir ./docs
+
 # List open discussions in the current repo
 margins discuss list
 
@@ -176,7 +179,12 @@ Revokes the Keycloak refresh token and clears the stored access/refresh tokens f
 
 ### `workspace`
 
-Manage Margins workspaces. A workspace connects a GitHub repository to the Margins review platform.
+Manage Margins workspaces. A workspace is the unit of review in Margins. There are two kinds:
+
+- **GitHub workspaces** — connect a GitHub repository. Margins clones the repo and syncs markdown files on demand. Created with `workspace create <repo-url>`.
+- **Local workspaces** — no repository. You push markdown files directly via `workspace push --project <name>`. Useful for solo work, drafts, or content that does not live in a Git repo yet.
+
+You can also push local markdown into a GitHub workspace via `workspace push --workspace <id>` — the content lands on a virtual `@local` branch alongside the real git branches, so you can review uncommitted edits before pushing them upstream.
 
 #### `workspace list`
 
@@ -223,6 +231,54 @@ margins workspace sync my-repo --branch main
 | Flag | Description |
 |---|---|
 | `--branch <branch>` | Branch to sync (defaults to the workspace's default branch) |
+
+> Local workspaces cannot be synced this way — they receive content via
+> `workspace push`. Calling `sync` on a local workspace returns
+> `LOCAL_SYNC_NOT_SUPPORTED` (HTTP 422).
+
+#### `workspace push`
+
+Push local markdown files to a workspace for review. This is the only way to
+get content into a **local workspace**, and the way to overlay uncommitted
+edits onto a **GitHub workspace** via the virtual `@local` branch.
+
+```sh
+# Create a brand-new local workspace and push files in one step
+margins workspace push --project my-docs --dir ./docs
+
+# Push more files to the same workspace later (re-use the workspace ID)
+margins workspace push --workspace 0cfbdc14-c023-4c84-bc4a-e027e13cefab --dir ./docs
+
+# Overlay local edits onto an existing GitHub workspace (lands on @local branch)
+margins workspace push --workspace <github-workspace-id> --dir ./docs
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project <name>` | one of | Create a new local workspace with this name. Slug becomes `local/<your-username>/<name>`. The name must be alphanumeric (hyphens, dots, underscores allowed). |
+| `--workspace <id>` | one of | Push to an existing workspace by UUID. Use this for re-pushes and for pushing into GitHub workspaces. |
+| `--dir <path>` | no | Directory to recursively scan for `.md` files. Defaults to the current directory. Hidden files, `node_modules/`, and symlinks are skipped. |
+
+**Behavior:**
+- Recursively scans `--dir` for `.md` files (max 50 per push, max 1 MB per file, max 10 MB total)
+- For each file, computes a SHA-256 hash of the content. If the hash matches an existing artifact, the file is **skipped**. Otherwise it is **added** or **changed**.
+- Output (with `--json`):
+  ```json
+  { "added": 2, "changed": 0, "skipped": 0 }
+  ```
+- For local workspaces, content lands on the `main` branch.
+- For GitHub workspaces, content lands on the virtual `@local` branch — visible in the branch switcher alongside real git branches, but never pushed upstream.
+
+**Example: review your local edits before committing them**
+
+```sh
+cd ~/my-project                               # has docs/spec.md, README.md
+margins workspace push --workspace <gh-ws-id> # uploads to @local
+margins workspace open                         # opens browser, switch to @local branch
+# ...review, comment, refine...
+git commit -am "Refine spec"                  # then commit for real
+margins workspace sync                         # pull the committed version into main
+```
 
 ---
 
@@ -370,8 +426,10 @@ Example `.margins.json`:
 
 ```json
 {
-  "workspace_slug": "my-repo",
+  "workspace_slug": "local/avigano/my-docs",
+  "workspace_id": "0cfbdc14-c023-4c84-bc4a-e027e13cefab",
   "default_branch": "main",
+  "mode": "local",
   "server_url": "https://margins.example.com"
 }
 ```
@@ -379,8 +437,16 @@ Example `.margins.json`:
 | Field | Description |
 |---|---|
 | `workspace_slug` | Default workspace slug for `discuss` and `workspace` commands |
-| `default_branch` | Default branch for `workspace sync` |
+| `workspace_id` | Default workspace UUID. Used by `workspace push --workspace` for re-pushes — more reliable than slug because it doesn't depend on slug resolution. |
+| `default_branch` | Default branch for `workspace sync`. For local workspaces this is `main`; for GitHub-overlay mode (local edits pushed to a GitHub workspace's `@local` branch) this is `@local`. |
+| `mode` | `"local"` for local workspaces, `"github-overlay"` for local edits overlaid on a GitHub workspace via the `@local` virtual branch. Used by skills to decide push behavior on subsequent runs. Optional; absence implies `"local"`. |
 | `server_url` | Server URL override (lower priority than `--server-url` and `MARGINS_SERVER_URL`) |
+
+> **Project-scoped credentials:** `.margins.json` is intended to be committed to the
+> repository so teammates share the same workspace identity. It does NOT contain
+> credentials. For project-scoped API keys + server URL, use a `.margins/` directory
+> at the project root containing `config.json` and set `MARGINS_CONFIG_DIR` to point
+> at it. Add `.margins/` to `.gitignore` since it contains credentials.
 
 ---
 
@@ -433,7 +499,7 @@ npm run build          # compiles to dist/index.mjs via tsdown
 npm run dev -- workspace list
 
 # Tests
-npm test               # vitest run (100 tests)
+npm test               # vitest run (114 tests)
 npm run test:watch     # watch mode
 ```
 

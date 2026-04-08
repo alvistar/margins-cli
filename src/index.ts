@@ -181,6 +181,18 @@ wsCmd
     await handleSync(cfg, slug, opts.branch)
   })
 
+wsCmd
+  .command('push')
+  .description('Push local .md files to a workspace for review')
+  .option('--workspace <id>', 'Workspace ID (omit to create new with --project)')
+  .option('--project <name>', 'Create a new local workspace with this name')
+  .option('--dir <path>', 'Directory to scan for .md files (default: cwd)')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handlePush } = await import('./commands/workspace/push.js')
+    await handlePush(cfg, opts)
+  })
+
 // ─── discuss subcommand ───────────────────────────────────────────────────────
 
 const discussCmd = program.command('discuss').description('Discussion management')
