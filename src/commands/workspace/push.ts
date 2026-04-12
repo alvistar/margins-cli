@@ -47,6 +47,7 @@ export async function handlePush(
 
   // Resolve workspace ID
   let workspaceId = opts.workspace
+  let createdSlug: string | undefined
   if (!workspaceId && opts.project) {
     // Create local workspace on first push
     const result = await client.post('/api/workspaces', {
@@ -55,10 +56,11 @@ export async function handlePush(
       projectName: opts.project,
     }) as { workspace: { id: string; slug: string } }
     workspaceId = result.workspace.id
+    createdSlug = result.workspace.slug
     if (cfg.json) {
-      console.log(formatJson({ created: true, workspaceId, slug: result.workspace.slug }))
+      console.log(formatJson({ created: true, workspaceId, slug: createdSlug }))
     } else {
-      console.log(`Created workspace: ${result.workspace.slug}`)
+      console.log(`Created workspace: ${createdSlug}`)
       console.log(`Workspace ID: ${workspaceId}`)
     }
   }
@@ -86,7 +88,11 @@ export async function handlePush(
   ) as IngestResult
 
   if (cfg.json) {
-    console.log(formatJson(result))
+    // D-006: include workspace metadata in push result when --project created the workspace
+    console.log(formatJson({
+      ...result,
+      ...(createdSlug ? { workspaceId, slug: createdSlug } : {}),
+    }))
   } else {
     let line = `Pushed: ${result.added} added, ${result.changed} changed, ${result.skipped} skipped`
     // D-023: append anchor lifecycle counts only when something actually transitioned.

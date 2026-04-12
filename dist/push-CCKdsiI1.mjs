@@ -23,6 +23,7 @@ async function handlePush(cfg, opts) {
 	const client = createApiClient(cfg);
 	const cwd = opts.dir ?? process.cwd();
 	let workspaceId = opts.workspace;
+	let createdSlug;
 	if (!workspaceId && opts.project) {
 		const result = await client.post("/api/workspaces", {
 			name: opts.project,
@@ -30,13 +31,14 @@ async function handlePush(cfg, opts) {
 			projectName: opts.project
 		});
 		workspaceId = result.workspace.id;
+		createdSlug = result.workspace.slug;
 		if (cfg.json) console.log(formatJson({
 			created: true,
 			workspaceId,
-			slug: result.workspace.slug
+			slug: createdSlug
 		}));
 		else {
-			console.log(`Created workspace: ${result.workspace.slug}`);
+			console.log(`Created workspace: ${createdSlug}`);
 			console.log(`Workspace ID: ${workspaceId}`);
 		}
 	}
@@ -48,7 +50,13 @@ async function handlePush(cfg, opts) {
 		content: readFileSync(join(cwd, relPath), "utf-8")
 	}));
 	const result = await client.post(`/api/workspaces/${workspaceId}/ingest`, { files });
-	if (cfg.json) console.log(formatJson(result));
+	if (cfg.json) console.log(formatJson({
+		...result,
+		...createdSlug ? {
+			workspaceId,
+			slug: createdSlug
+		} : {}
+	}));
 	else {
 		let line = `Pushed: ${result.added} added, ${result.changed} changed, ${result.skipped} skipped`;
 		const addressed = result.addressed ?? 0;

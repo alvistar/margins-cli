@@ -94,9 +94,9 @@ describe('resolveConfig', () => {
     expect(resolved.apiKey).toBeUndefined()
   })
 
-  it('serverUrl defaults to https://margins.app when nothing set', () => {
+  it('serverUrl defaults to https://margins.thealvistar.com when nothing set', () => {
     const resolved = resolveConfig({ apiKey: undefined, serverUrl: undefined, json: false, verbose: false, noColor: false })
-    expect(resolved.serverUrl).toBe('https://margins.app')
+    expect(resolved.serverUrl).toBe('https://margins.thealvistar.com')
   })
 
   it('CLI serverUrl overrides env', () => {

@@ -13,27 +13,57 @@ description: |
 
 # /margins-read — Fetch and Act on Open Margins Discussions
 
-## Preamble: resolve the `margins` binary
+## Preamble: resolve binary, project config, and workspace slug
 
 ```bash
-# Resolve margins CLI binary
-if command -v margins &>/dev/null; then
+# 1. Resolve the margins binary. Order matters: prefer local builds (likely
+# newer than the published GitHub version) before falling back to npx.
+_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$_ROOT" ] && [ -f "$_ROOT/margins-cli/bin/margins.js" ]; then
+  MARGINS="node $_ROOT/margins-cli/bin/margins.js"
+elif command -v margins &>/dev/null; then
   MARGINS="margins"
-elif [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/margins-cli/bin/margins.js" ]; then
-  MARGINS="node $(git rev-parse --show-toplevel)/margins-cli/bin/margins.js"
+elif [ -x "$HOME/.bun/bin/margins" ]; then
+  # bun link install location — needed when ~/.bun/bin is not in $PATH
+  # (e.g. bun installed via Homebrew, or non-interactive subshells)
+  MARGINS="$HOME/.bun/bin/margins"
 else
   MARGINS="npx --yes github:alvistar/margins-cli"
 fi
+
+# 2. Project-scoped CLI config: if .margins/ exists at the git root, use it.
+# This isolates serverUrl + apiKey per-project so localhost dev and prod don't collide.
+if [ -n "$_ROOT" ] && [ -d "$_ROOT/.margins" ]; then
+  export MARGINS_CONFIG_DIR="$_ROOT/.margins"
+fi
+
+# 3. Walk up looking for .margins.json (workspace_slug + workspace_id from /margins push)
+SLUG=""
+WORKSPACE_ID=""
+DIR="$PWD"
+while [ "$DIR" != "/" ]; do
+  if [ -f "$DIR/.margins.json" ]; then
+    SLUG=$(jq -r '.workspace_slug // empty' "$DIR/.margins.json")
+    WORKSPACE_ID=$(jq -r '.workspace_id // empty' "$DIR/.margins.json")
+    break
+  fi
+  DIR=$(dirname "$DIR")
+done
 ```
 
 Use `$MARGINS` in place of `margins` for every command in the steps below.
 
-## Step 1: Get workspace slug
+If `npx` is also unavailable, tell the user:
+> "Node.js is required. Install it from https://nodejs.org, then retry."
 
-Same as `/margins` Step 1 — get `git remote get-url origin`, normalize to HTTPS, derive slug.
+## Step 1: Confirm workspace slug
 
-If workspace doesn't exist yet, say:
-> "No Margins workspace found for this repo. Run `/margins <topic>` to create one."
+If `$SLUG` is empty after the preamble walk-up, fall back to git remote derivation:
+get `git remote get-url origin`, normalize to HTTPS, derive slug
+(`https://github.com/owner/repo` → `gh/owner/repo`).
+
+If `$SLUG` is still empty after both lookups, say:
+> "No Margins workspace found for this directory. Run `/margins push` to create one (uploads local .md files for review), or `/margins <topic>` if you have a GitHub remote configured."
 
 And stop.
 
@@ -44,7 +74,7 @@ $MARGINS discuss list <slug> --status open --json
 ```
 
 If the command fails with an auth error, tell the user:
-> "Run `/margins-setup` to configure authentication, then retry `/margins-read`."
+> "Run `$MARGINS auth login` first, then retry `/margins-read`."
 
 ## Step 3: Format and display
 
@@ -54,7 +84,7 @@ If no open discussions:
 Otherwise, group by `path`. For each group:
 
 ```
--- openspec/brief.md ------
+── openspec/brief.md ──────────────────────────────────────
   [abc123] "Should we use JWT or API keys for CLI auth?"
   Author: alice  |  Anchor: ## Authentication Design
   Body: We need to decide how the CLI authenticates. JWT gives us
@@ -64,13 +94,13 @@ Otherwise, group by `path`. For each group:
   Author: bob  |  Anchor: ## Scope
   Body: The sync command is complex. Could defer to v1.1...
 
--- openspec/decisions/token-storage.md ----
+── openspec/decisions/token-storage.md ────────────────────
   [ghi789] "Which token storage location is most portable?"
   Author: alice  |  Anchor: ## The Question
   Body: macOS Keychain is most secure but Linux support is patchy...
 ```
 
-Show at most the first 200 chars of each body, truncating with ...
+Show at most the first 200 chars of each body, truncating with `…`.
 
 Print the total at the end:
 ```

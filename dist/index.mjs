@@ -107,7 +107,7 @@ wsCmd.command("sync [slug]").description("Trigger a git sync").option("--branch 
 });
 wsCmd.command("push").description("Push local .md files to a workspace for review").option("--workspace <id>", "Workspace ID (omit to create new with --project)").option("--project <name>", "Create a new local workspace with this name").option("--dir <path>", "Directory to scan for .md files (default: cwd)").action(async (opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handlePush } = await import("./push-Bl2iJJXC.mjs");
+	const { handlePush } = await import("./push-CCKdsiI1.mjs");
 	await handlePush(cfg, opts);
 });
 const discussCmd = program.command("discuss").description("Discussion management");
