@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsdown",
-    "prepare": "[ -x ./node_modules/.bin/tsdown ] && npm run build || true",
+    "prepare": "if [ -x ./node_modules/.bin/tsdown ]; then npm run build; fi",
     "dev": "node --import=tsx/esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
