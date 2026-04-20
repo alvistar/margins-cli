@@ -28,6 +28,8 @@ export const program = new Command()
 // ─── Auth hook ────────────────────────────────────────────────────────────────
 
 const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth'])
+// Subcommands that are local-only and don't need server auth
+const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
 
 program.hook('preAction', (_thisCommand, actionCommand) => {
   // Commander passes (rootProgram, leafCommand) — use actionCommand (the leaf)
@@ -38,6 +40,7 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   const rootName = cmd.name()
 
   if (NO_AUTH_COMMANDS.has(rootName)) return
+  if (NO_AUTH_SUBCOMMANDS.has(actionCommand.name())) return
 
   const globalOpts = program.opts()
   const cfg = resolveConfig({
@@ -191,6 +194,21 @@ wsCmd
     const cfg = getConfig(cmd)
     const { handlePush } = await import('./commands/workspace/push.js')
     await handlePush(cfg, opts)
+  })
+
+wsCmd
+  .command('unsync')
+  .description('Remove a folder from sync (local only, no auth required)')
+  .option('--path <dir>', 'Folder path to unsync (default: cwd with .margins.json)')
+  .option('--delete-config', 'Also delete .margins.json from the folder')
+  .action(async (opts) => {
+    const globalOpts = program.opts()
+    const { handleUnsync } = await import('./commands/workspace/unsync.js')
+    await handleUnsync({
+      path: opts.path,
+      deleteConfig: opts.deleteConfig,
+      json: globalOpts.json,
+    })
   })
 
 // ─── discuss subcommand ───────────────────────────────────────────────────────

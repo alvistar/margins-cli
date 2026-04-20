@@ -68,7 +68,35 @@ done
 
 # Project root falls back to git root or cwd if no .margins.json found
 PROJECT_ROOT="${PROJECT_ROOT:-${_ROOT:-$PWD}}"
+
+# 4. Detect Margins Sync tray app (D-019, D-020).
+# If the tray app is running AND this repo is registered, sync is automatic
+# and we can skip the explicit push step.
+SYNC_ACTIVE="false"
+if pgrep -f "margins-desktop" >/dev/null 2>&1 || pgrep -f "Margins Sync" >/dev/null 2>&1; then
+  # Tray app is running. Check if this repo is in repos.json.
+  REPOS_JSON=""
+  if [ -f "$HOME/Library/Application Support/margins/repos.json" ]; then
+    REPOS_JSON="$HOME/Library/Application Support/margins/repos.json"
+  elif [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/margins/repos.json" ]; then
+    REPOS_JSON="${XDG_DATA_HOME:-$HOME/.local/share}/margins/repos.json"
+  fi
+  if [ -n "$REPOS_JSON" ] && [ -n "$PROJECT_ROOT" ]; then
+    if jq -e --arg path "$PROJECT_ROOT" '.repos[] | select(.path == $path and .enabled == true)' "$REPOS_JSON" >/dev/null 2>&1; then
+      SYNC_ACTIVE="true"
+    fi
+  fi
+fi
 ```
+
+**Margins Sync detection:** If `$SYNC_ACTIVE` is `"true"`, the tray app is running
+and watching this repo. For the **push workflow**, skip the explicit push and just
+print the workspace URL. File changes are synced automatically. For the **discuss
+workflow**, sync detection doesn't change anything (discussions are created via API).
+
+If the tray app is running but this repo is NOT registered (`SYNC_ACTIVE` is `"false"`
+and `pgrep` found the process), mention it:
+> "Margins Sync is running but this folder isn't registered. Add it in the tray app for automatic sync."
 
 Use `$MARGINS` for every command below. If `npx` is unavailable, tell the user:
 > "Node.js is required. Install it from https://nodejs.org, then retry."
@@ -92,6 +120,17 @@ Determine which workflow to run based on the user's message and `$ARGUMENTS`:
 ---
 
 ## Push Workflow
+
+### Step P0: Check for active Margins Sync
+
+If `$SYNC_ACTIVE` is `"true"`:
+- The tray app is handling file sync automatically. Skip the explicit push.
+- Print the workspace URL so the user can review:
+  ```bash
+  $MARGINS workspace open --slug "$SLUG"
+  ```
+- Say: "Margins Sync is active for this folder. Your files are synced automatically. Opening the workspace..."
+- **Stop here.** Do not proceed to P1.
 
 ### Step P1: Decide push mode
 
