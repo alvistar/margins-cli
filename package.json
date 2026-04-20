@@ -21,11 +21,11 @@
   },
   "scripts": {
     "build": "tsdown",
-    "prepare": "if [ -x ./node_modules/.bin/tsdown ]; then npm run build; fi",
+    "check:dist": "npm run build && git diff --exit-code -- dist/",
     "dev": "node --import=tsx/esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test && npm run check:dist"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",

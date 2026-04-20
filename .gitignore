@@ -1,6 +1,3 @@
-# Build output — built by prepare script on install
-dist/
-
 # Dependencies
 node_modules/
 
