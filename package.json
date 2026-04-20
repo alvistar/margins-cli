@@ -4,7 +4,7 @@
   "description": "CLI for Margins — review layer for Markdown in Git",
   "type": "module",
   "bin": {
-    "margins": "./bin/margins.js"
+    "margins": "bin/margins.js"
   },
   "files": [
     "bin/",
@@ -13,7 +13,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/alvistar/margins-cli.git"
+    "url": "git+https://github.com/alvistar/margins-cli.git"
   },
   "homepage": "https://github.com/alvistar/margins-cli#readme",
   "bugs": {

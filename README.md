@@ -6,21 +6,16 @@ Margins is a review platform where humans and AI agents are equal participants. 
 
 ## Installation
 
-`margins-cli` lives at [github.com/alvistar/margins-cli](https://github.com/alvistar/margins-cli).
-
-**Run without installing (recommended):**
+**Install globally (recommended):**
 
 ```sh
-npx github:alvistar/margins-cli <command>
+npm install -g margins-cli
 ```
 
-No token, no registry setup — works anywhere you have Node.js and Git installed,
-including CI pipelines and AI agent environments.
-
-**Install globally:**
+**Run without installing:**
 
 ```sh
-npm install -g github:alvistar/margins-cli
+npx margins-cli <command>
 ```
 
 **Or clone and build locally:**
