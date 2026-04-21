@@ -1,67 +1,7 @@
 import * as p from '@clack/prompts'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
-
-interface RepoEntry {
-  path: string
-  workspaceId: string
-  slug: string
-  branch: string
-  enabled: boolean
-  lastMtimes?: Record<string, number>
-}
-
-interface RepoRegistry {
-  repos: RepoEntry[]
-}
-
-/**
- * Resolve the registry path, matching the desktop app's logic:
- *   MARGINS_DATA_DIR env var → dirs::data_local_dir()/margins/repos.json
- *
- * Platform equivalents:
- *   macOS:   ~/Library/Application Support/margins/repos.json
- *   Linux:   ~/.local/share/margins/repos.json
- *   Windows: %LOCALAPPDATA%/margins/repos.json
- */
-function registryPath(): string {
-  const override = process.env['MARGINS_DATA_DIR']
-  if (override) return path.join(override, 'repos.json')
-
-  const platform = os.platform()
-  let base: string
-  if (platform === 'darwin') {
-    base = path.join(os.homedir(), 'Library', 'Application Support')
-  } else if (platform === 'win32') {
-    base = process.env['LOCALAPPDATA'] || path.join(os.homedir(), 'AppData', 'Local')
-  } else {
-    base = process.env['XDG_DATA_HOME'] || path.join(os.homedir(), '.local', 'share')
-  }
-
-  return path.join(base, 'margins', 'repos.json')
-}
-
-function readRegistry(): RepoRegistry {
-  const regPath = registryPath()
-  if (!fs.existsSync(regPath)) return { repos: [] }
-  try {
-    return JSON.parse(fs.readFileSync(regPath, 'utf-8')) as RepoRegistry
-  } catch {
-    return { repos: [] }
-  }
-}
-
-function writeRegistry(registry: RepoRegistry): void {
-  const regPath = registryPath()
-  const dir = path.dirname(regPath)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(regPath, JSON.stringify(registry, null, 2), 'utf-8')
-}
-
-function normalize(p: string): string {
-  return p.replace(/\/+$/, '')
-}
+import { readRegistry, writeRegistry, normalize } from '../../lib/registry.js'
 
 interface UnsyncOpts {
   path?: string

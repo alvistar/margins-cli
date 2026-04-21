@@ -22,7 +22,7 @@ interface IngestFile {
 }
 
 /** Recursively find all .md files in a directory, skipping symlinks. */
-function globMarkdown(dir: string, base: string = ''): string[] {
+export function globMarkdown(dir: string, base: string = ''): string[] {
   const results: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue

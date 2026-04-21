@@ -143,6 +143,17 @@ authCmd
     await handleLogout(cfg)
   })
 
+// ─── sync (top-level) ────────────────────────────────────────────────────────
+
+program
+  .command('sync [dir]')
+  .description('Set up a folder for continuous sync with Margins')
+  .action(async (dir, _opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleSync } = await import('./commands/sync.js')
+    await handleSync(cfg, { dir, json: cfg.json })
+  })
+
 // ─── workspace subcommand ─────────────────────────────────────────────────────
 
 const wsCmd = program.command('workspace').description('Workspace management')

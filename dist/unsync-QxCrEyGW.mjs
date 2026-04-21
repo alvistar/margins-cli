@@ -1,47 +1,10 @@
 #!/usr/bin/env node
+import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-C0EcCRLd.mjs";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import * as p from "@clack/prompts";
 
 //#region src/commands/workspace/unsync.ts
-/**
-* Resolve the registry path, matching the desktop app's logic:
-*   MARGINS_DATA_DIR env var → dirs::data_local_dir()/margins/repos.json
-*
-* Platform equivalents:
-*   macOS:   ~/Library/Application Support/margins/repos.json
-*   Linux:   ~/.local/share/margins/repos.json
-*   Windows: %LOCALAPPDATA%/margins/repos.json
-*/
-function registryPath() {
-	const override = process.env["MARGINS_DATA_DIR"];
-	if (override) return path.join(override, "repos.json");
-	const platform = os.platform();
-	let base;
-	if (platform === "darwin") base = path.join(os.homedir(), "Library", "Application Support");
-	else if (platform === "win32") base = process.env["LOCALAPPDATA"] || path.join(os.homedir(), "AppData", "Local");
-	else base = process.env["XDG_DATA_HOME"] || path.join(os.homedir(), ".local", "share");
-	return path.join(base, "margins", "repos.json");
-}
-function readRegistry() {
-	const regPath = registryPath();
-	if (!fs.existsSync(regPath)) return { repos: [] };
-	try {
-		return JSON.parse(fs.readFileSync(regPath, "utf-8"));
-	} catch {
-		return { repos: [] };
-	}
-}
-function writeRegistry(registry) {
-	const regPath = registryPath();
-	const dir = path.dirname(regPath);
-	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(regPath, JSON.stringify(registry, null, 2), "utf-8");
-}
-function normalize(p) {
-	return p.replace(/\/+$/, "");
-}
 /**
 * Remove a repo from the local sync registry.
 * This is a local-only operation — no server auth required.

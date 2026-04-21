@@ -86,35 +86,43 @@ authCmd.command("logout").description("Revoke the stored API key and clear local
 	const { handleLogout } = await import("./logout-MG0wl17w.mjs");
 	await handleLogout(cfg);
 });
+program.command("sync [dir]").description("Set up a folder for continuous sync with Margins").action(async (dir, _opts, cmd) => {
+	const cfg = getConfig(cmd);
+	const { handleSync } = await import("./sync-Dk3vMGMX.mjs");
+	await handleSync(cfg, {
+		dir,
+		json: cfg.json
+	});
+});
 const wsCmd = program.command("workspace").description("Workspace management");
 wsCmd.command("list").description("List all workspaces").action(async (_opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleList } = await import("./list-Dd-fB5gb.mjs");
+	const { handleList } = await import("./list-Ccvnx9oN.mjs");
 	await handleList(cfg);
 });
 wsCmd.command("create <repo-url>").description("Create a workspace from a GitHub repo URL").action(async (repoUrl, _opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleCreate } = await import("./create-D10g4wJS.mjs");
+	const { handleCreate } = await import("./create-D7HNcr96.mjs");
 	await handleCreate(cfg, repoUrl);
 });
 wsCmd.command("open [slug]").description("Open a workspace in the browser").action(async (slug, _opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleOpen } = await import("./open-Ci0HdBym.mjs");
+	const { handleOpen } = await import("./open-D71XFy8S.mjs");
 	await handleOpen(cfg, slug);
 });
 wsCmd.command("sync [slug]").description("Trigger a git sync").option("--branch <branch>", "Branch to sync").action(async (slug, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleSync } = await import("./sync-BBodDL6Y.mjs");
+	const { handleSync } = await import("./sync-C72XuBJs.mjs");
 	await handleSync(cfg, slug, opts.branch);
 });
 wsCmd.command("push").description("Push local .md files to a workspace for review").option("--workspace <id>", "Workspace ID (omit to create new with --project)").option("--project <name>", "Create a new local workspace with this name").option("--dir <path>", "Directory to scan for .md files (default: cwd)").action(async (opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handlePush } = await import("./push-CCKdsiI1.mjs");
+	const { handlePush } = await import("./push-Cp_X-2dn.mjs");
 	await handlePush(cfg, opts);
 });
 wsCmd.command("unsync").description("Remove a folder from sync (local only, no auth required)").option("--path <dir>", "Folder path to unsync (default: cwd with .margins.json)").option("--delete-config", "Also delete .margins.json from the folder").action(async (opts) => {
 	const globalOpts = program.opts();
-	const { handleUnsync } = await import("./unsync-CYJ08s75.mjs");
+	const { handleUnsync } = await import("./unsync-QxCrEyGW.mjs");
 	await handleUnsync({
 		path: opts.path,
 		deleteConfig: opts.deleteConfig,
@@ -155,7 +163,7 @@ if (completionsIdx !== -1 && process.argv[completionsIdx + 1]) {
 	});
 	const workspaceIdx = process.argv.indexOf("--workspace");
 	const workspaceSlug = workspaceIdx !== -1 ? process.argv[workspaceIdx + 1] : void 0;
-	import("./dynamic-DL5FVXzF.mjs").then(({ handleDynamicCompletions }) => handleDynamicCompletions(cfg, type, workspaceSlug ? { workspace: workspaceSlug } : {})).catch(() => process.exit(0));
+	import("./dynamic-C8bHuqBO.mjs").then(({ handleDynamicCompletions }) => handleDynamicCompletions(cfg, type, workspaceSlug ? { workspace: workspaceSlug } : {})).catch(() => process.exit(0));
 } else program.parseAsync(process.argv).catch((err) => {
 	const json = program.opts().json ?? false;
 	process.stderr.write(formatError(err, json) + "\n");

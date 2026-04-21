@@ -68,4 +68,4 @@ async function handlePush(cfg, opts) {
 }
 
 //#endregion
-export { handlePush };
+export { globMarkdown, handlePush };
