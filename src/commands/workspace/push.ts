@@ -1,25 +1,13 @@
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { execSync } from 'node:child_process'
 import type { ResolvedConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
-
-interface IngestResult {
-  added: number
-  changed: number
-  skipped: number
-  // D-023: discussion anchor lifecycle counts (only present for workspaces
-  // with prior discussions on changed files; zero otherwise).
-  addressed?: number
-  orphaned?: number
-  moved?: number
-}
-
-interface IngestFile {
-  path: string
-  content: string
-}
+import { casSync, type CasSyncResult } from '../../lib/cas-sync.js'
+import { scanImagesInMarkdown, mimeFromPath } from '../../lib/image-scanner.js'
+import { loadIgnoreFilter } from '../../lib/marginsignore.js'
 
 /** Recursively find all .md files in a directory, skipping symlinks. */
 export function globMarkdown(dir: string, base: string = ''): string[] {
@@ -37,6 +25,34 @@ export function globMarkdown(dir: string, base: string = ''): string[] {
   }
   return results.sort()
 }
+
+// ─── Git helpers ─────────────────────────────────────────────────────────────
+
+function gitBranch(cwd: string): string {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim()
+  } catch {
+    return 'main'
+  }
+}
+
+function gitCommitSha(cwd: string): string {
+  try {
+    return execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8' }).trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
+function gitParentSha(cwd: string): string | null {
+  try {
+    return execSync('git rev-parse HEAD~1', { cwd, encoding: 'utf-8' }).trim()
+  } catch {
+    return null  // first commit or not a git repo
+  }
+}
+
+// ─── Push handler ────────────────────────────────────────────────────────────
 
 export async function handlePush(
   cfg: ResolvedConfig,
@@ -69,38 +85,71 @@ export async function handlePush(
     throw new ValidationError('Specify --workspace <id> or --project <name> to create a new workspace')
   }
 
-  // Glob markdown files
-  const mdFiles = globMarkdown(cwd)
+  // Glob markdown files and apply .marginsignore filter
+  const allMdFiles = globMarkdown(cwd)
+  const ignoreFilter = loadIgnoreFilter(cwd)
+  const mdFiles = allMdFiles.filter(ignoreFilter)
   if (mdFiles.length === 0) {
     throw new ValidationError(`No .md files found in ${cwd}`)
   }
 
-  // Read files
-  const files: IngestFile[] = mdFiles.map((relPath) => ({
-    path: relPath,
-    content: readFileSync(join(cwd, relPath), 'utf-8'),
-  }))
+  // Build file list: markdown files + referenced images
+  const syncFiles: Array<{ path: string; content: Buffer; contentType: string }> = []
+  const seenPaths = new Set<string>()
 
-  // Push to ingest endpoint
-  const result = await client.post(
-    `/api/workspaces/${workspaceId}/ingest`,
-    { files }
-  ) as IngestResult
+  for (const relPath of mdFiles) {
+    const content = readFileSync(join(cwd, relPath))
+    syncFiles.push({ path: relPath, content, contentType: 'text/markdown' })
+    seenPaths.add(relPath)
+
+    // Scan for image references
+    const mdText = content.toString('utf-8')
+    const imagePaths = scanImagesInMarkdown(mdText, relPath, cwd)
+    for (const imgPath of imagePaths) {
+      if (seenPaths.has(imgPath)) continue
+      const imgFull = join(cwd, imgPath)
+      if (!existsSync(imgFull)) continue
+      const mime = mimeFromPath(imgPath)
+      if (!mime) continue
+      try {
+        const imgContent = readFileSync(imgFull)
+        syncFiles.push({ path: imgPath, content: imgContent, contentType: mime })
+        seenPaths.add(imgPath)
+      } catch {
+        // Skip unreadable images
+      }
+    }
+  }
+
+  // Detect git info
+  const branch = gitBranch(cwd)
+  const commitSha = gitCommitSha(cwd)
+  const parentSha = gitParentSha(cwd)
+
+  // Sync via CAS protocol
+  const result: CasSyncResult = await casSync(
+    client,
+    workspaceId,
+    branch,
+    commitSha,
+    parentSha,
+    syncFiles,
+  )
 
   if (cfg.json) {
-    // D-006: include workspace metadata in push result when --project created the workspace
     console.log(formatJson({
       ...result,
       ...(createdSlug ? { workspaceId, slug: createdSlug } : {}),
     }))
   } else {
-    let line = `Pushed: ${result.added} added, ${result.changed} changed, ${result.skipped} skipped`
-    // D-023: append anchor lifecycle counts only when something actually transitioned.
-    const addressed = result.addressed ?? 0
-    const orphaned = result.orphaned ?? 0
-    const moved = result.moved ?? 0
-    if (addressed > 0 || orphaned > 0 || moved > 0) {
-      line += ` (${addressed} addressed, ${orphaned} orphaned, ${moved} moved)`
+    const parts = [
+      `${result.added} added`,
+      `${result.changed} changed`,
+      `${result.deleted} deleted`,
+    ]
+    let line = `Pushed: ${parts.join(', ')}`
+    if (result.uploaded > 0 || result.skipped > 0) {
+      line += ` (${result.uploaded} uploaded, ${result.skipped} unchanged)`
     }
     console.log(line)
   }

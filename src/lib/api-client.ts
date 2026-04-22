@@ -20,6 +20,8 @@ export interface ApiClient {
   post(path: string, body?: unknown): Promise<unknown>
   patch(path: string, body?: unknown): Promise<unknown>
   delete(path: string): Promise<unknown>
+  /** Upload raw binary data (for CAS blob uploads). Returns parsed JSON response. */
+  putRaw(path: string, data: Buffer, contentType: string): Promise<unknown>
 }
 
 // ─── Token refresh ────────────────────────────────────────────────────────────
@@ -190,10 +192,73 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     return parsed
   }
 
+  /**
+   * Send a raw binary request (for CAS blob uploads).
+   * Unlike doFetch, this sends the body as-is with the given Content-Type.
+   */
+  async function doFetchRaw(
+    method: string,
+    path: string,
+    data: Buffer,
+    contentType: string,
+  ): Promise<unknown> {
+    const url = buildUrl(path)
+    const bearer = await resolveBearer(config)
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${bearer}`,
+      Accept: 'application/json',
+      'Content-Type': contentType,
+    }
+
+    log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer)})`)
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+
+    let response: Response
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: new Uint8Array(data),
+        signal: controller.signal,
+      })
+    } catch (err) {
+      clearTimeout(timer)
+      if ((err as Error).name === 'AbortError') throw new TimeoutError()
+      throw new NetworkError(config.serverUrl)
+    }
+    clearTimeout(timer)
+
+    log(`→ ${response.status}`)
+
+    if (response.status === 401) throw new AuthExpired()
+    if (response.status === 403) throw new ForbiddenError(path)
+    if (response.status === 404) throw new NotFoundError(path)
+    if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
+    if (response.status >= 400 && response.status < 500) throw new ServerError(response.status)
+    if (response.status >= 500) throw new ServerError(response.status)
+
+    const text = await response.text()
+    if (!text) return {}
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new ResponseParseError()
+    }
+    if (parsed !== null && typeof parsed === 'object' && 'data' in (parsed as object)) {
+      return (parsed as { data: unknown }).data
+    }
+    return parsed
+  }
+
   return {
     get: (path, query) => doFetch('GET', path, query),
     post: (path, body) => doFetch('POST', path, undefined, body),
     patch: (path, body) => doFetch('PATCH', path, undefined, body),
     delete: (path) => doFetch('DELETE', path),
+    putRaw: (path, data, contentType) => doFetchRaw('PUT', path, data, contentType),
   }
 }

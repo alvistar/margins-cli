@@ -27,7 +27,7 @@ export const program = new Command()
 
 // ─── Auth hook ────────────────────────────────────────────────────────────────
 
-const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth'])
+const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook'])
 // Subcommands that are local-only and don't need server auth
 const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
 
@@ -282,6 +282,18 @@ program
   .action(async (opts) => {
     const { handleCompletions } = await import('./commands/completions.js')
     handleCompletions(program, opts.shell)
+  })
+
+// ─── install-hook command ────────────────────────────────────────────────────
+
+program
+  .command('install-hook')
+  .description('Install a git hook to sync with Margins on push or commit')
+  .option('--on <trigger>', 'Hook trigger: commit or push (default: push)', 'push')
+  .option('--force', 'Overwrite existing hook without prompting')
+  .action(async (opts) => {
+    const { handleInstallHook } = await import('./commands/install-hook.js')
+    await handleInstallHook({ on: opts.on as 'commit' | 'push', force: opts.force })
   })
 
 // ─── Dynamic completions dispatch ─────────────────────────────────────────────
