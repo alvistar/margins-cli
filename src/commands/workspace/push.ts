@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { execSync } from 'node:child_process'
-import type { ResolvedConfig } from '../../lib/config.js'
+import { execSync, type StdioOptions } from 'node:child_process'
+import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
@@ -28,9 +28,14 @@ export function globMarkdown(dir: string, base: string = ''): string[] {
 
 // ─── Git helpers ─────────────────────────────────────────────────────────────
 
+// stdio: ['ignore', 'pipe', 'ignore'] — capture stdout, discard stderr so git's
+// error output (e.g. 'fatal: ambiguous argument HEAD~1' on a first commit) doesn't
+// leak past our try/catch into the user's terminal.
+const GIT_STDIO: StdioOptions = ['ignore', 'pipe', 'ignore']
+
 function gitBranch(cwd: string): string {
   try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8' }).trim()
+    return execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
   } catch {
     return 'main'
   }
@@ -38,7 +43,7 @@ function gitBranch(cwd: string): string {
 
 function gitCommitSha(cwd: string): string {
   try {
-    return execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8' }).trim()
+    return execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
   } catch {
     return 'unknown'
   }
@@ -46,7 +51,7 @@ function gitCommitSha(cwd: string): string {
 
 function gitParentSha(cwd: string): string | null {
   try {
-    return execSync('git rev-parse HEAD~1', { cwd, encoding: 'utf-8' }).trim()
+    return execSync('git rev-parse HEAD~1', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
   } catch {
     return null  // first commit or not a git repo
   }
@@ -61,9 +66,20 @@ export async function handlePush(
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
 
-  // Resolve workspace ID
+  // Resolve workspace ID: --workspace flag → .margins.json → --project (create)
   let workspaceId = opts.workspace
   let createdSlug: string | undefined
+  if (!workspaceId) {
+    const localCfgPath = join(cwd, '.margins.json')
+    if (existsSync(localCfgPath)) {
+      try {
+        const localCfg = JSON.parse(readFileSync(localCfgPath, 'utf-8')) as LocalConfig
+        if (localCfg.workspace_id) workspaceId = localCfg.workspace_id
+      } catch {
+        // Malformed .margins.json — fall through; resolveConfig already warned.
+      }
+    }
+  }
   if (!workspaceId && opts.project) {
     // Create local workspace on first push
     const result = await client.post('/api/workspaces', {

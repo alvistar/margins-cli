@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-C0EcCRLd.mjs";
+import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-B6q9EG-b.mjs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as p from "@clack/prompts";

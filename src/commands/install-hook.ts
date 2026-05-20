@@ -16,16 +16,16 @@ interface InstallHookOpts {
 const PRE_PUSH_HOOK = `#!/bin/sh
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-margins push --branch "$BRANCH" &
+# Reads workspace_id from .margins.json. Branch is detected from git automatically.
+margins workspace push &
 exit 0
 `
 
 const POST_COMMIT_HOOK = `#!/bin/sh
 # Margins CAS sync — non-blocking post-commit hook
 # Installed by: margins install-hook --on commit
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-margins push --branch "$BRANCH" &
+# Reads workspace_id from .margins.json. Branch is detected from git automatically.
+margins workspace push &
 exit 0
 `
 
@@ -69,4 +69,13 @@ export async function handleInstallHook(opts: InstallHookOpts): Promise<void> {
   fs.writeFileSync(hookPath, hookContent, { mode: 0o755 })
 
   console.log(`Installed ${hookName} hook at ${hookPath}`)
+
+  // Warn if .margins.json is missing — the hook reads workspace_id from it.
+  // Without it, `margins workspace push` errors out and (since the hook backgrounds
+  // the call and exits 0) the failure is invisible.
+  if (!fs.existsSync(path.join(dir, '.margins.json'))) {
+    console.warn(`Warning: .margins.json not found in ${dir}.`)
+    console.warn(`Run \`margins sync\` first to register this folder and write .margins.json.`)
+    console.warn(`Otherwise the hook will fail silently on every push.`)
+  }
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { s as ConflictError } from "./config-DHEPrW--.mjs";
 import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-C6k_lE47.mjs";
-import { i as writeRegistry, n as normalize, r as readRegistry, t as addRepo } from "./registry-C0EcCRLd.mjs";
-import { globMarkdown } from "./push-Cp_X-2dn.mjs";
+import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
+import { i as writeRegistry, n as normalize, r as readRegistry, t as addRepo } from "./registry-B6q9EG-b.mjs";
+import { globMarkdown } from "./push-CkXo2ltk.mjs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as p from "@clack/prompts";

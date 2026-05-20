@@ -39,6 +39,9 @@ margins workspace list
 # Push local markdown to a brand-new workspace (no GitHub repo needed)
 margins workspace push --project my-docs --dir ./docs
 
+# Wire `git push` to auto-sync this repo to Margins (non-blocking)
+margins install-hook
+
 # List open discussions in the current repo
 margins discuss list
 
@@ -388,6 +391,50 @@ margins completions -s fish | source
 ```
 
 After reloading your shell, press `Tab` after `margins workspace sync ` to get live workspace slug completion from the API.
+
+### `install-hook`
+
+Installs a git hook that triggers `margins workspace push` on every push (or commit).
+The hook is **non-blocking**: sync runs in the background and `git push` always succeeds
+regardless of sync outcome. CLI logs a warning on failure.
+
+```sh
+margins install-hook              # pre-push hook (default)
+margins install-hook --on commit  # post-commit hook
+margins install-hook --force      # overwrite an existing hook without prompting
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--on <trigger>` | no | `push` (default) or `commit`. `push` runs the sync when you `git push`; `commit` runs it on every commit. |
+| `--force` | no | Overwrite an existing hook file without prompting. |
+
+**Prerequisite — workspace identification.** The hook script calls `margins workspace push`
+with no arguments, which reads `workspace_id` from `.margins.json` in the repo root. Before
+installing the hook, register the workspace once:
+
+```sh
+margins workspace push --workspace <workspace-id>
+# or, for a brand-new local workspace:
+margins workspace push --project my-docs
+```
+
+After the first push, `.margins.json` is written and the hook works on subsequent `git push`.
+If `.margins.json` is missing when you run `install-hook`, the CLI warns you — the hook will
+fail silently on every push until you create it.
+
+**Generated hook (pre-push):**
+
+```sh
+#!/bin/sh
+# Margins CAS sync — non-blocking pre-push hook
+# Installed by: margins install-hook
+margins workspace push &
+exit 0
+```
+
+**Removing the hook:** delete `.git/hooks/pre-push` (or `post-commit`) by hand. There is
+no `uninstall-hook` command yet.
 
 ---
 

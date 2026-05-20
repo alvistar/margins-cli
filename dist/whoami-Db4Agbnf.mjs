@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { o as AuthMissing } from "./config-DHEPrW--.mjs";
 import { i as maskKey, n as formatJson, r as formatTable } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-C6k_lE47.mjs";
+import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
 import * as p from "@clack/prompts";
 
 //#region src/commands/auth/whoami.ts

@@ -101,11 +101,59 @@ function createApiClient(config) {
 		if (parsed !== null && typeof parsed === "object" && "data" in parsed) return parsed.data;
 		return parsed;
 	}
+	/**
+	* Send a raw binary request (for CAS blob uploads).
+	* Unlike doFetch, this sends the body as-is with the given Content-Type.
+	*/
+	async function doFetchRaw(method, path, data, contentType) {
+		const url = buildUrl(path);
+		const bearer = await resolveBearer(config);
+		const headers = {
+			Authorization: `Bearer ${bearer}`,
+			Accept: "application/json",
+			"Content-Type": contentType
+		};
+		log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer)})`);
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+		let response;
+		try {
+			response = await fetch(url, {
+				method,
+				headers,
+				body: new Uint8Array(data),
+				signal: controller.signal
+			});
+		} catch (err) {
+			clearTimeout(timer);
+			if (err.name === "AbortError") throw new TimeoutError();
+			throw new NetworkError(config.serverUrl);
+		}
+		clearTimeout(timer);
+		log(`→ ${response.status}`);
+		if (response.status === 401) throw new AuthExpired();
+		if (response.status === 403) throw new ForbiddenError(path);
+		if (response.status === 404) throw new NotFoundError(path);
+		if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`);
+		if (response.status >= 400 && response.status < 500) throw new ServerError(response.status);
+		if (response.status >= 500) throw new ServerError(response.status);
+		const text = await response.text();
+		if (!text) return {};
+		let parsed;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			throw new ResponseParseError();
+		}
+		if (parsed !== null && typeof parsed === "object" && "data" in parsed) return parsed.data;
+		return parsed;
+	}
 	return {
 		get: (path, query) => doFetch("GET", path, query),
 		post: (path, body) => doFetch("POST", path, void 0, body),
 		patch: (path, body) => doFetch("PATCH", path, void 0, body),
-		delete: (path) => doFetch("DELETE", path)
+		delete: (path) => doFetch("DELETE", path),
+		putRaw: (path, data, contentType) => doFetchRaw("PUT", path, data, contentType)
 	};
 }
 

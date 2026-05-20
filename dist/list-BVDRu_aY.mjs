@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { n as formatJson, r as formatTable } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-C6k_lE47.mjs";
+import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
 
 //#region src/commands/workspace/list.ts
 function formatDate(iso) {

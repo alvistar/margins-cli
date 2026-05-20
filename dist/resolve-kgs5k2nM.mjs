@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { c as DiscussionNotFoundError, n as readLocalConfig, p as NotFoundError, s as ConflictError, v as ValidationError } from "./config-DHEPrW--.mjs";
 import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-C6k_lE47.mjs";
+import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
 import { t as resolveWorkspaceBySlug } from "./resolve-workspace-CCRy89Zw.mjs";
 
 //#region src/commands/discuss/resolve.ts

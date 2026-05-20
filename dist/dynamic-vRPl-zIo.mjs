@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { t as createApiClient } from "./api-client-C6k_lE47.mjs";
+import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
 import { t as resolveWorkspaceBySlug } from "./resolve-workspace-CCRy89Zw.mjs";
 
 //#region src/completions/dynamic.ts

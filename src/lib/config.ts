@@ -8,6 +8,7 @@ import { ConfigParseError } from './errors.js'
 
 export interface LocalConfig {
   workspace_slug?: string
+  workspace_id?: string
   default_branch?: string
   server_url?: string
 }
