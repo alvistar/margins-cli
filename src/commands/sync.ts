@@ -18,13 +18,17 @@ import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import { globMarkdown } from './workspace/push.js'
+import { casSync } from '../lib/cas-sync.js'
+import { scanImagesInMarkdown, mimeFromPath } from '../lib/image-scanner.js'
+import { loadIgnoreFilter } from '../lib/marginsignore.js'
 
 interface MarginsJson {
   workspace_slug: string
   workspace_id?: string
   default_branch?: string
   server_url?: string
-  mode?: string
+  syncMode?: 'server' | 'client'
+  mode?: string // Legacy field, replaced by syncMode
 }
 
 interface SyncOpts {
@@ -91,8 +95,14 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   // Step 2-3: Create workspace if needed
   let workspaceId = marginsJson?.workspace_id ?? ''
   let slug = marginsJson?.workspace_slug ?? ''
-  let mode = marginsJson?.mode ?? 'local'
-  let branch = mode === 'overlay' ? '@local' : (marginsJson?.default_branch ?? 'main')
+  let syncMode: 'server' | 'client' = marginsJson?.syncMode ?? 'client'
+  // Legacy: infer syncMode from mode field
+  if (!marginsJson?.syncMode && marginsJson?.mode === 'overlay') {
+    syncMode = 'client'
+  }
+  let branch = (marginsJson?.mode === 'overlay' || syncMode === 'server')
+    ? '@local'
+    : (marginsJson?.default_branch ?? 'main')
 
   if (!workspaceId) {
     const remote = detectGitRemote(dir)
@@ -112,7 +122,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         workspaceId = result.workspace.id
         slug = result.workspace.slug
         branch = '@local'
-        mode = 'overlay'
+        syncMode = 'client'
       } catch (err) {
         if (err instanceof ConflictError) {
           // 409: workspace exists, find it
@@ -121,7 +131,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
             workspaceId = found.id
             slug = found.slug
             branch = '@local'
-            mode = 'overlay'
+            syncMode = 'client'
           } else {
             // Can't find it, fall back to local
             if (!isJson) {
@@ -152,39 +162,59 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     const config: MarginsJson = {
       workspace_slug: slug,
       workspace_id: workspaceId,
-      default_branch: mode === 'local' ? 'main' : undefined,
-      mode,
+      default_branch: syncMode === 'client' && branch !== '@local' ? 'main' : undefined,
+      syncMode,
     }
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
   }
 
-  // Step 5-6: Glob and push .md files
-  const mdFiles = globMarkdown(dir)
+  // Step 5-6: Glob and push .md files via CAS protocol
+  const allMdFiles = globMarkdown(dir)
+  const ignoreFilter = loadIgnoreFilter(dir)
+  const mdFiles = allMdFiles.filter(ignoreFilter)
+
   let pushResult = { added: 0, changed: 0, skipped: 0 }
 
   if (mdFiles.length > 0) {
     if (!isJson) {
-      p.log.info(`Pushing ${mdFiles.length} .md file(s)...`)
+      p.log.info(`Pushing ${mdFiles.length} .md file(s) via CAS...`)
     }
 
-    // Push in batches of 50 (server limit)
-    const BATCH_SIZE = 50
-    for (let i = 0; i < mdFiles.length; i += BATCH_SIZE) {
-      const batch = mdFiles.slice(i, i + BATCH_SIZE)
-      const files = batch.map(relPath => ({
-        path: relPath,
-        content: fs.readFileSync(path.join(dir, relPath), 'utf-8'),
-      }))
+    const syncFiles: Array<{ path: string; content: Buffer; contentType: string }> = []
+    const seenPaths = new Set<string>()
 
-      const result = await client.post(
-        `/api/workspaces/${workspaceId}/ingest`,
-        { files }
-      ) as { added: number; changed: number; skipped: number }
+    for (const relPath of mdFiles) {
+      const content = fs.readFileSync(path.join(dir, relPath))
+      syncFiles.push({ path: relPath, content, contentType: 'text/markdown' })
+      seenPaths.add(relPath)
 
-      pushResult.added += result.added
-      pushResult.changed += result.changed
-      pushResult.skipped += result.skipped
+      const mdText = content.toString('utf-8')
+      const imagePaths = scanImagesInMarkdown(mdText, relPath, dir)
+      for (const imgPath of imagePaths) {
+        if (seenPaths.has(imgPath)) continue
+        const imgFull = path.join(dir, imgPath)
+        if (!fs.existsSync(imgFull)) continue
+        const mime = mimeFromPath(imgPath)
+        if (!mime) continue
+        try {
+          syncFiles.push({ path: imgPath, content: fs.readFileSync(imgFull), contentType: mime })
+          seenPaths.add(imgPath)
+        } catch { /* skip unreadable images */ }
+      }
     }
+
+    const casResult = await casSync(
+      client,
+      workspaceId,
+      branch === '@local' ? 'main' : branch,
+      'initial-sync',
+      null,
+      syncFiles,
+    )
+
+    pushResult.added = casResult.added
+    pushResult.changed = casResult.changed
+    pushResult.skipped = casResult.skipped
   }
 
   // Step 7: Write lastMtimes + add to repos.json
@@ -216,7 +246,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       workspaceId,
       slug,
       branch,
-      mode,
+      syncMode,
       files: mdFiles.length,
       ...pushResult,
       url,
