@@ -11,6 +11,8 @@ export interface LocalConfig {
   workspace_id?: string
   default_branch?: string
   server_url?: string
+  syncMode?: 'server' | 'client'
+  mode?: 'overlay' | 'local' // Legacy field, replaced by syncMode
 }
 
 export interface GlobalConfig {

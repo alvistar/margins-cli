@@ -41,6 +41,23 @@ export async function handleInstallHook(opts: InstallHookOpts): Promise<void> {
     dir = parent
   }
 
+  // Check .margins.json for syncMode before installing
+  const configPath = path.join(dir, '.margins.json')
+  if (fs.existsSync(configPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+      const syncMode = config.syncMode ?? (config.mode === 'local' ? 'client' : undefined)
+
+      if (syncMode === 'server') {
+        console.log('This workspace syncs via GitHub webhook — no hook needed.')
+        console.log('Content is pulled by the server automatically on push.')
+        return
+      }
+    } catch {
+      // Malformed .margins.json — continue with hook installation
+    }
+  }
+
   const hooksDir = path.join(dir, '.git', 'hooks')
   const trigger = opts.on ?? 'push'
   const hookName = trigger === 'commit' ? 'post-commit' : 'pre-push'
@@ -71,9 +88,7 @@ export async function handleInstallHook(opts: InstallHookOpts): Promise<void> {
   console.log(`Installed ${hookName} hook at ${hookPath}`)
 
   // Warn if .margins.json is missing — the hook reads workspace_id from it.
-  // Without it, `margins workspace push` errors out and (since the hook backgrounds
-  // the call and exits 0) the failure is invisible.
-  if (!fs.existsSync(path.join(dir, '.margins.json'))) {
+  if (!fs.existsSync(configPath)) {
     console.warn(`Warning: .margins.json not found in ${dir}.`)
     console.warn(`Run \`margins sync\` first to register this folder and write .margins.json.`)
     console.warn(`Otherwise the hook will fail silently on every push.`)

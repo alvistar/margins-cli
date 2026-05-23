@@ -5,6 +5,7 @@ import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError, ConflictError } from '../../lib/errors.js'
 import { resolveWorkspaceBySlug } from '../../lib/resolve-workspace.js'
+import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 
 interface SyncResult {
   artifactsUpdated?: number
@@ -18,6 +19,17 @@ export async function handleSync(cfg: ResolvedConfig, slug: string | undefined, 
   }
 
   const client = createApiClient(cfg)
+
+  // Gate: refuse to trigger server-side sync on client-sync workspaces
+  const localCfg = readLocalConfig()
+  if (localCfg) {
+    const syncMode = await resolveSyncMode(localCfg, client)
+    if (syncMode === 'client') {
+      console.error('This workspace uses client-managed sync. Use `margins workspace push` instead.')
+      process.exit(1)
+    }
+  }
+
   const workspace = await resolveWorkspaceBySlug(client, resolvedSlug)
 
   if (!cfg.json) {

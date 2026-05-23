@@ -5,6 +5,7 @@ import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
+import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import { casSync, type CasSyncResult } from '../../lib/cas-sync.js'
 import { scanImagesInMarkdown, mimeFromPath } from '../../lib/image-scanner.js'
 import { loadIgnoreFilter } from '../../lib/marginsignore.js'
@@ -99,6 +100,21 @@ export async function handlePush(
 
   if (!workspaceId) {
     throw new ValidationError('Specify --workspace <id> or --project <name> to create a new workspace')
+  }
+
+  // Gate: refuse to push to server-sync workspaces (they sync via webhook)
+  const localCfgForSync = join(cwd, '.margins.json')
+  if (existsSync(localCfgForSync)) {
+    try {
+      const localCfg = JSON.parse(readFileSync(localCfgForSync, 'utf-8')) as LocalConfig
+      const syncMode = await resolveSyncMode(localCfg, client, cwd)
+      if (syncMode === 'server') {
+        console.error('This workspace uses server-managed sync. Use `margins workspace sync` instead.')
+        process.exit(1)
+      }
+    } catch {
+      // Malformed .margins.json or server unreachable — resolveSyncMode handles exit
+    }
   }
 
   // Glob markdown files and apply .marginsignore filter
