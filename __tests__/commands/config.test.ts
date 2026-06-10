@@ -53,11 +53,12 @@ describe('config show', () => {
     expect(parsed.apiKey).not.toBe('mrgn_testkey1234567')
   })
 
-  it('shows active Keycloak token session in JSON output', () => {
+  it('shows active Keycloak token session in JSON output (JWT fully masked)', () => {
     setGlobalConfig({ accessToken: 'eyJhbGciOi.test.token', serverUrl: 'https://margins.app' })
     const output = handleShow({ json: true })
     const parsed = JSON.parse(output)
     expect(parsed.apiKey).not.toBe('(not set)')
-    expect(parsed.apiKey).toContain('...')
+    // JWT-shaped tokens are fully masked — no slice may leak into output
+    expect(parsed.apiKey).toBe('JWT[masked]')
   })
 })

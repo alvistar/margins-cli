@@ -10,6 +10,10 @@ export function hasColor(): boolean {
 
 export function maskKey(key: string | undefined): string {
   if (!key) return '(not set)'
+  // JWT shape (header.payload.signature): a first-5/last-3 slice of a
+  // 500-900-byte token is meaningless and the slices leak signature bytes
+  // into verbose logs — mask the whole thing.
+  if (key.split('.').length === 3) return 'JWT[masked]'
   if (key.length < 10) return `${key.slice(0, 2)}...`
   return `${key.slice(0, 5)}...${key.slice(-3)}`
 }

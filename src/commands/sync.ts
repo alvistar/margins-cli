@@ -207,8 +207,6 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       client,
       workspaceId,
       branch === '@local' ? 'main' : branch,
-      'initial-sync',
-      null,
       syncFiles,
     )
 

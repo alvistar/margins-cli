@@ -46,7 +46,11 @@ export class TimeoutError extends MarginsError {
 }
 
 export class ServerError extends MarginsError {
-  constructor(status: number) {
+  constructor(
+    public readonly status: number,
+    /** Server error code from the `{ error: { code } }` body, when present. */
+    public readonly code?: string,
+  ) {
     super(`Server error ${status}`, `Server error (${status}). Try again later.`, 1)
   }
 }

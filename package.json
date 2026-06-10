@@ -27,16 +27,15 @@
     "test:watch": "vitest",
     "prepublishOnly": "npm test && npm run check:dist"
   },
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "@clack/prompts": "^1.1.0",
     "@commander-js/extra-typings": "^14.0.0",
+    "@types/node": "^22.0.0",
     "commander": "^14.0.0",
     "conf": "^13.1.0",
     "oauth4webapi": "^3.5.0",
-    "open": "^10.1.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
+    "open": "^10.1.0",
     "tsdown": "^0.21.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

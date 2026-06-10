@@ -6,8 +6,11 @@ import {
   NetworkError, TimeoutError, ResponseParseError,
 } from './errors.js'
 import { maskKey } from './output.js'
+import { CLI_VERSION } from './version.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
+
+const CLIENT_HEADER = `margins-cli/${CLI_VERSION}`
 
 // Buffer: refresh the access token 30s before it actually expires.
 // Prevents race conditions where the token expires mid-request.
@@ -104,6 +107,86 @@ async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createApiClient(config: ResolvedConfig): ApiClient {
+  // OIDC token re-minted mid-session (GitHub Actions). Takes precedence over
+  // the env var so a re-mint sticks for the rest of the push.
+  let mintedOidcToken: string | undefined
+  // Tokens already registered with the Actions log-masking mechanism.
+  const maskRegistered = new Set<string>()
+
+  function currentOidcToken(): string | undefined {
+    return mintedOidcToken ?? process.env['MARGINS_OIDC_TOKEN'] ?? undefined
+  }
+
+  /** Register a token with GitHub Actions log masking before it's ever used. */
+  function registerActionsMask(token: string): void {
+    if (process.env['GITHUB_ACTIONS'] && !maskRegistered.has(token)) {
+      maskRegistered.add(token)
+      process.stdout.write(`::add-mask::${token}\n`)
+    }
+  }
+
+  function canRemintOidc(): boolean {
+    return Boolean(
+      process.env['ACTIONS_ID_TOKEN_REQUEST_URL'] &&
+      process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'],
+    )
+  }
+
+  /**
+   * Re-mint a GitHub Actions OIDC token (a long push can outlive the ~5-min
+   * JWT validity). Audience = the server origin, no trailing slash — must
+   * match the server's exact-string audience pin.
+   */
+  async function remintOidcToken(): Promise<void> {
+    const requestUrl = process.env['ACTIONS_ID_TOKEN_REQUEST_URL']!
+    const requestToken = process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']!
+    const audience = new URL(config.serverUrl).origin
+
+    log('401 — re-minting GitHub Actions OIDC token...')
+    let response: Response
+    try {
+      response = await fetch(`${requestUrl}&audience=${encodeURIComponent(audience)}`, {
+        headers: { Authorization: `Bearer ${requestToken}` },
+      })
+    } catch {
+      throw new AuthExpired()
+    }
+    if (!response.ok) throw new AuthExpired()
+    const result = await response.json().catch(() => null) as { value?: string } | null
+    if (!result?.value) throw new AuthExpired()
+    registerActionsMask(result.value)
+    mintedOidcToken = result.value
+  }
+
+  /**
+   * Resolve the bearer for a request. MARGINS_OIDC_TOKEN (or a re-minted
+   * Actions token) takes precedence over Keycloak/api-key resolution.
+   */
+  async function resolveRequestBearer(): Promise<string> {
+    const oidc = currentOidcToken()
+    if (oidc) {
+      registerActionsMask(oidc)
+      return oidc
+    }
+    return resolveBearer(config)
+  }
+
+  /** Extract the server error code from an error response body, if any. */
+  async function readErrorCode(response: Response): Promise<string | undefined> {
+    try {
+      const parsed = await response.json() as {
+        error?: { code?: string } | string
+        code?: string
+      } | null
+      if (parsed && typeof parsed.error === 'object' && parsed.error?.code) {
+        return parsed.error.code
+      }
+      if (parsed?.code) return parsed.code
+    } catch {
+      // Non-JSON error body — no code available
+    }
+    return undefined
+  }
   function buildUrl(path: string, query?: Record<string, string>): string {
     const base = config.serverUrl.replace(/\/$/, '')
     const url = new URL(`${base}${path}`)
@@ -127,15 +210,17 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     query?: Record<string, string>,
     body?: unknown,
     attempt = 1,
+    remintAttempted = false,
   ): Promise<unknown> {
     const url = buildUrl(path, query)
 
-    // Resolve bearer — transparently refreshes Keycloak token if needed
-    const bearer = await resolveBearer(config)
+    // Resolve bearer — OIDC env token wins; otherwise Keycloak/api-key
+    const bearer = await resolveRequestBearer()
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${bearer}`,
       Accept: 'application/json',
+      'X-Margins-Client': CLIENT_HEADER,
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     }
 
@@ -159,7 +244,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
         const isIdempotent = method === 'GET' || method === 'DELETE'
         if (isIdempotent && attempt < 2) {
           log('Timeout — retrying once...')
-          return doFetch(method, path, query, body, attempt + 1)
+          return doFetch(method, path, query, body, attempt + 1, remintAttempted)
         }
         throw new TimeoutError()
       }
@@ -169,12 +254,19 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
 
     log(`→ ${response.status}`)
 
-    if (response.status === 401) throw new AuthExpired()
+    if (response.status === 401) {
+      // In GitHub Actions, the OIDC JWT (~5 min) can expire mid-push:
+      // re-mint it once and retry the request with the fresh token.
+      if (!remintAttempted && canRemintOidc()) {
+        await remintOidcToken()
+        return doFetch(method, path, query, body, attempt, true)
+      }
+      throw new AuthExpired()
+    }
     if (response.status === 403) throw new ForbiddenError(path)
     if (response.status === 404) throw new NotFoundError(path)
     if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
-    if (response.status >= 400 && response.status < 500) throw new ServerError(response.status)
-    if (response.status >= 500) throw new ServerError(response.status)
+    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
 
     // Parse body — server wraps all responses in { data: ... } via apiOk()
     const text = await response.text()
@@ -201,13 +293,15 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     path: string,
     data: Buffer,
     contentType: string,
+    remintAttempted = false,
   ): Promise<unknown> {
     const url = buildUrl(path)
-    const bearer = await resolveBearer(config)
+    const bearer = await resolveRequestBearer()
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${bearer}`,
       Accept: 'application/json',
+      'X-Margins-Client': CLIENT_HEADER,
       'Content-Type': contentType,
     }
 
@@ -233,12 +327,17 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
 
     log(`→ ${response.status}`)
 
-    if (response.status === 401) throw new AuthExpired()
+    if (response.status === 401) {
+      if (!remintAttempted && canRemintOidc()) {
+        await remintOidcToken()
+        return doFetchRaw(method, path, data, contentType, true)
+      }
+      throw new AuthExpired()
+    }
     if (response.status === 403) throw new ForbiddenError(path)
     if (response.status === 404) throw new NotFoundError(path)
     if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
-    if (response.status >= 400 && response.status < 500) throw new ServerError(response.status)
-    if (response.status >= 500) throw new ServerError(response.status)
+    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
 
     const text = await response.text()
     if (!text) return {}
