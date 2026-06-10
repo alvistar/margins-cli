@@ -21,6 +21,7 @@ const REFRESH_BUFFER_MS = 30_000
 export interface ApiClient {
   get(path: string, query?: Record<string, string>): Promise<unknown>
   post(path: string, body?: unknown): Promise<unknown>
+  put(path: string, body?: unknown): Promise<unknown>
   patch(path: string, body?: unknown): Promise<unknown>
   delete(path: string): Promise<unknown>
   /** Upload raw binary data (for CAS blob uploads). Returns parsed JSON response. */
@@ -356,6 +357,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
   return {
     get: (path, query) => doFetch('GET', path, query),
     post: (path, body) => doFetch('POST', path, undefined, body),
+    put: (path, body) => doFetch('PUT', path, undefined, body),
     patch: (path, body) => doFetch('PATCH', path, undefined, body),
     delete: (path) => doFetch('DELETE', path),
     putRaw: (path, data, contentType) => doFetchRaw('PUT', path, data, contentType),

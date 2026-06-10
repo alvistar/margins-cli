@@ -284,6 +284,26 @@ program
     handleCompletions(program, opts.shell)
   })
 
+// ─── install command ──────────────────────────────────────────────────────────
+
+program
+  .command('install [target]')
+  .description('Onboard a repo to credentialless sync: workspace, trust binding, workflow PR')
+  .option('--org <org>', 'Install across all repos in a GitHub org (or user account)')
+  .option('--include <glob...>', 'With --org: only repos matching these globs')
+  .option('--exclude <glob...>', 'With --org: skip repos matching these globs')
+  .option('--dry-run', 'Print intended actions without writing anything')
+  .action(async (target, opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleInstall } = await import('./commands/install.js')
+    await handleInstall(cfg, target, {
+      org: opts.org,
+      include: opts.include,
+      exclude: opts.exclude,
+      dryRun: opts.dryRun,
+    })
+  })
+
 // ─── install-hook command ────────────────────────────────────────────────────
 
 program
