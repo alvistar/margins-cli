@@ -17,10 +17,8 @@ import { ConflictError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
-import { globMarkdown } from './workspace/push.js'
 import { casSync } from '../lib/cas-sync.js'
-import { scanImagesInMarkdown, mimeFromPath } from '../lib/image-scanner.js'
-import { loadIgnoreFilter } from '../lib/marginsignore.js'
+import { collectSyncFiles } from '../lib/collect-sync-files.js'
 
 interface MarginsJson {
   workspace_slug: string
@@ -168,39 +166,17 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
   }
 
-  // Step 5-6: Glob and push .md files via CAS protocol
-  const allMdFiles = globMarkdown(dir)
-  const ignoreFilter = loadIgnoreFilter(dir)
-  const mdFiles = allMdFiles.filter(ignoreFilter)
+  // Step 5-6: Collect and push .md files (+ referenced images) via CAS protocol
+  const { files: syncFiles, mdCount } = collectSyncFiles(dir)
+  const mdFiles = syncFiles
+    .filter(f => f.contentType === 'text/markdown')
+    .map(f => f.path)
 
   let pushResult = { added: 0, changed: 0, skipped: 0 }
 
-  if (mdFiles.length > 0) {
+  if (mdCount > 0) {
     if (!isJson) {
-      p.log.info(`Pushing ${mdFiles.length} .md file(s) via CAS...`)
-    }
-
-    const syncFiles: Array<{ path: string; content: Buffer; contentType: string }> = []
-    const seenPaths = new Set<string>()
-
-    for (const relPath of mdFiles) {
-      const content = fs.readFileSync(path.join(dir, relPath))
-      syncFiles.push({ path: relPath, content, contentType: 'text/markdown' })
-      seenPaths.add(relPath)
-
-      const mdText = content.toString('utf-8')
-      const imagePaths = scanImagesInMarkdown(mdText, relPath, dir)
-      for (const imgPath of imagePaths) {
-        if (seenPaths.has(imgPath)) continue
-        const imgFull = path.join(dir, imgPath)
-        if (!fs.existsSync(imgFull)) continue
-        const mime = mimeFromPath(imgPath)
-        if (!mime) continue
-        try {
-          syncFiles.push({ path: imgPath, content: fs.readFileSync(imgFull), contentType: mime })
-          seenPaths.add(imgPath)
-        } catch { /* skip unreadable images */ }
-      }
+      p.log.info(`Pushing ${mdCount} .md file(s) via CAS...`)
     }
 
     const casResult = await casSync(
