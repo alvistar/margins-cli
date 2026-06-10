@@ -27,7 +27,9 @@ export const program = new Command()
 
 // ─── Auth hook ────────────────────────────────────────────────────────────────
 
-const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook'])
+// 'audit' is exempt because gh-only mode is supported: without margins
+// credentials it still reports missing/stale-pin/over-cap (drift is skipped).
+const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit'])
 // Subcommands that are local-only and don't need server auth
 const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
 
@@ -301,6 +303,26 @@ program
       include: opts.include,
       exclude: opts.exclude,
       dryRun: opts.dryRun,
+    })
+  })
+
+// ─── audit command ────────────────────────────────────────────────────────────
+
+program
+  .command('audit [target]')
+  .description('Report sync coverage: missing workflows, stale action pins, binding drift, over-cap repos')
+  .option('--org <org>', 'Audit all repos in a GitHub org (or user account)')
+  .option('--include <glob...>', 'With --org: only repos matching these globs')
+  .option('--exclude <glob...>', 'With --org: skip repos matching these globs')
+  .option('--csv', 'Output as CSV')
+  .action(async (target, opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleAudit } = await import('./commands/audit.js')
+    await handleAudit(cfg, target, {
+      org: opts.org,
+      include: opts.include,
+      exclude: opts.exclude,
+      csv: opts.csv,
     })
   })
 
