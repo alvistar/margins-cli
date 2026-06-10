@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync, type StdioOptions } from 'node:child_process'
 import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
@@ -7,25 +7,10 @@ import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import { casSync, type CasSyncResult } from '../../lib/cas-sync.js'
-import { scanImagesInMarkdown, mimeFromPath } from '../../lib/image-scanner.js'
-import { loadIgnoreFilter } from '../../lib/marginsignore.js'
+import { collectSyncFiles } from '../../lib/collect-sync-files.js'
 
-/** Recursively find all .md files in a directory, skipping symlinks. */
-export function globMarkdown(dir: string, base: string = ''): string[] {
-  const results: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-    if (entry.isSymbolicLink()) continue
-    const rel = base ? join(base, entry.name) : entry.name
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      results.push(...globMarkdown(full, rel))
-    } else if (entry.name.endsWith('.md')) {
-      results.push(rel.replace(/\\/g, '/'))
-    }
-  }
-  return results.sort()
-}
+// Re-exported for backwards compatibility — implementation moved to lib.
+export { globMarkdown } from '../../lib/collect-sync-files.js'
 
 // ─── Git helpers ─────────────────────────────────────────────────────────────
 
@@ -101,40 +86,10 @@ export async function handlePush(
     }
   }
 
-  // Glob markdown files and apply .marginsignore filter
-  const allMdFiles = globMarkdown(cwd)
-  const ignoreFilter = loadIgnoreFilter(cwd)
-  const mdFiles = allMdFiles.filter(ignoreFilter)
-  if (mdFiles.length === 0) {
+  // Collect markdown files + referenced images (.marginsignore applied)
+  const { files: syncFiles, mdCount } = collectSyncFiles(cwd)
+  if (mdCount === 0) {
     throw new ValidationError(`No .md files found in ${cwd}`)
-  }
-
-  // Build file list: markdown files + referenced images
-  const syncFiles: Array<{ path: string; content: Buffer; contentType: string }> = []
-  const seenPaths = new Set<string>()
-
-  for (const relPath of mdFiles) {
-    const content = readFileSync(join(cwd, relPath))
-    syncFiles.push({ path: relPath, content, contentType: 'text/markdown' })
-    seenPaths.add(relPath)
-
-    // Scan for image references
-    const mdText = content.toString('utf-8')
-    const imagePaths = scanImagesInMarkdown(mdText, relPath, cwd)
-    for (const imgPath of imagePaths) {
-      if (seenPaths.has(imgPath)) continue
-      const imgFull = join(cwd, imgPath)
-      if (!existsSync(imgFull)) continue
-      const mime = mimeFromPath(imgPath)
-      if (!mime) continue
-      try {
-        const imgContent = readFileSync(imgFull)
-        syncFiles.push({ path: imgPath, content: imgContent, contentType: mime })
-        seenPaths.add(imgPath)
-      } catch {
-        // Skip unreadable images
-      }
-    }
   }
 
   // Detect git branch (SHAs are computed inside casSync — synthetic
