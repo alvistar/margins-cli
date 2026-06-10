@@ -14,6 +14,15 @@ describe('maskKey', () => {
   it('handles undefined', () => {
     expect(maskKey(undefined)).toBe('(not set)')
   })
+
+  it('fully masks JWT-shaped tokens (two dots) instead of slicing', () => {
+    const jwt = `${'a'.repeat(40)}.${'b'.repeat(300)}.${'c'.repeat(80)}`
+    expect(maskKey(jwt)).toBe('JWT[masked]')
+  })
+
+  it('keeps slice behavior for mrgn_ keys (no dots)', () => {
+    expect(maskKey('mrgn_abcdefghijklmnop')).toBe('mrgn_...nop')
+  })
 })
 
 describe('formatJson', () => {

@@ -1,0 +1,8 @@
+{
+  "description": "Shared test vector for the synthetic commit SHA spec. Must stay byte-identical to margins-desktop src-tauri/src/sync/cas_sync.rs synthetic_commit_sha: sha256 over sorted entries of `path\\thash\\n` (sorted by path, plain byte order). File hashes are sha256('x') and sha256('y').",
+  "manifest": {
+    "docs/nested.md": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    "readme.md": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa"
+  },
+  "expectedSyntheticSha": "da5a2fbd776a6d167b401c0eca98be059f0a1d94ec283e2e17fb3efa55d60238"
+}

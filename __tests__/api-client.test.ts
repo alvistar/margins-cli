@@ -121,6 +121,141 @@ describe('api client — basic auth', () => {
   })
 })
 
+describe('api client — X-Margins-Client header', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('attaches X-Margins-Client: margins-cli/<version> to JSON requests', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+    await createApiClient(baseConfig()).get('/api/workspaces')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'X-Margins-Client': expect.stringMatching(/^margins-cli\/\d+\.\d+\.\d+$/),
+        }),
+      }),
+    )
+  })
+
+  it('attaches X-Margins-Client to raw binary uploads', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+    await createApiClient(baseConfig()).putRaw('/api/blob', Buffer.from('x'), 'text/markdown')
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          'X-Margins-Client': expect.stringMatching(/^margins-cli\/\d+\.\d+\.\d+$/),
+        }),
+      }),
+    )
+  })
+})
+
+describe('api client — GitHub Actions OIDC token', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+    vi.stubEnv('MARGINS_CONFIG_DIR', path.join(os.tmpdir(), 'margins-api-client-test'))
+  })
+
+  it('MARGINS_OIDC_TOKEN takes precedence over the stored api key', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.oidc.token')
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+
+    await createApiClient(baseConfig()).get('/api/workspaces')
+
+    expect(mockFetch.mock.calls[0]?.[1]?.headers?.Authorization).toBe('Bearer gh.oidc.token')
+  })
+
+  it('MARGINS_OIDC_TOKEN takes precedence over a Keycloak session', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.oidc.token')
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+
+    await createApiClient(expiredKeycloakConfig()).get('/api/workspaces')
+
+    // No discovery/refresh round-trips — straight to the API with the OIDC token
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch.mock.calls[0]?.[1]?.headers?.Authorization).toBe('Bearer gh.oidc.token')
+  })
+
+  it('re-mints the OIDC token once on 401 and retries with the fresh token', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.old.token')
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_URL', 'https://token.actions.example/token?param=1')
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'runner-req-token')
+
+    const fetchMock = vi.fn()
+      // 1. API request with stale token → 401
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      // 2. Token mint endpoint → fresh token
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: 'gh.new.token' }), { status: 200 }))
+      // 3. Retried API request → 200
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createApiClient(baseConfig()).get('/api/workspaces')
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    // Mint request: $URL&audience=<server origin> with the runner request token
+    const mintCall = fetchMock.mock.calls[1]
+    expect(mintCall?.[0]).toBe(
+      'https://token.actions.example/token?param=1&audience=https%3A%2F%2Fmargins.example.com',
+    )
+    expect(mintCall?.[1]?.headers?.Authorization).toBe('Bearer runner-req-token')
+    // Retry uses the freshly minted token
+    expect(fetchMock.mock.calls[2]?.[1]?.headers?.Authorization).toBe('Bearer gh.new.token')
+  })
+
+  it('re-mints at most once: a second 401 after the retry throws AuthExpired', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.old.token')
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_URL', 'https://token.actions.example/token?param=1')
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'runner-req-token')
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: 'gh.new.token' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createApiClient(baseConfig()).get('/api/workspaces'))
+      .rejects.toBeInstanceOf(AuthExpired)
+    expect(fetchMock).toHaveBeenCalledTimes(3) // no second mint attempt
+  })
+
+  it('401 without the Actions token-request env stays AuthExpired (no mint attempt)', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.oidc.token')
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(createApiClient(baseConfig()).get('/api/workspaces'))
+      .rejects.toBeInstanceOf(AuthExpired)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('registers the OIDC token with Actions log masking before the first request', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'gh.oidc.token')
+    vi.stubEnv('GITHUB_ACTIONS', 'true')
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    // Fresh Response per call — a single Response body can only be read once
+    const mockFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+
+    const client = createApiClient(baseConfig())
+    await client.get('/api/workspaces')
+    await client.get('/api/workspaces')
+
+    const masks = stdoutSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.startsWith('::add-mask::'))
+    expect(masks).toEqual(['::add-mask::gh.oidc.token\n']) // once, not per request
+    stdoutSpy.mockRestore()
+  })
+})
+
 describe('api client — Keycloak token refresh', () => {
   afterEach(() => { vi.unstubAllGlobals(); _resetStore() })
 

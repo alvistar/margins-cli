@@ -42,22 +42,6 @@ function gitBranch(cwd: string): string {
   }
 }
 
-function gitCommitSha(cwd: string): string {
-  try {
-    return execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
-  } catch {
-    return 'unknown'
-  }
-}
-
-function gitParentSha(cwd: string): string | null {
-  try {
-    return execSync('git rev-parse HEAD~1', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
-  } catch {
-    return null  // first commit or not a git repo
-  }
-}
-
 // ─── Push handler ────────────────────────────────────────────────────────────
 
 export async function handlePush(
@@ -153,18 +137,15 @@ export async function handlePush(
     }
   }
 
-  // Detect git info
+  // Detect git branch (SHAs are computed inside casSync — synthetic
+  // manifest hash + server headSha, never git SHAs)
   const branch = gitBranch(cwd)
-  const commitSha = gitCommitSha(cwd)
-  const parentSha = gitParentSha(cwd)
 
   // Sync via CAS protocol
   const result: CasSyncResult = await casSync(
     client,
     workspaceId,
     branch,
-    commitSha,
-    parentSha,
     syncFiles,
   )
 
