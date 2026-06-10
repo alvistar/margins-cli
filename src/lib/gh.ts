@@ -134,6 +134,54 @@ export async function getFileSha(fullName: string, path: string, ref: string): P
   }
 }
 
+/** Decoded file content at `path` on `ref`, or null if absent. */
+export async function getFileContent(
+  fullName: string,
+  path: string,
+  ref: string,
+): Promise<string | null> {
+  try {
+    const data = await ghApiJson(
+      `repos/${fullName}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+    ) as { content?: string }
+    if (typeof data.content !== 'string') return null
+    return Buffer.from(data.content, 'base64').toString('utf-8')
+  } catch (err) {
+    if (err instanceof GhError && err.status === 404) return null
+    throw err
+  }
+}
+
+/** Tag name of the latest published release, or null if the repo has none. */
+export async function getLatestReleaseTag(fullName: string): Promise<string | null> {
+  try {
+    const data = await ghApiJson(`repos/${fullName}/releases/latest`) as { tag_name: string }
+    return data.tag_name
+  } catch (err) {
+    if (err instanceof GhError && err.status === 404) return null
+    throw err
+  }
+}
+
+/** Tag names, in the order the API returns them (most recent first). */
+export async function listTags(fullName: string): Promise<string[]> {
+  const data = await ghApiJson(`repos/${fullName}/tags`) as Array<{ name: string }>
+  return data.map((t) => t.name)
+}
+
+/** SHA a tag ref points at (commit, or tag object for annotated tags); null if absent. */
+export async function getTagSha(fullName: string, tag: string): Promise<string | null> {
+  try {
+    const data = await ghApiJson(
+      `repos/${fullName}/git/ref/${encodeURIComponent(`tags/${tag}`)}`,
+    ) as { object: { sha: string } }
+    return data.object.sha
+  } catch (err) {
+    if (err instanceof GhError && err.status === 404) return null
+    throw err
+  }
+}
+
 /** Commit SHA a branch points at. */
 export async function getBranchSha(fullName: string, branch: string): Promise<string> {
   const data = await ghApiJson(

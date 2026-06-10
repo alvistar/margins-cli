@@ -15,18 +15,10 @@ import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
-import { MAX_BLOB_SIZE } from '../lib/collect-sync-files.js'
+import { checkRepoCaps } from '../lib/audit-checks.js'
 import { stampTemplate, WORKFLOW_PATH } from '../templates/margins-sync.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
-
-// ─── Caps (server-side; pre-checked here so repos fail before a PR opens) ────
-
-/** Server MAX_MANIFEST_FILES default — repos over this are skipped. */
-export const MAX_MANIFEST_FILES = 1000
-
-/** Extensions the sync workflow pushes (md + referenced-image types). */
-const SYNC_EXTENSIONS = /\.(md|png|jpg|jpeg|svg|gif|webp)$/i
 
 /** Branch the workflow PR is opened from. */
 const INSTALL_BRANCH = 'margins/install-sync'
@@ -158,19 +150,12 @@ async function processRepo(
   const fullName = repo.fullName
   const repoUrl = `https://github.com/${fullName}`
 
-  // ── b. Cap pre-check: shallow tree listing, count syncable files + sizes ──
-  const tree = await gh.listTree(fullName, repo.defaultBranch)
-  const syncable = tree.entries.filter((e) => SYNC_EXTENSIONS.test(e.path))
-  if (syncable.length > MAX_MANIFEST_FILES || tree.truncated) {
-    return result('skipped',
-      `over server cap: ${tree.truncated ? 'tree listing truncated' : `${syncable.length} syncable files`} (max ${MAX_MANIFEST_FILES})`)
+  // ── b. Cap pre-check: shared with `margins audit` (src/lib/audit-checks) ──
+  const caps = await checkRepoCaps(fullName, repo.defaultBranch)
+  if (!caps.ok) {
+    return result('skipped', caps.reason)
   }
-  const oversized = syncable.filter((e) => (e.size ?? 0) > MAX_BLOB_SIZE)
-  if (oversized.length > 0) {
-    return result('skipped',
-      `over server cap: ${oversized.length} blob(s) over ${MAX_BLOB_SIZE} bytes (e.g. ${oversized[0]!.path})`)
-  }
-  actions.push(`pre-check ok (${syncable.length} syncable files)`)
+  actions.push(`pre-check ok (${caps.syncableCount} syncable files)`)
 
   // ── c. Workspace: look up by repo URL, create if absent ───────────────────
   const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
