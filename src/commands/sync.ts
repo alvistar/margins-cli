@@ -167,10 +167,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   }
 
   // Step 5-6: Collect and push .md files (+ referenced images) via CAS protocol
-  const { files: syncFiles, mdCount } = collectSyncFiles(dir)
-  const mdFiles = syncFiles
-    .filter(f => f.contentType === 'text/markdown')
-    .map(f => f.path)
+  const { files: syncFiles, mdCount, mdPaths: mdFiles } = collectSyncFiles(dir)
 
   let pushResult = { added: 0, changed: 0, skipped: 0 }
 

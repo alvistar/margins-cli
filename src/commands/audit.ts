@@ -12,16 +12,21 @@
  */
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
-import { ValidationError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
-import { checkRepoCaps } from '../lib/audit-checks.js'
+import {
+  checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
+} from '../lib/audit-checks.js'
+import { resolveRepoTargets } from '../lib/repo-targets.js'
+import { poolMap } from '../lib/pool.js'
 import { WORKFLOW_PATH } from '../templates/margins-sync.js'
-import { normalizeTarget, filterRepos } from './install.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
 
 /** The public action repo whose releases define "latest". */
 export const ACTION_REPO = 'alvistar/margins-sync-action'
+
+/** Repos audited concurrently per run (reads only — no write-safety concern). */
+const AUDIT_CONCURRENCY = 5
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,22 +45,10 @@ export interface AuditRow {
   detail: string
 }
 
-interface WorkspaceListItem {
-  id: string
-  slug: string
-  name: string
-  repoUrl: string | null
-  syncMode: 'server' | 'client'
-  /** Default branch the workspace syncs from (when the server reports it). */
-  branch?: string | null
-}
-
-interface Binding {
-  githubRepoId: number
-  repositoryOwnerId: number
-  boundRepoName: string
-  enforcedAt: string | null
-  override: boolean
+/** Margins-side drift-check context; null when running gh-only (no margins auth). */
+interface DriftContext {
+  client: ApiClient
+  workspaces: WorkspaceListItem[]
 }
 
 interface LatestAction {
@@ -135,14 +128,10 @@ export function evaluatePin(ref: string, latest: LatestAction | null): { stale: 
  * values. Returns drift descriptions (empty = no drift) and side notes.
  */
 async function checkBindingDrift(
-  client: ApiClient,
-  workspaces: WorkspaceListItem[],
+  { client, workspaces }: DriftContext,
   repo: gh.RepoInfo,
 ): Promise<{ drifts: string[]; notes: string[] }> {
-  const repoUrl = `https://github.com/${repo.fullName}`.toLowerCase()
-  const workspace = workspaces.find(
-    (w) => w.repoUrl?.replace(/\.git$/, '').toLowerCase() === repoUrl,
-  )
+  const workspace = findWorkspaceByRepoUrl(workspaces, repo.fullName)
   if (!workspace) return { drifts: [], notes: ['no margins workspace found for repo'] }
 
   let binding: Binding | null
@@ -173,8 +162,7 @@ async function checkBindingDrift(
 // ─── Per-repo audit ───────────────────────────────────────────────────────────
 
 async function auditRepo(
-  client: ApiClient | null,
-  workspaces: WorkspaceListItem[] | null,
+  drift: DriftContext | null,
   target: string,
   latest: LatestAction | null,
 ): Promise<AuditRow> {
@@ -186,7 +174,17 @@ async function auditRepo(
     throw err
   }
 
-  const workflow = await gh.getFileContent(repo.fullName, WORKFLOW_PATH, repo.defaultBranch)
+  // Drift and cap checks are independent — run them concurrently.
+  const [driftResult, caps] = await Promise.all([
+    drift ? checkBindingDrift(drift, repo) : null,
+    checkRepoCaps(repo.fullName, repo.defaultBranch),
+  ])
+
+  // Workflow content is only fetched when the tree listing shows the file —
+  // repos without it skip the contents call entirely.
+  const workflow = caps.paths.has(WORKFLOW_PATH)
+    ? await gh.getFileContent(repo.fullName, WORKFLOW_PATH, repo.defaultBranch)
+    : null
   if (workflow === null) {
     return { repo: repo.fullName, status: 'missing', detail: `no ${WORKFLOW_PATH} on ${repo.defaultBranch}` }
   }
@@ -206,14 +204,12 @@ async function auditRepo(
   }
 
   // ── Binding drift (margins auth only) ──
-  if (client && workspaces) {
-    const { drifts, notes: driftNotes } = await checkBindingDrift(client, workspaces, repo)
-    for (const d of drifts) findings.push({ status: 'binding-drift', detail: d })
-    notes.push(...driftNotes)
+  if (driftResult) {
+    for (const d of driftResult.drifts) findings.push({ status: 'binding-drift', detail: d })
+    notes.push(...driftResult.notes)
   }
 
   // ── Server caps ──
-  const caps = await checkRepoCaps(repo.fullName, repo.defaultBranch)
   if (caps.ok) notes.push(`${caps.syncableCount} syncable files`)
   else findings.push({ status: 'over-cap', detail: caps.reason! })
 
@@ -245,49 +241,47 @@ export async function handleAudit(
   target: string | undefined,
   opts: AuditOpts,
 ): Promise<void> {
-  if (!target && !opts.org) {
-    throw new ValidationError('Specify a repo (owner/repo or GitHub URL) or --org <org>')
-  }
-
   // Margins auth is optional: without it, drift checks are skipped (noted).
   const hasMarginsAuth = Boolean(cfg.apiKey || (cfg.refreshToken && cfg.keycloakIssuer))
   const client = hasMarginsAuth ? createApiClient(cfg) : null
 
-  let repos: string[]
-  if (opts.org) {
-    repos = filterRepos(await gh.listOrgRepos(opts.org), opts.include, opts.exclude)
-    if (repos.length === 0) {
-      console.log(`No repos matched in ${opts.org}.`)
-      return
-    }
-  } else {
-    repos = [normalizeTarget(target!)]
-  }
-
-  const latest = await resolveLatestAction()
-
-  // Workspace list fetched once for the whole run. A failure here degrades to
-  // gh-only mode (drift skipped) rather than aborting the report.
-  let workspaces: WorkspaceListItem[] | null = null
+  // Workspace-list failures degrade to gh-only mode (drift skipped) rather
+  // than aborting the report.
   let driftSkippedReason: string | null = hasMarginsAuth ? null : 'no margins auth'
-  if (client) {
+  const fetchWorkspaces = async (): Promise<WorkspaceListItem[] | null> => {
+    if (!client) return null
     try {
-      workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+      return await client.get('/api/workspaces') as WorkspaceListItem[]
     } catch (err) {
       driftSkippedReason = err instanceof Error ? err.message : String(err)
+      return null
     }
   }
 
-  // SERIALIZED — per-repo failures become "error" rows; the run continues.
-  const rows: AuditRow[] = []
-  for (const repo of repos) {
+  // The three startup lookups are independent — run them concurrently.
+  const [latest, workspaces, repos] = await Promise.all([
+    resolveLatestAction(),
+    fetchWorkspaces(),
+    resolveRepoTargets(target, opts),
+  ])
+
+  if (repos.length === 0) {
+    console.log(`No repos matched in ${opts.org}.`)
+    return
+  }
+
+  const drift: DriftContext | null = client && workspaces ? { client, workspaces } : null
+
+  // Bounded concurrency (reads only) — per-repo failures become "error" rows;
+  // the run continues, and rows stay in input order.
+  const rows: AuditRow[] = await poolMap(repos, AUDIT_CONCURRENCY, async (repo) => {
     try {
-      rows.push(await auditRepo(workspaces ? client : null, workspaces, repo, latest))
+      return await auditRepo(drift, repo, latest)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      rows.push({ repo, status: 'error', detail: message })
+      return { repo, status: 'error' as const, detail: message }
     }
-  }
+  })
 
   const driftNote = driftSkippedReason ? `binding checks skipped (${driftSkippedReason})` : null
 

@@ -13,9 +13,12 @@
  */
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
-import { ConflictError, ValidationError } from '../lib/errors.js'
+import { ConflictError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
-import { checkRepoCaps } from '../lib/audit-checks.js'
+import {
+  checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
+} from '../lib/audit-checks.js'
+import { resolveRepoTargets } from '../lib/repo-targets.js'
 import { stampTemplate, WORKFLOW_PATH } from '../templates/margins-sync.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
@@ -47,60 +50,6 @@ interface RepoResult {
   reason?: string
 }
 
-interface WorkspaceListItem {
-  id: string
-  slug: string
-  name: string
-  repoUrl: string | null
-  syncMode: 'server' | 'client'
-}
-
-interface Binding {
-  githubRepoId: number
-  repositoryOwnerId: number
-  boundRepoName: string
-  enforcedAt: string | null
-  override: boolean
-}
-
-// ─── Target normalization ─────────────────────────────────────────────────────
-
-/** Normalize "owner/repo", https URL, or ssh remote to "owner/repo". */
-export function normalizeTarget(target: string): string {
-  let t = target.trim().replace(/\.git$/, '')
-  const httpsMatch = /^https?:\/\/github\.com\/([^/]+\/[^/]+)/.exec(t)
-  if (httpsMatch) t = httpsMatch[1]!
-  const sshMatch = /^git@github\.com:([^/]+\/[^/]+)$/.exec(t)
-  if (sshMatch) t = sshMatch[1]!
-  if (!/^[^/\s]+\/[^/\s]+$/.test(t)) {
-    throw new ValidationError(`Invalid repository target: ${target} (expected owner/repo or a GitHub URL)`)
-  }
-  return t
-}
-
-// ─── Glob filtering (--include / --exclude) ───────────────────────────────────
-
-function globToRegex(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
-  return new RegExp(`^${escaped}$`)
-}
-
-/** Match against both the full name ("owner/repo") and the bare repo name. */
-function matchesAny(fullName: string, globs: string[]): boolean {
-  const short = fullName.split('/')[1] ?? fullName
-  return globs.some((g) => {
-    const re = globToRegex(g)
-    return re.test(fullName) || re.test(short)
-  })
-}
-
-export function filterRepos(repos: string[], include?: string[], exclude?: string[]): string[] {
-  let result = repos
-  if (include && include.length > 0) result = result.filter((r) => matchesAny(r, include))
-  if (exclude && exclude.length > 0) result = result.filter((r) => !matchesAny(r, exclude))
-  return result
-}
-
 // ─── PR body ──────────────────────────────────────────────────────────────────
 
 function prBody(fullName: string, workspaceId: string, serverUrl: string): string {
@@ -129,6 +78,8 @@ Merging this PR activates sync. Until the first workflow push succeeds, manual
 async function processRepo(
   client: ApiClient,
   cfg: ResolvedConfig,
+  /** Workspace list snapshot, fetched once per run; created workspaces are appended. */
+  workspaces: WorkspaceListItem[],
   target: string,
   dryRun: boolean,
 ): Promise<RepoResult> {
@@ -158,10 +109,7 @@ async function processRepo(
   actions.push(`pre-check ok (${caps.syncableCount} syncable files)`)
 
   // ── c. Workspace: look up by repo URL, create if absent ───────────────────
-  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
-  let workspace = workspaces.find(
-    (w) => w.repoUrl?.replace(/\.git$/, '').toLowerCase() === repoUrl.toLowerCase(),
-  )
+  const workspace = findWorkspaceByRepoUrl(workspaces, fullName)
   if (workspace && workspace.syncMode !== 'client') {
     return result('skipped',
       `workspace ${workspace.slug} uses syncMode "${workspace.syncMode}" — migrate it to client sync first (never silently bound)`)
@@ -185,15 +133,19 @@ async function processRepo(
     }) as { workspace: { id: string; slug: string } } | { id: string; slug: string }
     const ws = 'workspace' in created ? created.workspace : created
     workspaceId = ws.id
+    // Keep the per-run snapshot current so a later repo (or rerun logic)
+    // sees the workspace we just created.
+    workspaces.push({ id: ws.id, slug: ws.slug, name, repoUrl, syncMode: 'client' })
     actions.push(`workspace created (${ws.slug})`)
   }
 
   // ── d. Trust binding: GET, then PUT if absent; verify if present ──────────
+  const wouldEnableBinding = `would enable binding (repoId ${repo.id}, ownerId ${repo.ownerId}, ${fullName})`
   if (workspace || !dryRun) {
     const { binding } = await client.get(`/api/workspaces/${workspaceId}/binding`) as { binding: Binding | null }
     if (binding === null) {
       if (dryRun) {
-        actions.push(`would enable binding (repoId ${repo.id}, ownerId ${repo.ownerId}, ${fullName})`)
+        actions.push(wouldEnableBinding)
       } else {
         try {
           await client.put(`/api/workspaces/${workspaceId}/binding`, {
@@ -222,11 +174,12 @@ async function processRepo(
   } else {
     // dry-run with no existing workspace: binding GET would 404 on the
     // not-yet-created workspace — report intent only, zero reads on fakes.
-    actions.push(`would enable binding (repoId ${repo.id}, ownerId ${repo.ownerId}, ${fullName})`)
+    actions.push(wouldEnableBinding)
   }
 
   // ── e. Workflow PR: skip if the file is already on the default branch ─────
-  if (await gh.fileExists(fullName, WORKFLOW_PATH, repo.defaultBranch)) {
+  // The cap pre-check's tree listing already tells us — no extra contents call.
+  if (caps.paths.has(WORKFLOW_PATH)) {
     actions.push('workflow already present')
     return result('installed')
   }
@@ -243,13 +196,19 @@ async function processRepo(
   }
 
   try {
+    let branchCreated = false
     if (!(await gh.branchExists(fullName, INSTALL_BRANCH))) {
       const baseSha = await gh.getBranchSha(fullName, repo.defaultBranch)
       await gh.createBranch(fullName, INSTALL_BRANCH, baseSha)
       actions.push(`branch ${INSTALL_BRANCH} created`)
+      branchCreated = true
     }
     // Idempotent commit: only write the file if it's not already on the branch.
-    const existingSha = await gh.getFileSha(fullName, WORKFLOW_PATH, INSTALL_BRANCH)
+    // A branch created this run was cut from a default branch without the file
+    // (step e), so the existence probe is skipped.
+    const existingSha = branchCreated
+      ? null
+      : await gh.getFileSha(fullName, WORKFLOW_PATH, INSTALL_BRANCH)
     if (existingSha === null) {
       await gh.putFile(fullName, {
         path: WORKFLOW_PATH,
@@ -291,25 +250,19 @@ export async function handleInstall(
   target: string | undefined,
   opts: InstallOpts,
 ): Promise<void> {
-  if (!target && !opts.org) {
-    throw new ValidationError('Specify a repo (owner/repo or GitHub URL) or --org <org>')
-  }
-
   const dryRun = opts.dryRun ?? false
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const client = createApiClient(cfg)
 
   // Resolve the repo list: single target, or org listing with include/exclude.
-  let repos: string[]
-  if (opts.org) {
-    repos = filterRepos(await gh.listOrgRepos(opts.org), opts.include, opts.exclude)
-    if (repos.length === 0) {
-      console.log(`No repos matched in ${opts.org}.`)
-      return
-    }
-  } else {
-    repos = [normalizeTarget(target!)]
+  const repos = await resolveRepoTargets(target, opts)
+  if (repos.length === 0) {
+    console.log(`No repos matched in ${opts.org}.`)
+    return
   }
+
+  // Workspace list fetched once per run; processRepo appends what it creates.
+  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
 
   // SERIALIZED processing — no concurrency, so PR creation honors rate limits
   // and per-repo failures never interleave.
@@ -318,7 +271,7 @@ export async function handleInstall(
     let rateLimitRetried = false
     for (;;) {
       try {
-        results.push(await processRepo(client, cfg, repo, dryRun))
+        results.push(await processRepo(client, cfg, workspaces, repo, dryRun))
       } catch (err) {
         // 403 rate limit from gh: wait out Retry-After once, then retry the repo.
         if (err instanceof GhError && err.status === 403 && !rateLimitRetried) {

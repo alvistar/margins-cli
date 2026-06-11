@@ -1,22 +1,15 @@
 import { Command, Option } from '@commander-js/extra-typings'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
 import { resolveConfig, type ResolvedConfig } from './lib/config.js'
 import { AuthMissing } from './lib/errors.js'
 import { formatError } from './lib/output.js'
-
-// ─── Package version ──────────────────────────────────────────────────────────
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as { version: string }
+import { CLI_VERSION } from './lib/version.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
 
 export const program = new Command()
   .name('margins')
   .description('CLI for Margins — review layer for Markdown in Git')
-  .version(pkg.version, '-v, --version')
+  .version(CLI_VERSION, '-v, --version')
   .option('--json', 'Output as JSON (for scripting/agents)')
   .option('--verbose', 'Debug logging')
   .option('--no-color', 'Disable colors')

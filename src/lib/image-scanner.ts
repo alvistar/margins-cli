@@ -23,6 +23,13 @@ const MIME_TYPES: Record<string, string> = {
   '.tif': 'image/tiff',
 }
 
+/**
+ * Image extensions (without the leading dot) the sync pipeline uploads —
+ * the single source of truth, derived from {@link MIME_TYPES}. Anything with
+ * a recognized MIME type here is collected and pushed.
+ */
+export const SYNCABLE_IMAGE_EXTENSIONS: string[] = Object.keys(MIME_TYPES).map((ext) => ext.slice(1))
+
 export function mimeFromPath(filePath: string): string | null {
   const dot = filePath.lastIndexOf('.')
   if (dot === -1) return null
