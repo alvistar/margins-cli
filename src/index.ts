@@ -3,6 +3,7 @@ import { resolveConfig, type ResolvedConfig } from './lib/config.js'
 import { AuthMissing } from './lib/errors.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
+import { hasOidcAuth } from './lib/auth-env.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'inst
 // Subcommands that are local-only and don't need server auth
 const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
 
+
 program.hook('preAction', (_thisCommand, actionCommand) => {
   // Commander passes (rootProgram, leafCommand) — use actionCommand (the leaf)
   // to identify which command group is running. Walk up to the top-level subcommand
@@ -46,7 +48,7 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
     noColor: !(globalOpts.color as boolean | undefined ?? true),
   })
 
-  if (!cfg.apiKey) {
+  if (!cfg.apiKey && !hasOidcAuth()) {
     const err = new AuthMissing()
     process.stderr.write(formatError(err, cfg.json) + '\n')
     process.exit(1)

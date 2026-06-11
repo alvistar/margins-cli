@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-B6q9EG-b.mjs";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as p from "@clack/prompts";
+import { r as R } from "./dist-zyKt7qIr.mjs";
+import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-BjSteoiv.mjs";
+import * as path$1 from "node:path";
+import * as fs$1 from "node:fs";
 
 //#region src/commands/workspace/unsync.ts
 /**
@@ -12,9 +12,9 @@ import * as p from "@clack/prompts";
 async function handleUnsync(opts) {
 	let repoPath = opts.path;
 	if (!repoPath) {
-		const configPath = path.join(process.cwd(), ".margins.json");
-		if (fs.existsSync(configPath)) try {
-			JSON.parse(fs.readFileSync(configPath, "utf-8"));
+		const configPath = path$1.join(process.cwd(), ".margins.json");
+		if (fs$1.existsSync(configPath)) try {
+			JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
 			repoPath = process.cwd();
 		} catch {}
 	}
@@ -26,7 +26,7 @@ async function handleUnsync(opts) {
 		console.error("Not in a synced workspace. Use --path <dir> to specify the folder.");
 		process.exit(1);
 	}
-	repoPath = path.resolve(repoPath);
+	repoPath = path$1.resolve(repoPath);
 	const normalizedTarget = normalize(repoPath);
 	const registry = readRegistry();
 	const before = registry.repos.length;
@@ -40,10 +40,10 @@ async function handleUnsync(opts) {
 		process.exit(1);
 	}
 	if (opts.deleteConfig) {
-		const configFile = path.join(repoPath, ".margins.json");
-		if (fs.existsSync(configFile)) {
-			fs.unlinkSync(configFile);
-			if (!opts.json) p.log.info(`Deleted ${configFile}`);
+		const configFile = path$1.join(repoPath, ".margins.json");
+		if (fs$1.existsSync(configFile)) {
+			fs$1.unlinkSync(configFile);
+			if (!opts.json) R.info(`Deleted ${configFile}`);
 		}
 	}
 	writeRegistry(registry);
@@ -51,7 +51,7 @@ async function handleUnsync(opts) {
 		status: "removed",
 		path: repoPath
 	}));
-	else p.log.success(`Removed ${repoPath} from sync.`);
+	else R.success(`Removed ${repoPath} from sync.`);
 }
 
 //#endregion

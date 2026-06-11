@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { o as AuthMissing } from "./config-DHEPrW--.mjs";
-import { i as maskKey, n as formatJson, r as formatTable } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
-import * as p from "@clack/prompts";
+import { o as AuthMissing } from "./config-NcAwuGj_.mjs";
+import { i as maskKey, n as formatJson, r as formatTable } from "./output-CnPBLxta.mjs";
+import { t as createApiClient } from "./api-client-BwzkgKwP.mjs";
+import { a as Wt } from "./dist-zyKt7qIr.mjs";
 
 //#region src/commands/auth/whoami.ts
 async function handleWhoami(cfg) {
@@ -23,7 +23,7 @@ async function handleWhoami(cfg) {
 		}));
 		return;
 	}
-	p.intro("Authenticated");
+	Wt("Authenticated");
 	const rows = [["Name", user.name ?? "(unknown)"], ["Email", user.email ?? "(unknown)"]];
 	if (key) rows.push(["Key label", key.label ?? "(unlabeled)"], ["Role", key.role], ["API key", maskKey(cfg.apiKey)], ["Expires", expiresAtHuman], ["Last used", key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : "never"]);
 	else rows.push(["Auth method", "Browser session"]);

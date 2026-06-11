@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { i as setGlobalConfig, m as OAuthError, u as LoginTimeout } from "./config-DHEPrW--.mjs";
+import { i as setGlobalConfig, m as OAuthError, u as LoginTimeout } from "./config-NcAwuGj_.mjs";
+import { a as generateRandomCodeVerifier, c as processDiscoveryResponse, f as validateAuthResponse, i as discoveryRequest, n as authorizationCodeGrantRequest, o as generateRandomState, r as calculatePKCECodeChallenge, s as processAuthorizationCodeResponse, t as None } from "./build-DpfH9kc6.mjs";
+import { a as Wt, c as Ct, n as Nt, o as Zt, r as R, s as be, t as Gt } from "./dist-zyKt7qIr.mjs";
+import { t as open } from "./open-C2LF0xAm.mjs";
 import * as http from "node:http";
-import * as p from "@clack/prompts";
-import * as oauth from "oauth4webapi";
-import open from "open";
 
 //#region src/commands/auth/login.ts
 const LOGIN_TIMEOUT_MS = 120 * 1e3;
@@ -84,9 +84,9 @@ async function handleLogin(cfg) {
 		clientId = json.clientId;
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		p.log.warning(`Could not fetch config from ${serverUrl}/api/auth/cli-config: ${reason}`);
-		p.log.info(`Make sure your server URL is set correctly: margins config set-url <url>`);
-		const issuer = await p.text({
+		R.warning(`Could not fetch config from ${serverUrl}/api/auth/cli-config: ${reason}`);
+		R.info(`Make sure your server URL is set correctly: margins config set-url <url>`);
+		const issuer = await Zt({
 			message: "Enter Keycloak issuer URL (e.g. https://auth.example.com/realms/margins)",
 			validate: (v) => {
 				try {
@@ -97,8 +97,8 @@ async function handleLogin(cfg) {
 				}
 			}
 		});
-		if (p.isCancel(issuer)) {
-			p.cancel("Login cancelled");
+		if (Ct(issuer)) {
+			Nt("Login cancelled");
 			process.exit(0);
 		}
 		issuerUrl = new URL(issuer);
@@ -107,10 +107,10 @@ async function handleLogin(cfg) {
 	const startPort = randomPortStart();
 	const port = await findAvailablePort(startPort, PORT_RANGE_END).catch(() => findAvailablePort(PORT_RANGE_START, startPort - 1));
 	const redirectUri = `http://127.0.0.1:${port}/callback`;
-	const as = await oauth.discoveryRequest(issuerUrl, { algorithm: "oidc" }).then((r) => oauth.processDiscoveryResponse(issuerUrl, r));
-	const codeVerifier = oauth.generateRandomCodeVerifier();
-	const codeChallenge = await oauth.calculatePKCECodeChallenge(codeVerifier);
-	const state = oauth.generateRandomState();
+	const as = await discoveryRequest(issuerUrl, { algorithm: "oidc" }).then((r) => processDiscoveryResponse(issuerUrl, r));
+	const codeVerifier = generateRandomCodeVerifier();
+	const codeChallenge = await calculatePKCECodeChallenge(codeVerifier);
+	const state = generateRandomState();
 	if (!as.authorization_endpoint) throw new OAuthError("Keycloak discovery did not return an authorization_endpoint");
 	const authUrl = new URL(as.authorization_endpoint);
 	authUrl.searchParams.set("client_id", clientId);
@@ -120,8 +120,8 @@ async function handleLogin(cfg) {
 	authUrl.searchParams.set("code_challenge", codeChallenge);
 	authUrl.searchParams.set("code_challenge_method", "S256");
 	authUrl.searchParams.set("state", state);
-	p.intro("Logging in to Margins");
-	const spinner = p.spinner();
+	Wt("Logging in to Margins");
+	const spinner = be();
 	spinner.start("Opening browser...");
 	try {
 		await open(authUrl.toString());
@@ -140,12 +140,12 @@ async function handleLogin(cfg) {
 	};
 	let params;
 	try {
-		params = oauth.validateAuthResponse(as, client, callbackParams, state);
+		params = validateAuthResponse(as, client, callbackParams, state);
 	} catch (err) {
 		throw new OAuthError(err instanceof Error ? err.message : String(err));
 	}
-	const tokenResponse = await oauth.authorizationCodeGrantRequest(as, client, oauth.None(), params, redirectUri, codeVerifier);
-	const result = await oauth.processAuthorizationCodeResponse(as, client, tokenResponse);
+	const tokenResponse = await authorizationCodeGrantRequest(as, client, None(), params, redirectUri, codeVerifier);
+	const result = await processAuthorizationCodeResponse(as, client, tokenResponse);
 	const accessToken = result.access_token;
 	const refreshToken = result.refresh_token;
 	const expiresIn = result.expires_in ?? 300;
@@ -159,7 +159,7 @@ async function handleLogin(cfg) {
 		apiKey: void 0
 	});
 	spinner.stop("Logged in successfully. Session saved.");
-	p.outro(refreshToken ? `Session active. Refresh token stored — you will not need to log in again for a while.` : `Session active. No refresh token — you may need to log in again when the session expires.`);
+	Gt(refreshToken ? `Session active. Refresh token stored — you will not need to log in again for a while.` : `Session active. No refresh token — you may need to log in again when the session expires.`);
 }
 
 //#endregion

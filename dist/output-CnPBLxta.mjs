@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { d as MarginsError } from "./config-DHEPrW--.mjs";
+import { d as MarginsError } from "./config-NcAwuGj_.mjs";
 
 //#region src/lib/output.ts
 function maskKey(key) {
 	if (!key) return "(not set)";
+	if (key.split(".").length === 3) return "JWT[masked]";
 	if (key.length < 10) return `${key.slice(0, 2)}...`;
 	return `${key.slice(0, 5)}...${key.slice(-3)}`;
 }

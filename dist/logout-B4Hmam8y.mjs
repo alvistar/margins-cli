@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { i as setGlobalConfig, o as AuthMissing } from "./config-DHEPrW--.mjs";
-import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import * as p from "@clack/prompts";
-import * as oauth from "oauth4webapi";
+import { i as setGlobalConfig, o as AuthMissing } from "./config-NcAwuGj_.mjs";
+import { n as formatJson } from "./output-CnPBLxta.mjs";
+import { c as processDiscoveryResponse, d as revocationRequest, i as discoveryRequest, t as None } from "./build-DpfH9kc6.mjs";
+import { r as R, t as Gt } from "./dist-zyKt7qIr.mjs";
 
 //#region src/commands/auth/logout.ts
 async function handleLogout(cfg) {
@@ -10,18 +10,18 @@ async function handleLogout(cfg) {
 	let tokenRevoked = false;
 	if (cfg.refreshToken && cfg.keycloakIssuer && cfg.keycloakClientId) try {
 		const issuerUrl = new URL(cfg.keycloakIssuer);
-		const as = await oauth.discoveryRequest(issuerUrl, { algorithm: "oidc" }).then((r) => oauth.processDiscoveryResponse(issuerUrl, r));
+		const as = await discoveryRequest(issuerUrl, { algorithm: "oidc" }).then((r) => processDiscoveryResponse(issuerUrl, r));
 		const client = {
 			client_id: cfg.keycloakClientId,
 			token_endpoint_auth_method: "none"
 		};
 		if (as.revocation_endpoint) {
-			await oauth.revocationRequest(as, client, oauth.None(), cfg.refreshToken);
+			await revocationRequest(as, client, None(), cfg.refreshToken);
 			tokenRevoked = true;
 		}
 	} catch {
 		if (cfg.json) process.stderr.write(JSON.stringify({ warning: "Could not revoke session on Keycloak — cleared locally only" }) + "\n");
-		else p.log.warning("Could not revoke session on Keycloak — cleared locally only");
+		else R.warning("Could not revoke session on Keycloak — cleared locally only");
 	}
 	setGlobalConfig({
 		apiKey: void 0,
@@ -38,7 +38,7 @@ async function handleLogout(cfg) {
 		}));
 		return;
 	}
-	p.outro("Logged out. Session cleared.");
+	Gt("Logged out. Session cleared.");
 }
 
 //#endregion

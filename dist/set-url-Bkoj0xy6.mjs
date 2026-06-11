@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { i as setGlobalConfig } from "./config-DHEPrW--.mjs";
+import { i as setGlobalConfig } from "./config-NcAwuGj_.mjs";
 
 //#region src/commands/config/set-url.ts
 function handleSetUrl(url) {
