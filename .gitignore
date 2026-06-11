@@ -13,3 +13,6 @@ coverage/
 
 # macOS
 .DS_Store
+
+# Local CLI build artifact (the tracked entrypoint is bin/margins.js)
+/bin/margins
