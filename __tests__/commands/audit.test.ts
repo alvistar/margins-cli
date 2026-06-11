@@ -110,7 +110,12 @@ const boundWorkspace = (over: Partial<Ws> = {}): ServerState => ({
 function ghDefaults(): void {
   mocked.getRepo.mockResolvedValue(repoInfo())
   mocked.listTree.mockResolvedValue({
-    entries: [{ path: 'README.md', size: 120 }, { path: 'img/logo.png', size: 2048 }],
+    entries: [
+      { path: 'README.md', size: 120 },
+      { path: 'img/logo.png', size: 2048 },
+      // The tree gates the workflow-content fetch: list the file so audit reads it.
+      { path: '.github/workflows/margins-sync.yml', size: 900 },
+    ],
     truncated: false,
   })
   mocked.listOrgRepos.mockResolvedValue([])
@@ -299,7 +304,10 @@ describe('handleAudit', () => {
 
   it('over-cap repo → flagged with counts', async () => {
     mocked.listTree.mockResolvedValue({
-      entries: Array.from({ length: 1001 }, (_, i) => ({ path: `docs/f${i}.md`, size: 10 })),
+      entries: [
+        { path: '.github/workflows/margins-sync.yml', size: 900 },
+        ...Array.from({ length: 1001 }, (_, i) => ({ path: `docs/f${i}.md`, size: 10 })),
+      ],
       truncated: false,
     })
     const rows = await auditRows(cfg(), 'acme/docs')
@@ -310,7 +318,11 @@ describe('handleAudit', () => {
 
   it('oversized blob → over-cap naming the blob', async () => {
     mocked.listTree.mockResolvedValue({
-      entries: [{ path: 'README.md', size: 10 }, { path: 'big.png', size: 3 * 1024 * 1024 }],
+      entries: [
+        { path: 'README.md', size: 10 },
+        { path: 'big.png', size: 3 * 1024 * 1024 },
+        { path: '.github/workflows/margins-sync.yml', size: 900 },
+      ],
       truncated: false,
     })
     const rows = await auditRows(cfg(), 'acme/docs')

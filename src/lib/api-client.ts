@@ -188,6 +188,60 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     }
     return undefined
   }
+  /** Map an error response status to the matching typed error. */
+  async function throwForStatus(response: Response, path: string): Promise<void> {
+    if (response.status === 403) throw new ForbiddenError(path)
+    if (response.status === 404) throw new NotFoundError(path)
+    if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
+    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
+  }
+
+  /**
+   * Send a request; on a 401 in GitHub Actions (where the ~5-min OIDC JWT can
+   * expire mid-push), re-mint the token once and resend. Any remaining 401 is
+   * AuthExpired. `send` resolves the bearer itself, so the resend picks up the
+   * freshly minted token.
+   */
+  async function sendWithOidcRemint(send: () => Promise<Response>): Promise<Response> {
+    let response = await send()
+    if (response.status === 401 && canRemintOidc()) {
+      await remintOidcToken()
+      response = await send()
+    }
+    if (response.status === 401) throw new AuthExpired()
+    return response
+  }
+
+  /** Parse a JSON body, unwrapping the server's { data: ... } apiOk() envelope. */
+  async function parseBody(response: Response): Promise<unknown> {
+    const text = await response.text()
+    if (!text) return {}
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new ResponseParseError()
+    }
+    if (parsed !== null && typeof parsed === 'object' && 'data' in (parsed as object)) {
+      return (parsed as { data: unknown }).data
+    }
+    return parsed
+  }
+
+  /** fetch with the default timeout; maps aborts/failures to typed errors. */
+  async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+    try {
+      return await fetch(url, { ...init, signal: controller.signal })
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw new TimeoutError()
+      throw new NetworkError(config.serverUrl)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   function buildUrl(path: string, query?: Record<string, string>): string {
     const base = config.serverUrl.replace(/\/$/, '')
     const url = new URL(`${base}${path}`)
@@ -211,147 +265,76 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     query?: Record<string, string>,
     body?: unknown,
     attempt = 1,
-    remintAttempted = false,
   ): Promise<unknown> {
     const url = buildUrl(path, query)
 
-    // Resolve bearer — OIDC env token wins; otherwise Keycloak/api-key
-    const bearer = await resolveRequestBearer()
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${bearer}`,
-      Accept: 'application/json',
-      'X-Margins-Client': CLIENT_HEADER,
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    }
-
-    log(`${method} ${url} (key: ${maskKey(bearer)})`)
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
-
     let response: Response
     try {
-      response = await fetch(url, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: controller.signal,
+      response = await sendWithOidcRemint(async () => {
+        // Resolve bearer — OIDC env token wins; otherwise Keycloak/api-key
+        const bearer = await resolveRequestBearer()
+        log(`${method} ${url} (key: ${maskKey(bearer)})`)
+        const sent = await fetchWithTimeout(url, {
+          method,
+          headers: {
+            Authorization: `Bearer ${bearer}`,
+            Accept: 'application/json',
+            'X-Margins-Client': CLIENT_HEADER,
+            ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        })
+        log(`→ ${sent.status}`)
+        return sent
       })
     } catch (err) {
-      clearTimeout(timer)
-      if ((err as Error).name === 'AbortError') {
+      if (err instanceof TimeoutError) {
         // Only retry idempotent methods to avoid creating duplicate resources
         const isIdempotent = method === 'GET' || method === 'DELETE'
         if (isIdempotent && attempt < 2) {
           log('Timeout — retrying once...')
-          return doFetch(method, path, query, body, attempt + 1, remintAttempted)
+          return doFetch(method, path, query, body, attempt + 1)
         }
-        throw new TimeoutError()
       }
-      throw new NetworkError(config.serverUrl)
+      throw err
     }
-    clearTimeout(timer)
 
-    log(`→ ${response.status}`)
-
-    if (response.status === 401) {
-      // In GitHub Actions, the OIDC JWT (~5 min) can expire mid-push:
-      // re-mint it once and retry the request with the fresh token.
-      if (!remintAttempted && canRemintOidc()) {
-        await remintOidcToken()
-        return doFetch(method, path, query, body, attempt, true)
-      }
-      throw new AuthExpired()
-    }
-    if (response.status === 403) throw new ForbiddenError(path)
-    if (response.status === 404) throw new NotFoundError(path)
-    if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
-    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
-
-    // Parse body — server wraps all responses in { data: ... } via apiOk()
-    const text = await response.text()
-    if (!text) return {}
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw new ResponseParseError()
-    }
-    // Unwrap { data: ... } envelope from apiOk()
-    if (parsed !== null && typeof parsed === 'object' && 'data' in (parsed as object)) {
-      return (parsed as { data: unknown }).data
-    }
-    return parsed
+    await throwForStatus(response, path)
+    return parseBody(response)
   }
 
   /**
    * Send a raw binary request (for CAS blob uploads).
-   * Unlike doFetch, this sends the body as-is with the given Content-Type.
+   * Unlike doFetch, this sends the body as-is with the given Content-Type
+   * and never retries timeouts.
    */
   async function doFetchRaw(
     method: string,
     path: string,
     data: Buffer,
     contentType: string,
-    remintAttempted = false,
   ): Promise<unknown> {
     const url = buildUrl(path)
-    const bearer = await resolveRequestBearer()
 
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${bearer}`,
-      Accept: 'application/json',
-      'X-Margins-Client': CLIENT_HEADER,
-      'Content-Type': contentType,
-    }
-
-    log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer)})`)
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
-
-    let response: Response
-    try {
-      response = await fetch(url, {
+    const response = await sendWithOidcRemint(async () => {
+      const bearer = await resolveRequestBearer()
+      log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer)})`)
+      const sent = await fetchWithTimeout(url, {
         method,
-        headers,
+        headers: {
+          Authorization: `Bearer ${bearer}`,
+          Accept: 'application/json',
+          'X-Margins-Client': CLIENT_HEADER,
+          'Content-Type': contentType,
+        },
         body: new Uint8Array(data),
-        signal: controller.signal,
       })
-    } catch (err) {
-      clearTimeout(timer)
-      if ((err as Error).name === 'AbortError') throw new TimeoutError()
-      throw new NetworkError(config.serverUrl)
-    }
-    clearTimeout(timer)
+      log(`→ ${sent.status}`)
+      return sent
+    })
 
-    log(`→ ${response.status}`)
-
-    if (response.status === 401) {
-      if (!remintAttempted && canRemintOidc()) {
-        await remintOidcToken()
-        return doFetchRaw(method, path, data, contentType, true)
-      }
-      throw new AuthExpired()
-    }
-    if (response.status === 403) throw new ForbiddenError(path)
-    if (response.status === 404) throw new NotFoundError(path)
-    if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
-    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
-
-    const text = await response.text()
-    if (!text) return {}
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw new ResponseParseError()
-    }
-    if (parsed !== null && typeof parsed === 'object' && 'data' in (parsed as object)) {
-      return (parsed as { data: unknown }).data
-    }
-    return parsed
+    await throwForStatus(response, path)
+    return parseBody(response)
   }
 
   return {

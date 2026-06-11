@@ -6,6 +6,12 @@
  * be missing at runtime on the npx path, and mocked-fs tests wouldn't catch it.
  *
  * Content mirrors margins-sync-action/templates/margins-sync.yml exactly.
+ *
+ * NOTE on trigger paths: the `on.push.paths` extension list below is a static
+ * convenience subset of the syncable types. The authoritative list of image
+ * extensions the sync actually uploads is SYNCABLE_IMAGE_EXTENSIONS in
+ * src/lib/image-scanner.ts (also what audit/install cap pre-checks count).
+ * Rarer types (avif/ico/bmp/tiff) still sync when a listed path retriggers.
  */
 
 export const WORKFLOW_PATH = '.github/workflows/margins-sync.yml'

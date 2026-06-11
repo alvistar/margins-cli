@@ -145,6 +145,6 @@ describe('collectSyncFiles', () => {
 
     const result = collectSyncFiles(tmpDir)
 
-    expect(result).toEqual({ files: [], mdCount: 0, totalCount: 0, oversized: [] })
+    expect(result).toEqual({ files: [], mdCount: 0, mdPaths: [], totalCount: 0, oversized: [] })
   })
 })

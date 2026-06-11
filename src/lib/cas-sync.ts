@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { ApiClient } from './api-client.js'
 import { ConflictError, ServerError, ValidationError } from './errors.js'
+import { poolMap } from './pool.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,33 +50,6 @@ export function syntheticCommitSha(manifest: Record<string, string>): string {
     buf += `${path}\t${manifest[path]}\n`
   }
   return sha256(Buffer.from(buf, 'utf-8'))
-}
-
-/**
- * Run an async function for each item with bounded concurrency.
- * Returns results in the same order as items.
- */
-async function poolMap<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length)
-  let nextIndex = 0
-
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const idx = nextIndex++
-      results[idx] = await fn(items[idx]!)
-    }
-  }
-
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => worker(),
-  )
-  await Promise.all(workers)
-  return results
 }
 
 /** Count paths whose hash differs (or exists on only one side) between two manifests. */
@@ -136,6 +110,16 @@ export async function casSync(
   const onSigterm = () => onSignal('SIGTERM')
   process.on('SIGINT', onSigint)
   process.on('SIGTERM', onSigterm)
+
+  /** Abort instead of retrying once a termination signal has been received. */
+  const throwIfInterrupted = (): void => {
+    if (interrupted) {
+      throw new ConflictError(
+        `Manifest push conflicted (409) but the process received ${interrupted} — ` +
+        'aborting without retrying. Re-run the push to sync.',
+      )
+    }
+  }
 
   try {
     // Step 1: Fetch current server manifest
@@ -212,12 +196,7 @@ export async function casSync(
       // 409: server headSha moved between our GET and POST. Git is the source
       // of truth — refetch the headSha and retry ONCE (the local manifest and
       // commitSha are unchanged), overwriting the concurrent write by contract.
-      if (interrupted) {
-        throw new ConflictError(
-          `Manifest push conflicted (409) but the process received ${interrupted} — ` +
-          'aborting without retrying. Re-run the push to sync.',
-        )
-      }
+      throwIfInterrupted()
 
       const fresh = await client.get(
         `${basePath}/manifest`,
@@ -231,12 +210,7 @@ export async function casSync(
         `manifest (${differing} file(s) differ vs the server manifest).\n`,
       )
 
-      if (interrupted) {
-        throw new ConflictError(
-          `Manifest push conflicted (409) but the process received ${interrupted} — ` +
-          'aborting without retrying. Re-run the push to sync.',
-        )
-      }
+      throwIfInterrupted()
 
       try {
         await client.post(`${basePath}/manifest`, commitBody(fresh.headSha))

@@ -1,10 +1,12 @@
 /**
- * Shared file-collection pipeline for CAS sync (push, sync, install/audit pre-checks).
+ * Shared file-collection pipeline for local CAS sync (`workspace push`, `sync`).
+ * (install/audit cap pre-checks read the GitHub tree instead — see
+ * src/lib/audit-checks.ts; only MAX_BLOB_SIZE is shared with them.)
  *
  * Globs markdown files (skipping dotdirs, node_modules, symlinks), applies the
  * `.marginsignore` filter, and collects referenced images (deduplicated; missing
  * refs and unsupported mime types skipped). Also reports blobs over the server's
- * MAX_BLOB_SIZE so install/audit can pre-check caps before opening PRs.
+ * MAX_BLOB_SIZE so callers can warn before uploads that would fail server-side.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -25,6 +27,8 @@ export interface CollectedSyncFiles {
   files: SyncFile[]
   /** Number of markdown files (after `.marginsignore` filtering). */
   mdCount: number
+  /** Relative paths of the collected markdown files, in glob order. */
+  mdPaths: string[]
   /** Total files collected (markdown + images). */
   totalCount: number
   /** Blobs exceeding the server blob-size cap. */
@@ -92,5 +96,5 @@ export function collectSyncFiles(
     .filter(f => f.content.length > maxBlobSize)
     .map(f => ({ path: f.path, bytes: f.content.length }))
 
-  return { files, mdCount: mdFiles.length, totalCount: files.length, oversized }
+  return { files, mdCount: mdFiles.length, mdPaths: mdFiles, totalCount: files.length, oversized }
 }

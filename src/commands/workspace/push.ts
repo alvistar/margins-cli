@@ -87,9 +87,18 @@ export async function handlePush(
   }
 
   // Collect markdown files + referenced images (.marginsignore applied)
-  const { files: syncFiles, mdCount } = collectSyncFiles(cwd)
+  const { files: syncFiles, mdCount, oversized } = collectSyncFiles(cwd)
   if (mdCount === 0) {
     throw new ValidationError(`No .md files found in ${cwd}`)
+  }
+
+  // Pre-flight warning only: the server rejects blobs over its 2 MB cap, but
+  // the rest of the push still proceeds file-by-file.
+  if (oversized.length > 0) {
+    process.stderr.write(
+      `Warning: ${oversized.length} file(s) exceed the 2MB server blob cap and will fail to upload:\n` +
+      oversized.map((f) => `  ${f.path} (${f.bytes} bytes)\n`).join(''),
+    )
   }
 
   // Detect git branch (SHAs are computed inside casSync — synthetic

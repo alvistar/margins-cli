@@ -10,7 +10,6 @@ vi.mock('../../src/lib/gh.js', async () => {
     getRepo: vi.fn(),
     listTree: vi.fn(),
     listOrgRepos: vi.fn(),
-    fileExists: vi.fn(),
     getFileSha: vi.fn(),
     getBranchSha: vi.fn(),
     branchExists: vi.fn(),
@@ -22,7 +21,8 @@ vi.mock('../../src/lib/gh.js', async () => {
 
 import * as gh from '../../src/lib/gh.js'
 import { GhError } from '../../src/lib/gh.js'
-import { handleInstall, normalizeTarget, filterRepos } from '../../src/commands/install.js'
+import { handleInstall } from '../../src/commands/install.js'
+import { normalizeTarget, filterRepos } from '../../src/lib/repo-targets.js'
 import { MARGINS_SYNC_TEMPLATE, stampTemplate } from '../../src/templates/margins-sync.js'
 
 const mocked = vi.mocked(gh)
@@ -130,7 +130,6 @@ function ghDefaults(): void {
     entries: [{ path: 'README.md', size: 120 }, { path: 'img/logo.png', size: 2048 }],
     truncated: false,
   })
-  mocked.fileExists.mockResolvedValue(false)
   mocked.getFileSha.mockResolvedValue(null)
   mocked.getBranchSha.mockResolvedValue('base-sha')
   mocked.branchExists.mockResolvedValue(false)
@@ -331,7 +330,14 @@ describe('handleInstall', () => {
         'ws-1': { githubRepoId: 12345, repositoryOwnerId: 777, boundRepoName: 'acme/docs', enforcedAt: '2026-06-01T00:00:00Z', override: false },
       },
     })
-    mocked.fileExists.mockResolvedValue(true) // workflow already on default branch
+    // Workflow already on the default branch — the tree listing shows it
+    mocked.listTree.mockResolvedValue({
+      entries: [
+        { path: 'README.md', size: 120 },
+        { path: '.github/workflows/margins-sync.yml', size: 900 },
+      ],
+      truncated: false,
+    })
 
     await handleInstall(cfg(), 'acme/docs', {})
 
