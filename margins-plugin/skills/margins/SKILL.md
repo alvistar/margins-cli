@@ -59,7 +59,9 @@ while [ "$DIR" != "/" ]; do
   if [ -f "$DIR/.margins.json" ]; then
     SLUG=$(jq -r '.workspace_slug // empty' "$DIR/.margins.json")
     WORKSPACE_ID=$(jq -r '.workspace_id // empty' "$DIR/.margins.json")
-    MODE=$(jq -r '.mode // "local"' "$DIR/.margins.json")
+    # syncMode is the current field ("server" | "client"); ".mode" is the legacy
+    # name still read by the CLI as a fallback. "client" = push/overlay sync.
+    SYNC_MODE=$(jq -r '.syncMode // .mode // "client"' "$DIR/.margins.json")
     PROJECT_ROOT="$DIR"
     break
   fi
@@ -127,7 +129,7 @@ If `$SYNC_ACTIVE` is `"true"`:
 - The tray app is handling file sync automatically. Skip the explicit push.
 - Print the workspace URL so the user can review:
   ```bash
-  $MARGINS workspace open --slug "$SLUG"
+  $MARGINS workspace open "$SLUG"
   ```
 - Say: "Margins Sync is active for this folder. Your files are synced automatically. Opening the workspace..."
 - **Stop here.** Do not proceed to P1.
@@ -186,9 +188,9 @@ $MARGINS workspace push --workspace "$WORKSPACE_ID" --dir "$PROJECT_ROOT" --json
 
 Capture the JSON output. For Mode C with `--json`, the CLI outputs two JSON lines:
 1. `{ "created": true, "workspaceId": "<uuid>", "slug": "<slug>" }` (workspace creation)
-2. `{ "added": N, "changed": N, "skipped": N, "workspaceId": "<uuid>", "slug": "<slug>" }` (push result with workspace metadata)
+2. The CAS push result: `{ "added": N, "changed": N, "deleted": N, "uploaded": N, "skipped": N, "workspaceId": "<uuid>", "slug": "<slug>" }` (push result with workspace metadata; `workspaceId`/`slug` only present on a create). If oversized files were skipped, it also carries `"skippedOversized": N, "oversizedPaths": [...]`.
 
-Parse either line for `workspaceId` and `slug`. Capture `added`, `changed`, `skipped` from the second line.
+Parse either line for `workspaceId` and `slug`. From the second line: `added`/`changed`/`deleted` are file counts against the workspace tree; `uploaded` is blobs sent; `skipped` means **unchanged** blobs (already on the server), not skipped files.
 
 For Mode C, capture `slug` and `id` into `$SLUG` and `$WORKSPACE_ID`.
 
@@ -198,9 +200,17 @@ Then **persist `.margins.json`** at `$PROJECT_ROOT`:
   "workspace_slug": "<slug>",
   "workspace_id": "<uuid>",
   "default_branch": "<main or @local>",
-  "mode": "<local or github-overlay>"
+  "syncMode": "client"
 }
 ```
+
+Both push modes this skill creates (local and github-overlay) are **client**
+sync — `syncMode` is always `"client"` here. Server-managed sync workspaces are
+created server-side from a GitHub webhook, never by this skill. Write `syncMode`,
+not the legacy `mode` field: the CLI's resolver only recognizes `mode` values
+`"local"`/`"overlay"`, so a value like `"github-overlay"` is silently ignored.
+`default_branch` (`@local` for overlay, `main` for local) is what distinguishes
+the two.
 
 Skip writing `.margins.json` if it already exists (defensive).
 
@@ -220,7 +230,7 @@ Capture the `{added, changed, skipped}` counts.
 Print a single block to the user:
 
 ```
-Pushed: <added> added, <changed> changed, <skipped> skipped
+Pushed: <added> added, <changed> changed, <deleted> deleted
 Workspace: <serverUrl>/w/<slug>/-/<default_branch>/
 
 Click the URL to review in your browser. When you're done leaving
@@ -237,7 +247,17 @@ For first-time runs in Mode C, also tell the user:
 - **`$MARGINS workspace push` returns 401**: API key missing or invalid. Tell the user:
   > "Auth failed. Run `margins auth login`, or set up project-scoped credentials by creating `<project_root>/.margins/config.json` with `{serverUrl, apiKey}`."
 
-- **413 Payload Too Large** (more than 50 files or >10MB total): Tell the user to scope the push:
+- **Exit with "This workspace uses server-managed sync"**: the workspace is
+  `syncMode: "server"` (synced from a GitHub webhook), so `workspace push` refuses.
+  Tell the user to use `$MARGINS workspace sync` instead, or push to a client-sync
+  workspace. This skill never creates server-sync workspaces, so this only happens
+  on a `.margins.json` pointing at one created elsewhere.
+
+- **413 Payload Too Large**: the server caps a single blob at **2 MB** and the
+  manifest at **1000 files** (`MAX_MANIFEST_FILES`, env-configurable). Note the CLI
+  already auto-skips individual oversized (>2 MB) files (reported as
+  `skippedOversized`), so a 413 here means the file *count* exceeded the manifest
+  cap. Tell the user to scope the push:
   > "Too many markdown files in this directory. Re-run with a narrower scope, e.g.: `/margins push docs/` (or split the project into smaller workspaces)."
   Accept an optional `$ARGUMENTS` value as a subdirectory hint.
 
@@ -249,7 +269,12 @@ For first-time runs in Mode C, also tell the user:
 
 ### Push notes
 
-- This skill never deletes artifacts. To remove a file from the workspace, delete it from the project directory and re-push — but currently the server is additive-only, so deleted local files will continue to show in the workspace until manually cleaned up.
+- Push uses a content-addressable (CAS) full-tree sync: the manifest lists every
+  `.md` file (plus referenced images) currently in the directory, and any path
+  **not** in the manifest is deleted from the workspace branch. To remove a file
+  from the workspace, delete it locally and re-push — the next push reports it
+  under the `deleted` count. (One exception: files auto-skipped for exceeding the
+  2 MB blob cap are left untouched server-side rather than deleted.)
 
 - `MARGINS_CONFIG_DIR` makes the CLI fully ignore the global `~/.config/margins/config.json` for the duration of this skill's invocation. If the user has a global config, it stays untouched.
 

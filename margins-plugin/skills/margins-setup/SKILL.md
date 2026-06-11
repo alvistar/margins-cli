@@ -18,11 +18,15 @@ If the CLI is found, skip to Step 3 (credential check).
 
 ## Step 2: Verify margins CLI is accessible via npx
 
-The margins CLI is distributed via GitHub and invoked through npx. No global install needed.
+The margins CLI is currently distributed via GitHub and invoked through npx. No global install needed.
 
 ```bash
 npx --yes github:alvistar/margins-cli --version
 ```
+
+> Note: once the CLI is published to npm (Trusted Publishing, planned), prefer the
+> published package over the `github:` git-URL form above — the git-URL install is
+> unpinnable and runs `prepare` on the fly. Switch this command when that lands.
 
 If `npx` is not found, tell the user:
 > "Node.js is required. Install it from https://nodejs.org, then retry `/margins-setup`."
@@ -77,3 +81,19 @@ If successful, show the result and confirm:
 
 If it fails, surface the error and suggest:
 > "Authentication verification failed. Try running `margins auth login` again."
+
+## Onboarding a repo to continuous / CI sync (optional)
+
+Once authenticated, two commands set up ongoing sync:
+
+- `margins install [target]` — onboard a repo to **credentialless** sync: creates
+  the workspace, writes the OIDC trust binding, and opens a workflow PR so a
+  GitHub Action pushes markdown with no stored API key. Use `--org <org>` (with
+  `--include`/`--exclude` globs) to onboard every repo in an org, and `--dry-run`
+  to preview. This is the recommended path for CI / org-wide adoption.
+- `margins audit [target]` — report sync coverage across repos: missing workflows,
+  stale action pins, binding drift, and over-cap repos (`--org`, `--csv`). Runs in
+  gh-only mode without margins credentials (drift checks are skipped).
+
+For a single developer who just wants their local edits reviewed, `/margins push`
+(no setup beyond auth) is enough — `install` is for the CI/automated path.
