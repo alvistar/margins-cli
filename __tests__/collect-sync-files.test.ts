@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { collectSyncFiles, globMarkdown, MAX_BLOB_SIZE } from '../src/lib/collect-sync-files.js'
+import { vi } from 'vitest'
+import { collectSyncFiles, globMarkdown, skipOversized, MAX_BLOB_SIZE } from '../src/lib/collect-sync-files.js'
 
 let tmpDir: string
 
@@ -140,11 +141,51 @@ describe('collectSyncFiles', () => {
     expect(result.oversized).toEqual([{ path: 'huge.png', bytes: MAX_BLOB_SIZE + 1 }])
   })
 
+  it('skips an unreadable image reference (EISDIR: directory named like an image)', () => {
+    // A directory whose name looks like an image: existsSync passes, the mime
+    // resolves, but readFileSync throws EISDIR — must be skipped, not crash.
+    write('a.md', '![dir](pic.png)\n![real](real.png)')
+    fs.mkdirSync(path.join(tmpDir, 'pic.png'))
+    write('real.png', 'png bytes')
+
+    const result = collectSyncFiles(tmpDir)
+
+    expect(result.files.map(f => f.path)).toEqual(['a.md', 'real.png'])
+    expect(result.totalCount).toBe(2)
+  })
+
   it('returns zero counts for a directory with no markdown', () => {
     write('notes.txt', 'plain text')
 
     const result = collectSyncFiles(tmpDir)
 
     expect(result).toEqual({ files: [], mdCount: 0, mdPaths: [], totalCount: 0, oversized: [] })
+  })
+})
+
+describe('skipOversized', () => {
+  it('drops oversized blobs from the file set and reports them on stderr', () => {
+    write('a.md', '![big](big.png)')
+    write('big.png', Buffer.alloc(2048, 1))
+    const collected = collectSyncFiles(tmpDir, { maxBlobSize: 1024 })
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const files = skipOversized(collected)
+
+    expect(files.map(f => f.path)).toEqual(['a.md']) // big.png excluded
+    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+    expect(logged).toContain('big.png')
+    expect(logged).toContain('skipping 1 file(s)')
+    stderrSpy.mockRestore()
+  })
+
+  it('is a pass-through with no stderr output when nothing is oversized', () => {
+    write('a.md', '# small')
+    const collected = collectSyncFiles(tmpDir)
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    expect(skipOversized(collected)).toBe(collected.files)
+    expect(stderrSpy).not.toHaveBeenCalled()
+    stderrSpy.mockRestore()
   })
 })

@@ -63,6 +63,10 @@ export async function resolveRepoTargets(
   if (!target && !opts.org) {
     throw new ValidationError('Specify a repo (owner/repo or GitHub URL) or --org <org>')
   }
+  // Ambiguous: --org would silently win and write across the whole org.
+  if (target && opts.org) {
+    throw new ValidationError('Specify a repo OR --org, not both')
+  }
   if (opts.org) {
     return filterRepos(await gh.listOrgRepos(opts.org), opts.include, opts.exclude)
   }

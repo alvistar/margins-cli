@@ -153,8 +153,8 @@ async function checkBindingDrift(
   if (binding.githubRepoId !== repo.id) {
     drifts.push(`repo id changed (bound ${binding.githubRepoId}, now ${repo.id})`)
   }
-  if (workspace.branch && workspace.branch !== repo.defaultBranch) {
-    drifts.push(`default branch changed: ${workspace.branch} → ${repo.defaultBranch}`)
+  if (workspace.defaultBranch && workspace.defaultBranch !== repo.defaultBranch) {
+    drifts.push(`default branch changed: ${workspace.defaultBranch} → ${repo.defaultBranch}`)
   }
   return { drifts, notes: [] }
 }

@@ -18,7 +18,7 @@ import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import { casSync } from '../lib/cas-sync.js'
-import { collectSyncFiles } from '../lib/collect-sync-files.js'
+import { collectSyncFiles, skipOversized } from '../lib/collect-sync-files.js'
 
 interface MarginsJson {
   workspace_slug: string
@@ -167,7 +167,11 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   }
 
   // Step 5-6: Collect and push .md files (+ referenced images) via CAS protocol
-  const { files: syncFiles, mdCount, mdPaths: mdFiles } = collectSyncFiles(dir)
+  const collected = collectSyncFiles(dir)
+  const { mdCount, mdPaths: mdFiles, oversized } = collected
+  // Oversized blobs are skipped (excluded from upload AND manifest) — one
+  // >2 MB file must not 413-abort the whole push. Reported on stderr.
+  const syncFiles = skipOversized(collected)
 
   let pushResult = { added: 0, changed: 0, skipped: 0 }
 
@@ -220,11 +224,17 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       syncMode,
       files: mdFiles.length,
       ...pushResult,
+      ...(oversized.length > 0
+        ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
+        : {}),
       url,
     }))
   } else {
     if (mdFiles.length > 0) {
       p.log.success(`Pushed: ${pushResult.added} added, ${pushResult.changed} changed, ${pushResult.skipped} skipped`)
+    }
+    if (oversized.length > 0) {
+      p.log.warn(`${oversized.length} oversized file(s) skipped (over the 2MB server blob cap)`)
     }
     p.log.success(`Synced: ${slug}`)
     p.log.info(url)

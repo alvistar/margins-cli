@@ -58,13 +58,24 @@ const repoInfo = (over: Partial<gh.RepoInfo> = {}): gh.RepoInfo => ({
   ...over,
 })
 
+// Mirrors the server's /api/workspaces list serialization
+// (margins listWorkspacesService) — the drift check reads `defaultBranch`,
+// which is what the server actually sends (NOT `branch`).
 interface Ws {
   id: string
   slug: string
   name: string
+  description: string | null
+  source: 'github' | 'local'
   repoUrl: string | null
+  defaultBranch: string
   syncMode: 'server' | 'client'
-  branch?: string | null
+  lastSyncedAt: string | null
+  documentCount: number
+  openDiscussionCount: number
+  recentDiscussionCount: number
+  lastDiscussionAt: string | null
+  isPinned: boolean
 }
 
 interface Binding {
@@ -98,8 +109,10 @@ function stubServer(state: ServerState): ReturnType<typeof vi.fn> {
 
 const boundWorkspace = (over: Partial<Ws> = {}): ServerState => ({
   workspaces: [{
-    id: 'ws-1', slug: 'acme/docs', name: 'docs',
-    repoUrl: 'https://github.com/acme/docs', syncMode: 'client', branch: 'main',
+    id: 'ws-1', slug: 'acme/docs', name: 'docs', description: null, source: 'github',
+    repoUrl: 'https://github.com/acme/docs', defaultBranch: 'main', syncMode: 'client',
+    lastSyncedAt: null, documentCount: 1, openDiscussionCount: 0,
+    recentDiscussionCount: 0, lastDiscussionAt: null, isPinned: false,
     ...over,
   }],
   bindings: {
@@ -294,12 +307,66 @@ describe('handleAudit', () => {
   })
 
   it('default branch change → drift naming old → new', async () => {
-    stubServer(boundWorkspace({ branch: 'main' }))
+    stubServer(boundWorkspace({ defaultBranch: 'main' }))
     mocked.getRepo.mockResolvedValue(repoInfo({ defaultBranch: 'trunk' }))
 
     const rows = await auditRows(cfg(), 'acme/docs')
     expect(rows[0]!.status).toBe('binding-drift')
     expect(rows[0]!.detail).toContain('default branch changed: main → trunk')
+  })
+
+  it('repo id change → binding-drift "repo id changed"', async () => {
+    const state = boundWorkspace()
+    state.bindings['ws-1']!.githubRepoId = 99999
+    stubServer(state)
+
+    const rows = await auditRows(cfg(), 'acme/docs')
+    expect(rows[0]!.status).toBe('binding-drift')
+    expect(rows[0]!.detail).toContain('repo id changed (bound 99999, now 12345)')
+  })
+
+  it('workflow present but no margins-sync-action pin → error row', async () => {
+    mocked.getFileContent.mockResolvedValue(
+      'jobs:\n  sync:\n    steps:\n      - uses: actions/checkout@v4\n',
+    )
+    const rows = await auditRows(cfg(), 'acme/docs')
+    expect(rows[0]!.status).toBe('error')
+    expect(rows[0]!.detail).toContain(`workflow present but no ${ACTION_REPO} pin found`)
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('workspace-list fetch failure with auth set → drift skipped note, other statuses still produced', async () => {
+    // Margins auth IS configured, but the server 500s on /api/workspaces:
+    // the run degrades to gh-only mode instead of aborting.
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const u = new URL(String(url))
+      if (u.pathname === '/api/workspaces') {
+        return new Response(JSON.stringify({ error: { code: 'INTERNAL' } }), { status: 500 })
+      }
+      throw new Error(`Unexpected request: ${u.pathname}`)
+    }))
+    mocked.getFileContent.mockResolvedValue(workflowWith('v1.2.0'))
+
+    await handleAudit({ ...cfg(), json: true }, 'acme/docs', {})
+    const parsed = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as {
+      note?: string
+      results: Array<{ repo: string; status: string }>
+    }
+    expect(parsed.note).toContain('binding checks skipped')
+    expect(parsed.results[0]!.status).toBe('stale-pin')
+  })
+
+  it('truncated tree listing → over-cap with "tree listing truncated"', async () => {
+    mocked.listTree.mockResolvedValue({
+      entries: [
+        { path: 'README.md', size: 10 },
+        { path: '.github/workflows/margins-sync.yml', size: 900 },
+      ],
+      truncated: true,
+    })
+    const rows = await auditRows(cfg(), 'acme/docs')
+    expect(rows[0]!.status).toBe('over-cap')
+    expect(rows[0]!.detail).toContain('tree listing truncated')
   })
 
   it('over-cap repo → flagged with counts', async () => {

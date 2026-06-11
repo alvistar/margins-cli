@@ -14,6 +14,8 @@
  * Rarer types (avif/ico/bmp/tiff) still sync when a listed path retriggers.
  */
 
+import { ValidationError } from '../lib/errors.js'
+
 export const WORKFLOW_PATH = '.github/workflows/margins-sync.yml'
 
 export const MARGINS_SYNC_TEMPLATE = `# Margins sync — stamped by \`margins install\` (schema-version 1).
@@ -66,12 +68,21 @@ export interface StampOptions {
   workspaceId: string
 }
 
+/** Conservative branch-name shape — anything else could break the stamped YAML. */
+const BRANCH_NAME_RE = /^[A-Za-z0-9._/-]+$/
+
 /**
  * Stamp the template placeholders. `serverUrl` is normalized to the origin
  * (scheme + host, no trailing slash) — it doubles as the OIDC audience, which
- * the server pins as an exact string.
+ * the server pins as an exact string. `defaultBranch` is validated against a
+ * conservative character set before stamping (workspaceId is server-issued).
  */
 export function stampTemplate(opts: StampOptions): string {
+  if (!BRANCH_NAME_RE.test(opts.defaultBranch)) {
+    throw new ValidationError(
+      `Invalid default branch name for workflow stamping: "${opts.defaultBranch}"`,
+    )
+  }
   const origin = new URL(opts.serverUrl).origin
   return MARGINS_SYNC_TEMPLATE
     .replaceAll('__DEFAULT_BRANCH__', opts.defaultBranch)

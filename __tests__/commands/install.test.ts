@@ -457,4 +457,56 @@ describe('handleInstall', () => {
     stubServer({ workspaces: [], bindings: {} })
     await expect(handleInstall(cfg(), undefined, {})).rejects.toThrow('Specify a repo')
   })
+
+  it('rejects a target combined with --org (ambiguous — --org must not silently win)', async () => {
+    stubServer({ workspaces: [], bindings: {} })
+    await expect(handleInstall(cfg(), 'acme/docs', { org: 'acme' }))
+      .rejects.toThrow('Specify a repo OR --org, not both')
+    expect(mocked.listOrgRepos).not.toHaveBeenCalled()
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+  })
+
+  it('PR 422 "already exists" → installed, exit 0', async () => {
+    stubServer({ workspaces: [], bindings: {} })
+    mocked.createPullRequest.mockRejectedValue(
+      new GhError('A pull request already exists for acme:margins/install-sync (HTTP 422)', 422),
+    )
+
+    await handleInstall(cfg(), 'acme/docs', {})
+
+    const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(output).toContain('PR already open')
+    expect(output).toContain('installed')
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+
+  it('resume path: branch + workflow file already on the install branch → putFile skipped, PR still opened', async () => {
+    stubServer({ workspaces: [], bindings: {} })
+    mocked.branchExists.mockResolvedValue(true)
+    mocked.getFileSha.mockResolvedValue('existing-file-sha')
+
+    await handleInstall(cfg(), 'acme/docs', {})
+
+    expect(mocked.createBranch).not.toHaveBeenCalled()
+    expect(mocked.putFile).not.toHaveBeenCalled() // file already committed
+    expect(mocked.createPullRequest).toHaveBeenCalledTimes(1)
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+
+  it('rate-limit 403 at the PR step → waited and retried, not skipped as permissions', async () => {
+    stubServer({ workspaces: [], bindings: {} })
+    mocked.createPullRequest
+      .mockRejectedValueOnce(new GhError('API rate limit exceeded (HTTP 403)', 403, 30))
+      .mockResolvedValue({ url: 'https://github.com/acme/docs/pull/2' })
+    const sleep = vi.fn().mockResolvedValue(undefined)
+
+    await handleInstall(cfg(), 'acme/docs', { sleep })
+
+    expect(sleep).toHaveBeenCalledWith(30_000)
+    expect(mocked.createPullRequest).toHaveBeenCalledTimes(2) // retried after the wait
+    const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(output).not.toContain('awaiting permissions')
+    expect(output).toContain('PR opened')
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
 })

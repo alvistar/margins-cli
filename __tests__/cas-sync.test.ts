@@ -186,6 +186,56 @@ describe('casSync', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2)
   })
 
+  it('SIGINT during the 409-retry window → ConflictError naming the signal, no second POST', async () => {
+    // The handler re-raises via process.kill — spy it out so the test runner
+    // doesn't actually receive a SIGINT.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const calls = stubFetch((method, _url, counts) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (counts.post === 1) {
+        // Deliver the signal between the 409 response and the retry path
+        process.emit('SIGINT')
+        return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
+      }
+      return apiOk({ ok: true })
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((err) => { caught = err })
+
+    expect(caught).toBeInstanceOf(ConflictError)
+    expect((caught as Error).message).toContain('SIGINT')
+    // The retry POST was never sent — only the conflicting first attempt
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT')
+  })
+
+  it('signal handler removes itself and re-raises so default termination proceeds', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    let postCount = 0
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (++postCount === 1) {
+        const before = process.listeners('SIGINT').length
+        process.emit('SIGINT')
+        // Handler removed itself before re-raising
+        expect(process.listeners('SIGINT').length).toBe(before - 1)
+        return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
+      }
+      return apiOk({ ok: true })
+    })
+
+    const client = createApiClient(baseConfig())
+    await expect(casSync(client, 'ws-1', 'main', syncFiles()))
+      .rejects.toBeInstanceOf(ConflictError)
+
+    // Re-raised the same signal at itself for default disposition
+    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT')
+  })
+
   it('maps 422 PUSH_SYNC_NOT_SUPPORTED to an actionable error message', async () => {
     stubFetch((method) => {
       if (method === 'GET') return apiOk({ files: {}, headSha: null })

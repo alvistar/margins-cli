@@ -23,6 +23,13 @@ describe('maskKey', () => {
   it('keeps slice behavior for mrgn_ keys (no dots)', () => {
     expect(maskKey('mrgn_abcdefghijklmnop')).toBe('mrgn_...nop')
   })
+
+  it('a hypothetical key with exactly two dots hits the JWT branch (fully masked)', () => {
+    // Documented behavior: ANY value with exactly two dots is treated as
+    // JWT-shaped and fully masked. Acceptable over-masking: real mrgn_ API
+    // keys never contain dots, so no legitimate key loses its slice preview.
+    expect(maskKey('mrgn_ab.cd.efghijklmnop')).toBe('JWT[masked]')
+  })
 })
 
 describe('formatJson', () => {

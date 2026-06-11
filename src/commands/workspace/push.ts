@@ -7,7 +7,7 @@ import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import { casSync, type CasSyncResult } from '../../lib/cas-sync.js'
-import { collectSyncFiles } from '../../lib/collect-sync-files.js'
+import { collectSyncFiles, skipOversized } from '../../lib/collect-sync-files.js'
 
 // Re-exported for backwards compatibility — implementation moved to lib.
 export { globMarkdown } from '../../lib/collect-sync-files.js'
@@ -87,19 +87,15 @@ export async function handlePush(
   }
 
   // Collect markdown files + referenced images (.marginsignore applied)
-  const { files: syncFiles, mdCount, oversized } = collectSyncFiles(cwd)
+  const collected = collectSyncFiles(cwd)
+  const { mdCount, oversized } = collected
   if (mdCount === 0) {
     throw new ValidationError(`No .md files found in ${cwd}`)
   }
 
-  // Pre-flight warning only: the server rejects blobs over its 2 MB cap, but
-  // the rest of the push still proceeds file-by-file.
-  if (oversized.length > 0) {
-    process.stderr.write(
-      `Warning: ${oversized.length} file(s) exceed the 2MB server blob cap and will fail to upload:\n` +
-      oversized.map((f) => `  ${f.path} (${f.bytes} bytes)\n`).join(''),
-    )
-  }
+  // Oversized blobs are skipped (excluded from upload AND manifest) — one
+  // >2 MB file must not 413-abort the whole push. Reported on stderr.
+  const syncFiles = skipOversized(collected)
 
   // Detect git branch (SHAs are computed inside casSync — synthetic
   // manifest hash + server headSha, never git SHAs)
@@ -116,6 +112,9 @@ export async function handlePush(
   if (cfg.json) {
     console.log(formatJson({
       ...result,
+      ...(oversized.length > 0
+        ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
+        : {}),
       ...(createdSlug ? { workspaceId, slug: createdSlug } : {}),
     }))
   } else {
@@ -127,6 +126,9 @@ export async function handlePush(
     let line = `Pushed: ${parts.join(', ')}`
     if (result.uploaded > 0 || result.skipped > 0) {
       line += ` (${result.uploaded} uploaded, ${result.skipped} unchanged)`
+    }
+    if (oversized.length > 0) {
+      line += ` — ${oversized.length} oversized file(s) skipped`
     }
     console.log(line)
   }

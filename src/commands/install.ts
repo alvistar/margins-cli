@@ -135,7 +135,7 @@ async function processRepo(
     workspaceId = ws.id
     // Keep the per-run snapshot current so a later repo (or rerun logic)
     // sees the workspace we just created.
-    workspaces.push({ id: ws.id, slug: ws.slug, name, repoUrl, syncMode: 'client' })
+    workspaces.push({ id: ws.id, slug: ws.slug, name, repoUrl, syncMode: 'client', defaultBranch: repo.defaultBranch })
     actions.push(`workspace created (${ws.slug})`)
   }
 
@@ -231,6 +231,11 @@ async function processRepo(
       if (err.status === 422 && /already exists/i.test(err.message)) {
         actions.push('PR already open')
         return result('installed')
+      }
+      // Rate-limit 403 (Retry-After present): propagate to handleInstall's
+      // wait-and-retry handler — this is NOT a permissions problem.
+      if (err.status === 403 && err.retryAfter != null) {
+        throw err
       }
       // Protected branch / insufficient permissions: not a failure — the
       // binding is in place; the PR just needs someone with access.
