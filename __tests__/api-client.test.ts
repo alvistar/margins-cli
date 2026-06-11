@@ -111,6 +111,35 @@ describe('api client — basic auth', () => {
     )
   })
 
+  it('sends PUT with JSON body, bearer auth, and the X-Margins-Client header', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { binding: {} } }), { status: 200 }))
+    vi.stubGlobal('fetch', mockFetch)
+    const result = await createApiClient(baseConfig()).put('/api/workspaces/ws-1/binding', {
+      githubRepoId: 1, repositoryOwnerId: 2, boundRepoName: 'a/b',
+    })
+    expect(result).toEqual({ binding: {} })
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://margins.example.com/api/workspaces/ws-1/binding',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ githubRepoId: 1, repositoryOwnerId: 2, boundRepoName: 'a/b' }),
+        headers: expect.objectContaining({
+          Authorization: 'Bearer mrgn_testkey123',
+          'Content-Type': 'application/json',
+          'X-Margins-Client': expect.stringMatching(/^margins-cli\/\d+\.\d+\.\d+$/),
+        }),
+      }),
+    )
+  })
+
+  it('maps put() error statuses to typed errors (404 → NotFoundError, 409 → ConflictError)', async () => {
+    const { ConflictError } = await import('../src/lib/errors.js')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 404 })))
+    await expect(createApiClient(baseConfig()).put('/api/x', {})).rejects.toBeInstanceOf(NotFoundError)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 409 })))
+    await expect(createApiClient(baseConfig()).put('/api/x', {})).rejects.toBeInstanceOf(ConflictError)
+  })
+
   it('masks API key in verbose stderr output', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 200 })))

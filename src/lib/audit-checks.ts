@@ -8,6 +8,7 @@
  */
 import { MAX_BLOB_SIZE } from './collect-sync-files.js'
 import { SYNCABLE_IMAGE_EXTENSIONS } from './image-scanner.js'
+import { parseGithubUrl } from './detect-git-remote.js'
 import * as gh from './gh.js'
 
 /** Server MAX_MANIFEST_FILES default — repos over this are skipped/flagged. */
@@ -28,8 +29,11 @@ export interface WorkspaceListItem {
   name: string
   repoUrl: string | null
   syncMode: 'server' | 'client'
-  /** Default branch the workspace syncs from (when the server reports it). */
-  branch?: string | null
+  /**
+   * Default branch the workspace syncs from (when the server reports it).
+   * Field name matches the server's list serialization (`defaultBranch`).
+   */
+  defaultBranch?: string | null
 }
 
 export interface Binding {
@@ -42,17 +46,21 @@ export interface Binding {
 
 /**
  * Find the workspace bound to a GitHub repo by its "owner/repo" full name.
- * URL normalization rule (one place only): strip a `.git` suffix and compare
- * case-insensitively against `https://github.com/<fullName>`.
+ * URL normalization rule (one place only): parse the stored repoUrl with
+ * parseGithubUrl (handles https, .git suffix, trailing slash, and ssh forms)
+ * and compare owner/repo pairs case-insensitively.
  */
 export function findWorkspaceByRepoUrl(
   workspaces: WorkspaceListItem[],
   fullName: string,
 ): WorkspaceListItem | undefined {
-  const repoUrl = `https://github.com/${fullName}`.toLowerCase()
-  return workspaces.find(
-    (w) => w.repoUrl?.replace(/\.git$/, '').toLowerCase() === repoUrl,
-  )
+  const want = fullName.toLowerCase()
+  return workspaces.find((w) => {
+    if (!w.repoUrl) return false
+    const parsed = parseGithubUrl(w.repoUrl.trim().replace(/\/+$/, ''))
+    return parsed.type === 'github' &&
+      `${parsed.owner}/${parsed.repo}`.toLowerCase() === want
+  })
 }
 
 // ─── Server-cap pre-check ─────────────────────────────────────────────────────

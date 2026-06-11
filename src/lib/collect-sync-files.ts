@@ -98,3 +98,21 @@ export function collectSyncFiles(
 
   return { files, mdCount: mdFiles.length, mdPaths: mdFiles, totalCount: files.length, oversized }
 }
+
+/**
+ * Drop oversized blobs from a collected file set, reporting the skipped paths
+ * on stderr. One >2 MB file must not 413-abort the whole push: the server
+ * would reject the blob anyway, so it is excluded from the upload set AND
+ * (since casSync derives the manifest from the files it receives) from the
+ * manifest. Shared by `workspace push` and `sync`.
+ */
+export function skipOversized(collected: CollectedSyncFiles): SyncFile[] {
+  const { files, oversized } = collected
+  if (oversized.length === 0) return files
+  process.stderr.write(
+    `Warning: skipping ${oversized.length} file(s) over the ${MAX_BLOB_SIZE / (1024 * 1024)}MB server blob cap:\n` +
+    oversized.map((f) => `  ${f.path} (${f.bytes} bytes)\n`).join(''),
+  )
+  const skip = new Set(oversized.map((f) => f.path))
+  return files.filter((f) => !skip.has(f.path))
+}

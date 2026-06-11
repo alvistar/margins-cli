@@ -104,10 +104,23 @@ export async function casSync(
 ): Promise<CasSyncResult> {
   const basePath = `/api/workspaces/${workspaceId}/sync`
 
+  // Signal handling: record the signal for the 409-retry guard, then remove
+  // ourselves and RE-RAISE so Node's default disposition proceeds (a handler
+  // that only sets a flag would swallow Ctrl-C for the whole push, and a
+  // cancelled CI run would still POST its manifest on the non-409 path).
+  // throwIfInterrupted stays as the guard for the 409-retry path, which can
+  // run before the re-raised signal actually terminates the process.
   let interrupted: string | null = null
-  const onSignal = (signal: string) => { interrupted = signal }
-  const onSigint = () => onSignal('SIGINT')
-  const onSigterm = () => onSignal('SIGTERM')
+  const makeHandler = (signal: NodeJS.Signals): (() => void) => {
+    const handler = (): void => {
+      interrupted = signal
+      process.off(signal, handler)
+      process.kill(process.pid, signal)
+    }
+    return handler
+  }
+  const onSigint = makeHandler('SIGINT')
+  const onSigterm = makeHandler('SIGTERM')
   process.on('SIGINT', onSigint)
   process.on('SIGTERM', onSigterm)
 
