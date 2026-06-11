@@ -2,6 +2,28 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.7.0] - 2026-06-11
+
+### Added
+- **Credentialless CI sync via GitHub Actions OIDC.** `margins workspace push` authenticates with a short-lived GitHub Actions OIDC token when `MARGINS_OIDC_TOKEN` (or the `ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN` pair to mint one) is present — no stored API key needed. The bearer resolver prefers the OIDC token over `mrgn_` keys and re-mints on a mid-push 401. (U3)
+- **`margins install [target]`** — one-command repo onboarding to credentialless sync: creates the workspace, writes the OIDC trust binding, and opens a workflow PR. `--org <org>` (with `--include`/`--exclude` globs) onboards every repo in an org; `--dry-run` previews without writing. (U5)
+- **`margins audit [target]`** — sync-coverage report across repos: missing workflows, stale action pins, binding drift, over-cap repos. `--org` for org-wide, `--csv` output. Runs in gh-only mode without margins credentials (drift checks skipped). (U6)
+- **`syncMode` in `.margins.json`** (`server` | `client`) gates CLI commands: `workspace push` refuses server-managed-sync workspaces and points to `margins workspace sync`. The legacy `mode` field (`local`/`overlay`) is still read and upgraded in place. (faeaf73)
+- **Client version header** (`X-Margins-Client`) on API requests.
+
+### Changed
+- **CAS push hardening:** synthetic SHA-256 commit hash + server `headSha` as `parentSha`; shared `collectSyncFiles` pipeline with cap pre-check metadata; oversized (>2 MB) blobs are skipped from upload *and* manifest rather than 413-aborting the whole push. (U3/U4)
+- **Internal simplification:** shared repo-target + workspace-lookup helpers, deduped transport-error/re-mint paths, parallelized audit checks. (simplify pass)
+- **`/margins` plugin skills synced with the rebuilt CLI/server API** (skill-drift audit): corrected the `workspace open` invocation, the `.margins.json` `syncMode` field, CAS delete semantics, push output shape, 413 caps (2 MB/blob + 1000-file manifest), and documented `install`/`audit`. Plugin bumped to 0.7.0.
+
+### Fixed
+- **OIDC-only auth gate:** the `preAction` hook no longer rejects commands when only an OIDC token is present (it previously hard-required an API key, blocking every CI push). Extracted to a tested `hasOidcAuth()` helper. (a4869fb)
+- Drift-detection field mismatch, SIGTERM handler now re-raises after cleanup, oversized-blob skip, and the `target`/`--org` mutual-exclusion guard. (8d1653d)
+
+### Notes for developers
+- **Server compatibility:** the OIDC trust-binding + manifest-cap behaviour requires Margins server **v0.21.0+** (binding columns, `MAX_MANIFEST_FILES`, 2 MB blob cap). The CAS endpoints themselves work against v0.18.0+.
+- `dist/` is build output (tracked today, rebuilt by `release.yaml` on publish). `bin/margins` is now gitignored — the tracked entrypoint is `bin/margins.js`.
+
 ## [0.6.0] - 2026-05-20
 
 ### Added
