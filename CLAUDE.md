@@ -47,12 +47,22 @@ src/
     auth/               # login (Keycloak OAuth PKCE), logout, whoami
     config/             # set-key, set-url, show
     discuss/            # list, create, reply, resolve
-    workspace/          # list, create, open, sync, push
+    workspace/          # list, create, open, sync, push (push = CAS sync)
+    install.ts          # Credentialless onboarding: workspace + OIDC binding + workflow PR
+    audit.ts            # Sync-coverage report (missing/stale/drift/over-cap; --org, --csv)
+    install-hook.ts     # git hook installer (non-blocking push/commit sync)
+    sync.ts             # Top-level `sync` (folder setup + tray registry)
     completions.ts      # Shell completion script generation
   completions/
     dynamic.js          # Runtime completions (workspace slugs, discussion IDs)
   lib/
-    api-client.ts       # HTTP client for Margins API
+    api-client.ts       # HTTP client; bearer resolver prefers OIDC over API key
+    auth-env.ts         # hasOidcAuth() — OIDC token / mintable-env detection for the auth gate
+    cas-sync.ts         # Content-addressable push protocol (manifest diff + blob upload)
+    collect-sync-files.ts # Shared md+image collection pipeline with cap pre-check
+    resolve-sync-mode.ts # syncMode resolution (.margins.json), legacy `mode` upgrade
+    repo-targets.ts     # Shared repo-target + org-glob expansion for install/audit
+    audit-checks.ts     # Per-repo coverage checks used by `audit`
     config.ts           # Config resolution (env vars → stored config → defaults)
     errors.ts           # Error types (AuthMissing, ApiError, etc.)
     output.ts           # Formatting helpers (JSON/human output, error formatting)
@@ -73,9 +83,13 @@ margins-plugin/
 
 ## Auth resolution
 
-The `preAction` hook in `src/index.ts` resolves credentials in priority order:
-`--api-key` flag → `MARGINS_API_KEY` env → stored API key → stored Keycloak token.
-Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `auth`) skip this.
+The `preAction` hook in `src/index.ts` gates commands on having *some* credential:
+a stored/flag/env API key **or** an OIDC token (`hasOidcAuth()` in `lib/auth-env.ts`
+checks `MARGINS_OIDC_TOKEN` or the mintable `ACTIONS_ID_TOKEN_REQUEST_*` pair). The
+request-layer bearer resolver then prefers the OIDC token over the API key when both
+are present. Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `auth`,
+`install-hook`, `audit`) skip the gate — `audit` is exempt so it can run in gh-only
+mode; `workspace unsync` is exempt as a local-only subcommand.
 
 ## Plugin / Skills
 

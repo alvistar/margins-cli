@@ -42,6 +42,9 @@ margins workspace push --project my-docs --dir ./docs
 # Wire `git push` to auto-sync this repo to Margins (non-blocking)
 margins install-hook
 
+# Onboard a repo to credentialless CI sync (workspace + OIDC binding + workflow PR)
+margins install
+
 # List open discussions in the current repo
 margins discuss list
 
@@ -51,14 +54,15 @@ margins discuss create --path docs/intro.md --body "This section needs a concret
 
 ## Authentication
 
-Two methods are supported. The active credential is resolved in priority order:
+Three methods are supported. The active credential is resolved in priority order:
 
 | Priority | Source | Set by |
 |---|---|---|
-| 1 | `--api-key <key>` flag | any command |
-| 2 | `MARGINS_API_KEY` env var | shell / CI environment |
-| 3 | Stored static API key | `margins config set-key` |
-| 4 | Stored Keycloak access token | `margins auth login` |
+| 1 | GitHub Actions OIDC token | `MARGINS_OIDC_TOKEN`, or minted in CI from `ACTIONS_ID_TOKEN_REQUEST_*` |
+| 2 | `--api-key <key>` flag | any command |
+| 3 | `MARGINS_API_KEY` env var | shell / CI environment |
+| 4 | Stored static API key | `margins config set-key` |
+| 5 | Stored Keycloak access token | `margins auth login` |
 
 ### Browser login (recommended for humans)
 
@@ -81,6 +85,22 @@ MARGINS_API_KEY=mrgn_... margins workspace list
 ```
 
 Static keys support two scopes: `comment` (read + create discussions) and `edit` (full write access).
+
+### GitHub Actions OIDC (credentialless CI)
+
+In GitHub Actions, `workspace push` authenticates with a short-lived, GitHub-signed
+OIDC token — no API key stored in the repo or anywhere else. Either set
+`MARGINS_OIDC_TOKEN` to a pre-minted token, or grant the workflow
+`permissions: id-token: write` and the CLI mints one itself from
+`ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (re-minting
+automatically on a mid-push 401, since large first syncs can outlive a token's
+~5-minute life). The server verifies the token against GitHub's JWKS and authorizes
+by a pre-registered trust binding written via `margins install`.
+
+The easiest way to wire this up is the
+[margins-sync-action](https://github.com/alvistar/margins-sync-action) composite
+action, which `margins install` stamps into the repo for you. Requires Margins
+server v0.21.0+.
 
 ---
 
@@ -438,6 +458,59 @@ no `uninstall-hook` command yet.
 
 ---
 
+### `install`
+
+Onboards a repository to **credentialless** CI sync: creates (or reuses) the Margins
+workspace, writes the OIDC trust binding that authorizes this repo's GitHub Actions to
+push, and opens a PR adding the sync workflow. Once it lands, CI pushes markdown on
+every change with no stored credentials (see [Authentication](#authentication)).
+
+```sh
+margins install                      # onboard the current repo
+margins install owner/repo           # onboard a specific repo
+margins install --org my-org         # onboard every repo in an org (or user account)
+margins install --org my-org --include 'docs-*' --exclude 'archived-*'
+margins install --dry-run            # print intended actions without writing anything
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--org <org>` | no | Install across all repos in a GitHub org or user account. |
+| `--include <glob...>` | no | With `--org`: only repos matching these globs. |
+| `--exclude <glob...>` | no | With `--org`: skip repos matching these globs. |
+| `--dry-run` | no | Print the planned workspace / binding / PR actions without writing anything. |
+
+The stamped workflow uses the
+[margins-sync-action](https://github.com/alvistar/margins-sync-action) and a pinned CLI
+version. Requires Margins server v0.21.0+.
+
+---
+
+### `audit`
+
+Reports sync coverage across one or many repositories: which are missing the sync
+workflow, which carry a stale action pin, which have binding drift (the recorded
+workspace binding no longer matches the repo), and which exceed the server's file cap.
+
+```sh
+margins audit                        # audit the current repo
+margins audit --org my-org           # audit every repo in an org
+margins audit --org my-org --csv     # CSV output for spreadsheets
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--org <org>` | no | Audit all repos in a GitHub org or user account. |
+| `--include <glob...>` | no | With `--org`: only repos matching these globs. |
+| `--exclude <glob...>` | no | With `--org`: skip repos matching these globs. |
+| `--csv` | no | Emit CSV instead of a table. |
+
+`audit` runs in **gh-only mode** without Margins credentials — it still reports missing
+workflows, stale pins, and over-cap repos from the GitHub API alone (binding-drift checks
+are skipped when unauthenticated).
+
+---
+
 ## Agent / Scripting Mode
 
 All commands support `--json` for structured output:
@@ -471,7 +544,7 @@ Example `.margins.json`:
   "workspace_slug": "local/avigano/my-docs",
   "workspace_id": "0cfbdc14-c023-4c84-bc4a-e027e13cefab",
   "default_branch": "main",
-  "mode": "local",
+  "syncMode": "client",
   "server_url": "https://margins.example.com"
 }
 ```
@@ -481,7 +554,7 @@ Example `.margins.json`:
 | `workspace_slug` | Default workspace slug for `discuss` and `workspace` commands |
 | `workspace_id` | Default workspace UUID. Used by `workspace push --workspace` for re-pushes — more reliable than slug because it doesn't depend on slug resolution. |
 | `default_branch` | Default branch for `workspace sync`. For local workspaces this is `main`; for GitHub-overlay mode (local edits pushed to a GitHub workspace's `@local` branch) this is `@local`. |
-| `mode` | `"local"` for local workspaces, `"github-overlay"` for local edits overlaid on a GitHub workspace via the `@local` virtual branch. Used by skills to decide push behavior on subsequent runs. Optional; absence implies `"local"`. |
+| `syncMode` | `"client"` — the CLI pushes content via `workspace push` (CAS). `"server"` — Margins syncs the workspace from a GitHub webhook; the CLI refuses `workspace push` and directs you to `workspace sync`. Replaces the legacy `mode` field (`"local"` / `"overlay"`), which is still read and upgraded to `syncMode` in place. |
 | `server_url` | Server URL override (lower priority than `--server-url` and `MARGINS_SERVER_URL`) |
 
 > **Project-scoped credentials:** `.margins.json` is intended to be committed to the
