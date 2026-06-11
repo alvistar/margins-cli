@@ -2,7 +2,7 @@
 import childProcess, { execFile } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import process from "node:process";
+import N from "node:process";
 import { promisify } from "node:util";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -50,7 +50,7 @@ function isInsideContainer() {
 //#endregion
 //#region node_modules/is-wsl/index.js
 const isWsl = () => {
-	if (process.platform !== "linux") return false;
+	if (N.platform !== "linux") return false;
 	if (os.release().toLowerCase().includes("microsoft")) {
 		if (isInsideContainer()) return false;
 		return true;
@@ -61,7 +61,7 @@ const isWsl = () => {
 	if (fs.existsSync("/proc/sys/fs/binfmt_misc/WSLInterop") || fs.existsSync("/run/WSL")) return !isInsideContainer();
 	return false;
 };
-var is_wsl_default = process.env.__IS_WSL_TEST__ ? isWsl : isWsl();
+var is_wsl_default = N.env.__IS_WSL_TEST__ ? isWsl : isWsl();
 
 //#endregion
 //#region node_modules/wsl-utils/index.js
@@ -90,7 +90,7 @@ const powerShellPathFromWsl = async () => {
 };
 const powerShellPath = async () => {
 	if (is_wsl_default) return powerShellPathFromWsl();
-	return `${process.env.SYSTEMROOT || process.env.windir || String.raw`C:\Windows`}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+	return `${N.env.SYSTEMROOT || N.env.windir || String.raw`C:\Windows`}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 };
 
 //#endregion
@@ -120,7 +120,7 @@ function defineLazyProperty(object, propertyName, valueGetter) {
 //#region node_modules/default-browser-id/index.js
 const execFileAsync$3 = promisify(execFile);
 async function defaultBrowserId() {
-	if (process.platform !== "darwin") throw new Error("macOS only");
+	if (N.platform !== "darwin") throw new Error("macOS only");
 	const { stdout } = await execFileAsync$3("defaults", [
 		"read",
 		"com.apple.LaunchServices/com.apple.launchservices.secure",
@@ -135,7 +135,7 @@ async function defaultBrowserId() {
 //#region node_modules/run-applescript/index.js
 const execFileAsync$2 = promisify(execFile);
 async function runAppleScript(script, { humanReadableOutput = true, signal } = {}) {
-	if (process.platform !== "darwin") throw new Error("macOS only");
+	if (N.platform !== "darwin") throw new Error("macOS only");
 	const outputArguments = humanReadableOutput ? [] : ["-ss"];
 	const execOptions = {};
 	if (signal) execOptions.signal = signal;
@@ -249,14 +249,14 @@ async function defaultBrowser$1(_execFileAsync = execFileAsync$1) {
 const execFileAsync = promisify(execFile);
 const titleize = (string) => string.toLowerCase().replaceAll(/(?:^|\s|-)\S/g, (x) => x.toUpperCase());
 async function defaultBrowser() {
-	if (process.platform === "darwin") {
+	if (N.platform === "darwin") {
 		const id = await defaultBrowserId();
 		return {
 			name: await bundleName(id),
 			id
 		};
 	}
-	if (process.platform === "linux") {
+	if (N.platform === "linux") {
 		const { stdout } = await execFileAsync("xdg-mime", [
 			"query",
 			"default",
@@ -268,7 +268,7 @@ async function defaultBrowser() {
 			id
 		};
 	}
-	if (process.platform === "win32") return defaultBrowser$1();
+	if (N.platform === "win32") return defaultBrowser$1();
 	throw new Error("Only macOS, Linux, and Windows are supported");
 }
 
@@ -277,7 +277,7 @@ async function defaultBrowser() {
 const execFile$1 = promisify(childProcess.execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const localXdgOpenPath = path.join(__dirname, "xdg-open");
-const { platform, arch } = process;
+const { platform, arch } = N;
 /**
 Get the default browser name in Windows from WSL.
 
@@ -398,7 +398,7 @@ const baseOpen = async (options) => {
 				await fs$1.access(localXdgOpenPath, constants.X_OK);
 				exeLocalXdgOpen = true;
 			} catch {}
-			command = process.versions.electron ?? (platform === "android" || isBundled || !exeLocalXdgOpen) ? "xdg-open" : localXdgOpenPath;
+			command = N.versions.electron ?? (platform === "android" || isBundled || !exeLocalXdgOpen) ? "xdg-open" : localXdgOpenPath;
 		}
 		if (appArguments.length > 0) cliArguments.push(...appArguments);
 		if (!options.wait) {

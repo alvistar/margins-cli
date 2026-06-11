@@ -2,7 +2,7 @@
 import { t as __commonJSMin } from "./chunk-BbwQpWto.mjs";
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
-import process$1, { stdin, stdout } from "node:process";
+import N, { stdin, stdout } from "node:process";
 import { stripVTControlCharacters, styleText } from "node:util";
 import * as k from "node:readline";
 import ot from "node:readline";
@@ -729,7 +729,7 @@ var $t = class extends B {
 //#endregion
 //#region node_modules/@clack/prompts/dist/index.mjs
 function pt() {
-	return process$1.platform !== "win32" ? process$1.env.TERM !== "linux" : !!process$1.env.CI || !!process$1.env.WT_SESSION || !!process$1.env.TERMINUS_SUBLIME || process$1.env.ConEmuTask === "{cmd::Cmder}" || process$1.env.TERM_PROGRAM === "Terminus-Sublime" || process$1.env.TERM_PROGRAM === "vscode" || process$1.env.TERM === "xterm-256color" || process$1.env.TERM === "alacritty" || process$1.env.TERMINAL_EMULATOR === "JetBrains-JediTerm";
+	return N.platform !== "win32" ? N.env.TERM !== "linux" : !!N.env.CI || !!N.env.WT_SESSION || !!N.env.TERMINUS_SUBLIME || N.env.ConEmuTask === "{cmd::Cmder}" || N.env.TERM_PROGRAM === "Terminus-Sublime" || N.env.TERM_PROGRAM === "vscode" || N.env.TERM === "xterm-256color" || N.env.TERM === "alacritty" || N.env.TERMINAL_EMULATOR === "JetBrains-JediTerm";
 }
 const ee = pt(), ce = () => process.env.CI === "true", Me = (e) => e.isTTY === !0, I = (e, r) => ee ? e : r, Re = I("◆", "*"), $e = I("■", "x"), de = I("▲", "x"), V = I("◇", "o"), he = I("┌", "T"), h = I("│", "|"), x = I("└", "—"), Oe = I("┐", "T"), Pe = I("┘", "—"), z = I("●", ">"), H = I("○", " "), te = I("◻", "[•]"), U = I("◼", "[+]"), q = I("◻", "[ ]"), Ne = I("▪", "•"), se = I("─", "-"), pe = I("╮", "+"), We = I("├", "+"), me = I("╯", "+"), ge = I("╰", "+"), Ge = I("╭", "+"), fe = I("●", "•"), Fe = I("◆", "*"), ye = I("▲", "!"), Ee = I("■", "x"), W = (e) => {
 	switch (e) {
@@ -1380,7 +1380,7 @@ ${styleText("cyan", x)}
 `), o = a.reduce((n, c) => Math.max(D(c), n), 0);
 	return J(e, r - (a.map(s).reduce((n, c) => Math.max(D(c), n), 0) - o), i);
 }, Vt = (e = "", r = "", s) => {
-	const i = s?.output ?? process$1.stdout, a = s?.withGuide ?? _.withGuide, o = s?.format ?? jt, u = [
+	const i = s?.output ?? N.stdout, a = s?.withGuide ?? _.withGuide, o = s?.format ?? jt, u = [
 		"",
 		...kt(e, rt(i) - 6, o).split(`
 `).map(o),

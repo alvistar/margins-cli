@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { i as setGlobalConfig, o as AuthMissing } from "./config-NcAwuGj_.mjs";
-import { n as formatJson } from "./output-CnPBLxta.mjs";
+import { i as setGlobalConfig, o as AuthMissing } from "./config-DqP75CeC.mjs";
+import { n as formatJson } from "./output-EDs_B5hm.mjs";
 import { c as processDiscoveryResponse, d as revocationRequest, i as discoveryRequest, t as None } from "./build-DpfH9kc6.mjs";
-import { r as R, t as Gt } from "./dist-zyKt7qIr.mjs";
+import { r as R, t as Gt } from "./dist-DRq_WvKJ.mjs";
 
 //#region src/commands/auth/logout.ts
 async function handleLogout(cfg) {

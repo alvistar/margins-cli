@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { n as readLocalConfig, v as ValidationError } from "./config-NcAwuGj_.mjs";
-import { t as open } from "./open-C2LF0xAm.mjs";
+import { n as readLocalConfig, v as ValidationError } from "./config-DqP75CeC.mjs";
+import { t as open } from "./open-Cc9SU1qE.mjs";
 
 //#region src/commands/workspace/open.ts
 async function handleOpen(cfg, slug) {

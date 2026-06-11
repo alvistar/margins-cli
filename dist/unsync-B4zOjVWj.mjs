@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { r as R } from "./dist-zyKt7qIr.mjs";
+import { r as R } from "./dist-DRq_WvKJ.mjs";
 import { i as writeRegistry, n as normalize, r as readRegistry } from "./registry-BjSteoiv.mjs";
 import * as path$1 from "node:path";
 import * as fs$1 from "node:fs";

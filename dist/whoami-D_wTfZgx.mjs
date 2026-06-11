@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { o as AuthMissing } from "./config-NcAwuGj_.mjs";
-import { i as maskKey, n as formatJson, r as formatTable } from "./output-CnPBLxta.mjs";
-import { t as createApiClient } from "./api-client-BwzkgKwP.mjs";
-import { a as Wt } from "./dist-zyKt7qIr.mjs";
+import { o as AuthMissing } from "./config-DqP75CeC.mjs";
+import { i as maskKey, n as formatJson, r as formatTable } from "./output-EDs_B5hm.mjs";
+import { t as createApiClient } from "./api-client-Dj9rmGKx.mjs";
+import { a as Wt } from "./dist-DRq_WvKJ.mjs";
 
 //#region src/commands/auth/whoami.ts
 async function handleWhoami(cfg) {

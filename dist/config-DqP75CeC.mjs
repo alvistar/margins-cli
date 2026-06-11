@@ -4,7 +4,7 @@ import * as path$1 from "node:path";
 import path from "node:path";
 import * as fs$1 from "node:fs";
 import fs from "node:fs";
-import process$1 from "node:process";
+import N from "node:process";
 import { isDeepStrictEqual, promisify } from "node:util";
 import crypto from "node:crypto";
 import assert from "node:assert";
@@ -167,7 +167,7 @@ function hasProperty(object, path) {
 //#region node_modules/env-paths/index.js
 const homedir = os.homedir();
 const tmpdir = os.tmpdir();
-const { env } = process$1;
+const { env } = N;
 const macos = (name) => {
 	const library = path.join(homedir, "Library");
 	return {
@@ -202,8 +202,8 @@ const linux = (name) => {
 function envPaths(name, { suffix = "nodejs" } = {}) {
 	if (typeof name !== "string") throw new TypeError(`Expected a string, got ${typeof name}`);
 	if (suffix) name += `-${suffix}`;
-	if (process$1.platform === "darwin") return macos(name);
-	if (process$1.platform === "win32") return windows(name);
+	if (N.platform === "darwin") return macos(name);
+	if (N.platform === "win32") return windows(name);
 	return linux(name);
 }
 
@@ -298,7 +298,7 @@ const Handlers = {
 //#region node_modules/stubborn-fs/dist/constants.js
 const ATTEMPTIFY_CHANGE_ERROR_OPTIONS = { onError: Handlers.onChangeError };
 const ATTEMPTIFY_NOOP_OPTIONS = { onError: () => void 0 };
-const IS_USER_ROOT$1 = process$1.getuid ? !process$1.getuid() : false;
+const IS_USER_ROOT$1 = N.getuid ? !N.getuid() : false;
 const RETRYIFY_OPTIONS = { isRetriable: Handlers.isRetriableError };
 
 //#endregion
@@ -347,11 +347,11 @@ const FS = {
 //#region node_modules/atomically/dist/constants.js
 const DEFAULT_ENCODING = "utf8";
 const DEFAULT_WRITE_OPTIONS = {};
-const DEFAULT_USER_UID = process$1.geteuid ? process$1.geteuid() : -1;
-const DEFAULT_USER_GID = process$1.getegid ? process$1.getegid() : -1;
+const DEFAULT_USER_UID = N.geteuid ? N.geteuid() : -1;
+const DEFAULT_USER_GID = N.getegid ? N.getegid() : -1;
 const DEFAULT_TIMEOUT_SYNC = 1e3;
-const IS_POSIX = !!process$1.getuid;
-const IS_USER_ROOT = process$1.getuid ? !process$1.getuid() : false;
+const IS_POSIX = !!N.getuid;
+const IS_USER_ROOT = N.getuid ? !N.getuid() : false;
 
 //#endregion
 //#region node_modules/atomically/dist/utils/lang.js
@@ -367,8 +367,8 @@ const isUndefined = (value) => {
 
 //#endregion
 //#region node_modules/when-exit/dist/node/constants.js
-const IS_LINUX = process$1.platform === "linux";
-const IS_WINDOWS = process$1.platform === "win32";
+const IS_LINUX = N.platform === "linux";
+const IS_WINDOWS = N.platform === "win32";
 
 //#endregion
 //#region node_modules/when-exit/dist/node/signals.js
@@ -390,13 +390,13 @@ var Interceptor = class {
 			if (this.exited) return;
 			this.exited = true;
 			for (const callback of this.callbacks) callback();
-			if (signal) if (IS_WINDOWS && signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL") process$1.kill(process$1.pid, "SIGTERM");
-			else process$1.kill(process$1.pid, signal);
+			if (signal) if (IS_WINDOWS && signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL") N.kill(N.pid, "SIGTERM");
+			else N.kill(N.pid, signal);
 		};
 		this.hook = () => {
-			process$1.once("exit", () => this.exit());
+			N.once("exit", () => this.exit());
 			for (const signal of Signals) try {
-				process$1.once(signal, () => this.exit(signal));
+				N.once(signal, () => this.exit(signal));
 			} catch {}
 		};
 		this.register = (callback) => {
@@ -9265,7 +9265,7 @@ var Conf = class {
 				cipher.final()
 			]);
 		}
-		if (process$1.env.SNAP) fs.writeFileSync(this.path, data, { mode: this.#options.configFileMode });
+		if (N.env.SNAP) fs.writeFileSync(this.path, data, { mode: this.#options.configFileMode });
 		else try {
 			writeFileSync(this.path, data, { mode: this.#options.configFileMode });
 		} catch (error) {
@@ -9279,7 +9279,7 @@ var Conf = class {
 	_watch() {
 		this._ensureDirectory();
 		if (!fs.existsSync(this.path)) this._write(createPlainObject());
-		if (process$1.platform === "win32") fs.watch(this.path, { persistent: false }, debounceFunction(() => {
+		if (N.platform === "win32") fs.watch(this.path, { persistent: false }, debounceFunction(() => {
 			this.events.dispatchEvent(new Event("change"));
 		}, { wait: 100 }));
 		else fs.watchFile(this.path, { persistent: false }, debounceFunction(() => {

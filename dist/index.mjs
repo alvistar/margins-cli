@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { n as __require, r as __toESM, t as __commonJSMin } from "./chunk-BbwQpWto.mjs";
-import { o as AuthMissing, r as resolveConfig } from "./config-NcAwuGj_.mjs";
-import { t as formatError } from "./output-CnPBLxta.mjs";
+import { o as AuthMissing, r as resolveConfig } from "./config-DqP75CeC.mjs";
+import { t as formatError } from "./output-EDs_B5hm.mjs";
 import { t as CLI_VERSION } from "./version-6-wxs6mz.mjs";
 
 //#region node_modules/commander/lib/error.js
@@ -3114,39 +3114,39 @@ function getConfig(cmd) {
 }
 const configCmd = program.command("config").description("Manage CLI configuration");
 configCmd.command("set-key <key>").description("Store an API key").action(async (key) => {
-	const { handleSetKey } = await import("./set-key-D3_v3XQf.mjs");
+	const { handleSetKey } = await import("./set-key-DtnZ_dGT.mjs");
 	handleSetKey(key);
 	console.log("API key saved.");
 });
 configCmd.command("set-url <url>").description("Set the server URL").action(async (url) => {
-	const { handleSetUrl } = await import("./set-url-Bkoj0xy6.mjs");
+	const { handleSetUrl } = await import("./set-url-dhXpwcp7.mjs");
 	handleSetUrl(url);
 	console.log("Server URL saved.");
 });
 configCmd.command("show").description("Display current configuration").action(async () => {
 	const globalOpts = program.opts();
-	const { handleShow } = await import("./show-B2QNRVir.mjs");
+	const { handleShow } = await import("./show-Cnf7hHtX.mjs");
 	console.log(handleShow({ json: globalOpts.json ?? false }));
 });
 const authCmd = program.command("auth").description("Authentication commands");
 authCmd.command("login").description("Log in via browser (Keycloak OAuth)").action(async (_opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleLogin } = await import("./login-DSTw-hYE.mjs");
+	const { handleLogin } = await import("./login-DO4bfnGm.mjs");
 	await handleLogin(cfg);
 });
 authCmd.command("whoami").description("Show current authenticated identity").action(async (_opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleWhoami } = await import("./whoami-CVf0ClR2.mjs");
+	const { handleWhoami } = await import("./whoami-D_wTfZgx.mjs");
 	await handleWhoami(cfg);
 });
 authCmd.command("logout").description("Revoke the stored API key and clear local credentials").action(async (_opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleLogout } = await import("./logout-B4Hmam8y.mjs");
+	const { handleLogout } = await import("./logout-D_MP9qXM.mjs");
 	await handleLogout(cfg);
 });
 program.command("sync [dir]").description("Set up a folder for continuous sync with Margins").action(async (dir, _opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleSync } = await import("./sync-BNvRkHt-.mjs");
+	const { handleSync } = await import("./sync-D2aWEvRk.mjs");
 	await handleSync(cfg, {
 		dir,
 		json: cfg.json
@@ -3155,32 +3155,32 @@ program.command("sync [dir]").description("Set up a folder for continuous sync w
 const wsCmd = program.command("workspace").description("Workspace management");
 wsCmd.command("list").description("List all workspaces").action(async (_opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleList } = await import("./list-xQxdjus6.mjs");
+	const { handleList } = await import("./list-Cm95MMhB.mjs");
 	await handleList(cfg);
 });
 wsCmd.command("create <repo-url>").description("Create a workspace from a GitHub repo URL").action(async (repoUrl, _opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleCreate } = await import("./create-CBLzFuen.mjs");
+	const { handleCreate } = await import("./create-BFGdZCPt.mjs");
 	await handleCreate(cfg, repoUrl);
 });
 wsCmd.command("open [slug]").description("Open a workspace in the browser").action(async (slug, _opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleOpen } = await import("./open-B4h_fzDE.mjs");
+	const { handleOpen } = await import("./open-BnOHVAAJ.mjs");
 	await handleOpen(cfg, slug);
 });
 wsCmd.command("sync [slug]").description("Trigger a git sync").option("--branch <branch>", "Branch to sync").action(async (slug, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleSync } = await import("./sync-p-Jh3sjW.mjs");
+	const { handleSync } = await import("./sync-Dx7EiqEE.mjs");
 	await handleSync(cfg, slug, opts.branch);
 });
 wsCmd.command("push").description("Push local .md files to a workspace for review").option("--workspace <id>", "Workspace ID (omit to create new with --project)").option("--project <name>", "Create a new local workspace with this name").option("--dir <path>", "Directory to scan for .md files (default: cwd)").action(async (opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handlePush } = await import("./push-CJwvRNeX.mjs");
+	const { handlePush } = await import("./push-hP6mY4vV.mjs");
 	await handlePush(cfg, opts);
 });
 wsCmd.command("unsync").description("Remove a folder from sync (local only, no auth required)").option("--path <dir>", "Folder path to unsync (default: cwd with .margins.json)").option("--delete-config", "Also delete .margins.json from the folder").action(async (opts) => {
 	const globalOpts = program.opts();
-	const { handleUnsync } = await import("./unsync-BaTZKvVQ.mjs");
+	const { handleUnsync } = await import("./unsync-B4zOjVWj.mjs");
 	await handleUnsync({
 		path: opts.path,
 		deleteConfig: opts.deleteConfig,
@@ -3190,22 +3190,22 @@ wsCmd.command("unsync").description("Remove a folder from sync (local only, no a
 const discussCmd = program.command("discuss").description("Discussion management");
 discussCmd.command("list [slug]").description("List discussions").option("--path <path>", "Filter by artifact path").option("--status <status>", "Filter by status (open|resolved)", "open").action(async (slug, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleDiscussList } = await import("./list-DOqs_5fT.mjs");
+	const { handleDiscussList } = await import("./list-qlG_-Fh1.mjs");
 	await handleDiscussList(cfg, slug, opts);
 });
 discussCmd.command("create [slug]").description("Create a discussion").requiredOption("--path <path>", "Artifact path").requiredOption("--body <body>", "Discussion body").option("--anchor-heading <heading>", "Anchor to heading").option("--anchor-text <text>", "Anchor to selected text").option("--branch <branch>", "Branch the artifact lives on (default: current git branch)").action(async (slug, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleDiscussCreate } = await import("./create--TWBInle.mjs");
+	const { handleDiscussCreate } = await import("./create-DJ_-ZkBi.mjs");
 	await handleDiscussCreate(cfg, slug, opts);
 });
 discussCmd.command("reply <discussion-id>").description("Reply to a discussion").requiredOption("--body <body>", "Reply body").option("--workspace <slug>", "Workspace slug").action(async (discussionId, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleDiscussReply } = await import("./reply-Z1ByQYxO.mjs");
+	const { handleDiscussReply } = await import("./reply-BOJ5JQ3r.mjs");
 	await handleDiscussReply(cfg, discussionId, opts);
 });
 discussCmd.command("resolve <discussion-id>").description("Resolve a discussion").option("--summary <summary>", "Resolution summary").option("--workspace <slug>", "Workspace slug").action(async (discussionId, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleDiscussResolve } = await import("./resolve-YpwCdXzz.mjs");
+	const { handleDiscussResolve } = await import("./resolve-CYvFKHdc.mjs");
 	await handleDiscussResolve(cfg, discussionId, opts);
 });
 program.command("completions").description("Generate shell completion scripts").requiredOption("-s, --shell <shell>", "Shell type: bash, zsh, or fish").action(async (opts) => {
@@ -3214,7 +3214,7 @@ program.command("completions").description("Generate shell completion scripts").
 });
 program.command("install [target]").description("Onboard a repo to credentialless sync: workspace, trust binding, workflow PR").option("--org <org>", "Install across all repos in a GitHub org (or user account)").option("--include <glob...>", "With --org: only repos matching these globs").option("--exclude <glob...>", "With --org: skip repos matching these globs").option("--dry-run", "Print intended actions without writing anything").action(async (target, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleInstall } = await import("./install-CaPkfdST.mjs");
+	const { handleInstall } = await import("./install-BxQhFLSz.mjs");
 	await handleInstall(cfg, target, {
 		org: opts.org,
 		include: opts.include,
@@ -3224,7 +3224,7 @@ program.command("install [target]").description("Onboard a repo to credentialles
 });
 program.command("audit [target]").description("Report sync coverage: missing workflows, stale action pins, binding drift, over-cap repos").option("--org <org>", "Audit all repos in a GitHub org (or user account)").option("--include <glob...>", "With --org: only repos matching these globs").option("--exclude <glob...>", "With --org: skip repos matching these globs").option("--csv", "Output as CSV").action(async (target, opts, cmd) => {
 	const cfg = getConfig(cmd);
-	const { handleAudit } = await import("./audit-Dii4Q4kW.mjs");
+	const { handleAudit } = await import("./audit-nTeLkElK.mjs");
 	await handleAudit(cfg, target, {
 		org: opts.org,
 		include: opts.include,
@@ -3233,7 +3233,7 @@ program.command("audit [target]").description("Report sync coverage: missing wor
 	});
 });
 program.command("install-hook").description("Install a git hook to sync with Margins on push or commit").option("--on <trigger>", "Hook trigger: commit or push (default: push)", "push").option("--force", "Overwrite existing hook without prompting").action(async (opts) => {
-	const { handleInstallHook } = await import("./install-hook-DvwgH3OL.mjs");
+	const { handleInstallHook } = await import("./install-hook-C0O_3wPy.mjs");
 	await handleInstallHook({
 		on: opts.on,
 		force: opts.force
@@ -3248,7 +3248,7 @@ if (completionsIdx !== -1 && process.argv[completionsIdx + 1]) {
 	});
 	const workspaceIdx = process.argv.indexOf("--workspace");
 	const workspaceSlug = workspaceIdx !== -1 ? process.argv[workspaceIdx + 1] : void 0;
-	import("./dynamic-Dq3Qi3tB.mjs").then(({ handleDynamicCompletions }) => handleDynamicCompletions(cfg, type, workspaceSlug ? { workspace: workspaceSlug } : {})).catch(() => process.exit(0));
+	import("./dynamic-cpaGsUsT.mjs").then(({ handleDynamicCompletions }) => handleDynamicCompletions(cfg, type, workspaceSlug ? { workspace: workspaceSlug } : {})).catch(() => process.exit(0));
 } else program.parseAsync(process.argv).catch((err) => {
 	const json = program.opts().json ?? false;
 	process.stderr.write(formatError(err, json) + "\n");

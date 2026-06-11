@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { v as ValidationError } from "./config-NcAwuGj_.mjs";
+import { v as ValidationError } from "./config-DqP75CeC.mjs";
 import { a as SYNCABLE_IMAGE_EXTENSIONS, t as MAX_BLOB_SIZE } from "./collect-sync-files-BZpXOHa2.mjs";
 import { n as parseGithubUrl } from "./detect-git-remote-h0Y5tWqZ.mjs";
 import { execFile } from "node:child_process";
