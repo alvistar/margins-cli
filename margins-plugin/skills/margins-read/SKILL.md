@@ -28,7 +28,7 @@ elif [ -x "$HOME/.bun/bin/margins" ]; then
   # (e.g. bun installed via Homebrew, or non-interactive subshells)
   MARGINS="$HOME/.bun/bin/margins"
 else
-  MARGINS="npx --yes github:alvistar/margins-cli"
+  MARGINS="npx --yes margins-cli"
 fi
 
 # 2. Project-scoped CLI config: if .margins/ exists at the git root, use it.

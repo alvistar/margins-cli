@@ -4,6 +4,10 @@ node_modules/
 # TypeScript incremental build info
 *.tsbuildinfo
 
+# Build output — rebuilt fresh by release.yaml before npm publish, and not a
+# git-committed artifact (no longer served via git-URL install; use npm).
+/dist/
+
 # Environment
 .env
 .env.local

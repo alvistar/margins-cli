@@ -2,6 +2,12 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.7.1] - 2026-06-11
+
+### Changed
+- Plugin skills invoke the CLI via the npm package (`npx margins-cli`) instead of the `github:` git-URL form, now that the CLI is published to npm. `margins-setup` documents `npm install -g margins-cli`.
+- Stop committing `dist/` to git. It is rebuilt fresh by `release.yaml` before `npm publish` (so the published tarball is unchanged), and the git-URL install — the only consumer of a committed bundle — is retired in favour of npm. This removes the `check:dist` cross-platform churn (the bundler's content-hash output differs across OS/arch, so a dev-committed `dist/` could never byte-match CI's rebuild).
+
 ## [0.7.0] - 2026-06-11
 
 ### Added

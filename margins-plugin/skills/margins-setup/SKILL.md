@@ -18,15 +18,13 @@ If the CLI is found, skip to Step 3 (credential check).
 
 ## Step 2: Verify margins CLI is accessible via npx
 
-The margins CLI is currently distributed via GitHub and invoked through npx. No global install needed.
+The margins CLI is published to npm and invoked through npx. No global install needed.
 
 ```bash
-npx --yes github:alvistar/margins-cli --version
+npx --yes margins-cli --version
 ```
 
-> Note: once the CLI is published to npm (Trusted Publishing, planned), prefer the
-> published package over the `github:` git-URL form above — the git-URL install is
-> unpinnable and runs `prepare` on the fly. Switch this command when that lands.
+For a persistent install: `npm install -g margins-cli`.
 
 If `npx` is not found, tell the user:
 > "Node.js is required. Install it from https://nodejs.org, then retry `/margins-setup`."
