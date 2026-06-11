@@ -1,6 +1,6 @@
 {
   "name": "margins-cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "CLI for Margins — sync and review Markdown in Git",
   "type": "module",
   "bin": {
@@ -27,7 +27,6 @@
     "test:watch": "vitest",
     "prepublishOnly": "npm test && npm run check:dist"
   },
-  "dependencies": {},
   "devDependencies": {
     "@clack/prompts": "^1.1.0",
     "@commander-js/extra-typings": "^14.0.0",
