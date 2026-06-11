@@ -1,18 +1,26 @@
 #!/usr/bin/env node
-import { n as readLocalConfig, s as ConflictError, v as ValidationError } from "./config-DHEPrW--.mjs";
-import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
-import { t as resolveWorkspaceBySlug } from "./resolve-workspace-CCRy89Zw.mjs";
-import * as p from "@clack/prompts";
+import { n as readLocalConfig, s as ConflictError, v as ValidationError } from "./config-NcAwuGj_.mjs";
+import { n as formatJson } from "./output-CnPBLxta.mjs";
+import { t as createApiClient } from "./api-client-BwzkgKwP.mjs";
+import { s as be } from "./dist-zyKt7qIr.mjs";
+import { t as resolveWorkspaceBySlug } from "./resolve-workspace-Dnl0tTrf.mjs";
+import { t as resolveSyncMode } from "./resolve-sync-mode-D4kcuBdZ.mjs";
 
 //#region src/commands/workspace/sync.ts
 async function handleSync(cfg, slug, branch) {
 	const resolvedSlug = slug ?? readLocalConfig()?.workspace_slug;
 	if (!resolvedSlug) throw new ValidationError("No workspace specified. Pass a slug or create .margins.json");
 	const client = createApiClient(cfg);
+	const localCfg = readLocalConfig();
+	if (localCfg) {
+		if (await resolveSyncMode(localCfg, client) === "client") {
+			console.error("This workspace uses client-managed sync. Use `margins workspace push` instead.");
+			process.exit(1);
+		}
+	}
 	const workspace = await resolveWorkspaceBySlug(client, resolvedSlug);
 	if (!cfg.json) {
-		const spinner = p.spinner();
+		const spinner = be();
 		spinner.start(`Syncing ${resolvedSlug}...`);
 		let result;
 		try {

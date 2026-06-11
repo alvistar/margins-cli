@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
-import { t as resolveWorkspaceBySlug } from "./resolve-workspace-CCRy89Zw.mjs";
+import { t as createApiClient } from "./api-client-BwzkgKwP.mjs";
+import { t as resolveWorkspaceBySlug } from "./resolve-workspace-Dnl0tTrf.mjs";
 
 //#region src/completions/dynamic.ts
 async function handleDynamicCompletions(cfg, type, opts = {}) {

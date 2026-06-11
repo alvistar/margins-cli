@@ -1,89 +1,7 @@
 #!/usr/bin/env node
-import { v as ValidationError } from "./config-DHEPrW--.mjs";
-import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 
-//#region src/lib/cas-sync.ts
-function sha256(buf) {
-	return createHash("sha256").update(buf).digest("hex");
-}
-/**
-* Run an async function for each item with bounded concurrency.
-* Returns results in the same order as items.
-*/
-async function poolMap(items, concurrency, fn) {
-	const results = new Array(items.length);
-	let nextIndex = 0;
-	async function worker() {
-		while (nextIndex < items.length) {
-			const idx = nextIndex++;
-			results[idx] = await fn(items[idx]);
-		}
-	}
-	const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-	await Promise.all(workers);
-	return results;
-}
-const UPLOAD_CONCURRENCY = 5;
-/**
-* Content-addressable sync protocol.
-*
-* 1. Fetch the server manifest for the branch
-* 2. Compute SHA-256 of each local file, diff against manifest
-* 3. Upload new/changed blobs (up to 5 concurrent)
-* 4. Commit the new manifest
-*/
-async function casSync(client, workspaceId, branch, commitSha, parentSha, files) {
-	const basePath = `/api/workspaces/${workspaceId}/sync`;
-	const serverFiles = (await client.get(`${basePath}/manifest`, { branch })).files ?? {};
-	const localFiles = {};
-	const localByHash = /* @__PURE__ */ new Map();
-	for (const file of files) {
-		const hash = sha256(file.content);
-		localFiles[file.path] = hash;
-		localByHash.set(hash, file);
-	}
-	let added = 0;
-	let changed = 0;
-	const deleted = Object.keys(serverFiles).filter((p) => !(p in localFiles)).length;
-	const hashesOnServer = new Set(Object.values(serverFiles));
-	const hashesToUpload = /* @__PURE__ */ new Set();
-	for (const [filePath, hash] of Object.entries(localFiles)) {
-		const serverHash = serverFiles[filePath];
-		if (serverHash === void 0) {
-			added++;
-			if (!hashesOnServer.has(hash)) hashesToUpload.add(hash);
-		} else if (serverHash !== hash) {
-			changed++;
-			if (!hashesOnServer.has(hash)) hashesToUpload.add(hash);
-		}
-	}
-	const toUpload = [...hashesToUpload];
-	await poolMap(toUpload, UPLOAD_CONCURRENCY, async (hash) => {
-		const file = localByHash.get(hash);
-		await client.putRaw(`${basePath}/objects/${hash}`, file.content, file.contentType);
-	});
-	const uploaded = toUpload.length;
-	await client.post(`${basePath}/manifest`, {
-		branch,
-		commitSha,
-		parentSha,
-		files: localFiles
-	});
-	return {
-		added,
-		changed,
-		deleted,
-		uploaded,
-		skipped: files.length - added - changed
-	};
-}
-
-//#endregion
 //#region src/lib/image-scanner.ts
 const MIME_TYPES = {
 	".png": "image/png",
@@ -98,6 +16,12 @@ const MIME_TYPES = {
 	".tiff": "image/tiff",
 	".tif": "image/tiff"
 };
+/**
+* Image extensions (without the leading dot) the sync pipeline uploads —
+* the single source of truth, derived from {@link MIME_TYPES}. Anything with
+* a recognized MIME type here is collected and pushed.
+*/
+const SYNCABLE_IMAGE_EXTENSIONS = Object.keys(MIME_TYPES).map((ext) => ext.slice(1));
 function mimeFromPath(filePath) {
 	const dot = filePath.lastIndexOf(".");
 	if (dot === -1) return null;
@@ -233,7 +157,19 @@ function loadIgnoreFilter(repoRoot) {
 }
 
 //#endregion
-//#region src/commands/workspace/push.ts
+//#region src/lib/collect-sync-files.ts
+/**
+* Shared file-collection pipeline for local CAS sync (`workspace push`, `sync`).
+* (install/audit cap pre-checks read the GitHub tree instead — see
+* src/lib/audit-checks.ts; only MAX_BLOB_SIZE is shared with them.)
+*
+* Globs markdown files (skipping dotdirs, node_modules, symlinks), applies the
+* `.marginsignore` filter, and collects referenced images (deduplicated; missing
+* refs and unsupported mime types skipped). Also reports blobs over the server's
+* MAX_BLOB_SIZE so callers can warn before uploads that would fail server-side.
+*/
+/** Server-side per-blob size cap (margins MAX_BLOB_SIZE). */
+const MAX_BLOB_SIZE = 2 * 1024 * 1024;
 /** Recursively find all .md files in a directory, skipping symlinks. */
 function globMarkdown(dir, base = "") {
 	const results = [];
@@ -247,128 +183,68 @@ function globMarkdown(dir, base = "") {
 	}
 	return results.sort();
 }
-const GIT_STDIO = [
-	"ignore",
-	"pipe",
-	"ignore"
-];
-function gitBranch(cwd) {
-	try {
-		return execSync("git rev-parse --abbrev-ref HEAD", {
-			cwd,
-			encoding: "utf-8",
-			stdio: GIT_STDIO
-		}).trim();
-	} catch {
-		return "main";
-	}
-}
-function gitCommitSha(cwd) {
-	try {
-		return execSync("git rev-parse HEAD", {
-			cwd,
-			encoding: "utf-8",
-			stdio: GIT_STDIO
-		}).trim();
-	} catch {
-		return "unknown";
-	}
-}
-function gitParentSha(cwd) {
-	try {
-		return execSync("git rev-parse HEAD~1", {
-			cwd,
-			encoding: "utf-8",
-			stdio: GIT_STDIO
-		}).trim();
-	} catch {
-		return null;
-	}
-}
-async function handlePush(cfg, opts) {
-	const client = createApiClient(cfg);
-	const cwd = opts.dir ?? process.cwd();
-	let workspaceId = opts.workspace;
-	let createdSlug;
-	if (!workspaceId) {
-		const localCfgPath = join(cwd, ".margins.json");
-		if (existsSync(localCfgPath)) try {
-			const localCfg = JSON.parse(readFileSync(localCfgPath, "utf-8"));
-			if (localCfg.workspace_id) workspaceId = localCfg.workspace_id;
-		} catch {}
-	}
-	if (!workspaceId && opts.project) {
-		const result = await client.post("/api/workspaces", {
-			name: opts.project,
-			source: "local",
-			projectName: opts.project
-		});
-		workspaceId = result.workspace.id;
-		createdSlug = result.workspace.slug;
-		if (cfg.json) console.log(formatJson({
-			created: true,
-			workspaceId,
-			slug: createdSlug
-		}));
-		else {
-			console.log(`Created workspace: ${createdSlug}`);
-			console.log(`Workspace ID: ${workspaceId}`);
-		}
-	}
-	if (!workspaceId) throw new ValidationError("Specify --workspace <id> or --project <name> to create a new workspace");
-	const allMdFiles = globMarkdown(cwd);
-	const ignoreFilter = loadIgnoreFilter(cwd);
+/**
+* Collect all syncable files under `dir`: filtered markdown plus referenced
+* images. `maxBlobSize` is overridable for tests; defaults to the server cap.
+*/
+function collectSyncFiles(dir, opts = {}) {
+	const maxBlobSize = opts.maxBlobSize ?? 2097152;
+	const allMdFiles = globMarkdown(dir);
+	const ignoreFilter = loadIgnoreFilter(dir);
 	const mdFiles = allMdFiles.filter(ignoreFilter);
-	if (mdFiles.length === 0) throw new ValidationError(`No .md files found in ${cwd}`);
-	const syncFiles = [];
+	const files = [];
 	const seenPaths = /* @__PURE__ */ new Set();
 	for (const relPath of mdFiles) {
-		const content = readFileSync(join(cwd, relPath));
-		syncFiles.push({
+		const content = readFileSync(join(dir, relPath));
+		files.push({
 			path: relPath,
 			content,
 			contentType: "text/markdown"
 		});
 		seenPaths.add(relPath);
-		const imagePaths = scanImagesInMarkdown(content.toString("utf-8"), relPath, cwd);
+		const imagePaths = scanImagesInMarkdown(content.toString("utf-8"), relPath, dir);
 		for (const imgPath of imagePaths) {
 			if (seenPaths.has(imgPath)) continue;
-			const imgFull = join(cwd, imgPath);
+			const imgFull = join(dir, imgPath);
 			if (!existsSync(imgFull)) continue;
 			const mime = mimeFromPath(imgPath);
 			if (!mime) continue;
 			try {
-				const imgContent = readFileSync(imgFull);
-				syncFiles.push({
+				files.push({
 					path: imgPath,
-					content: imgContent,
+					content: readFileSync(imgFull),
 					contentType: mime
 				});
 				seenPaths.add(imgPath);
 			} catch {}
 		}
 	}
-	const branch = gitBranch(cwd);
-	const commitSha = gitCommitSha(cwd);
-	const parentSha = gitParentSha(cwd);
-	const result = await casSync(client, workspaceId, branch, commitSha, parentSha, syncFiles);
-	if (cfg.json) console.log(formatJson({
-		...result,
-		...createdSlug ? {
-			workspaceId,
-			slug: createdSlug
-		} : {}
+	const oversized = files.filter((f) => f.content.length > maxBlobSize).map((f) => ({
+		path: f.path,
+		bytes: f.content.length
 	}));
-	else {
-		let line = `Pushed: ${[
-			`${result.added} added`,
-			`${result.changed} changed`,
-			`${result.deleted} deleted`
-		].join(", ")}`;
-		if (result.uploaded > 0 || result.skipped > 0) line += ` (${result.uploaded} uploaded, ${result.skipped} unchanged)`;
-		console.log(line);
-	}
+	return {
+		files,
+		mdCount: mdFiles.length,
+		mdPaths: mdFiles,
+		totalCount: files.length,
+		oversized
+	};
+}
+/**
+* Drop oversized blobs from a collected file set, reporting the skipped paths
+* on stderr. One >2 MB file must not 413-abort the whole push: the server
+* would reject the blob anyway, so it is excluded from the upload set AND
+* (since casSync derives the manifest from the files it receives) from the
+* manifest. Shared by `workspace push` and `sync`.
+*/
+function skipOversized(collected) {
+	const { files, oversized } = collected;
+	if (oversized.length === 0) return files;
+	process.stderr.write(`Warning: skipping ${oversized.length} file(s) over the ${MAX_BLOB_SIZE / (1024 * 1024)}MB server blob cap:\n` + oversized.map((f) => `  ${f.path} (${f.bytes} bytes)\n`).join(""));
+	const skip = new Set(oversized.map((f) => f.path));
+	return files.filter((f) => !skip.has(f.path));
 }
 
 //#endregion
-export { globMarkdown, handlePush };
+export { SYNCABLE_IMAGE_EXTENSIONS as a, skipOversized as i, collectSyncFiles as n, globMarkdown as r, MAX_BLOB_SIZE as t };

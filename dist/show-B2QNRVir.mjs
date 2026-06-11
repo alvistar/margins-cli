@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { t as getGlobalConfig } from "./config-DHEPrW--.mjs";
-import { i as maskKey, n as formatJson, r as formatTable } from "./output-Tt66fI4Y.mjs";
+import { t as getGlobalConfig } from "./config-NcAwuGj_.mjs";
+import { i as maskKey, n as formatJson, r as formatTable } from "./output-CnPBLxta.mjs";
 
 //#region src/commands/config/show.ts
 function handleShow(opts) {

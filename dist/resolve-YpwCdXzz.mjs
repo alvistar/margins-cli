@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { c as DiscussionNotFoundError, n as readLocalConfig, p as NotFoundError, s as ConflictError, v as ValidationError } from "./config-DHEPrW--.mjs";
-import { n as formatJson } from "./output-Tt66fI4Y.mjs";
-import { t as createApiClient } from "./api-client-b0eZ67v3.mjs";
-import { t as resolveWorkspaceBySlug } from "./resolve-workspace-CCRy89Zw.mjs";
+import { c as DiscussionNotFoundError, n as readLocalConfig, p as NotFoundError, s as ConflictError, v as ValidationError } from "./config-NcAwuGj_.mjs";
+import { n as formatJson } from "./output-CnPBLxta.mjs";
+import { t as createApiClient } from "./api-client-BwzkgKwP.mjs";
+import { t as resolveWorkspaceBySlug } from "./resolve-workspace-Dnl0tTrf.mjs";
 
 //#region src/commands/discuss/resolve.ts
 async function handleDiscussResolve(cfg, discussionId, opts) {
