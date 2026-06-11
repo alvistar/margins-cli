@@ -184,6 +184,16 @@ describe('api client — X-Margins-Client header', () => {
 })
 
 describe('api client — GitHub Actions OIDC token', () => {
+  // Hermeticity: the release CI job runs with `id-token: write`, so
+  // ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN are present in the ambient environment.
+  // Clear them by default so the "no mint env" cases are deterministic locally
+  // AND in CI. Tests that exercise re-minting stub these explicitly, overriding
+  // the clear below.
+  beforeEach(() => {
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_URL', '')
+    vi.stubEnv('ACTIONS_ID_TOKEN_REQUEST_TOKEN', '')
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
