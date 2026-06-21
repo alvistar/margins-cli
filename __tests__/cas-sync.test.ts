@@ -237,6 +237,52 @@ describe('casSync', () => {
     expect((caught as MergeConflictError).conflicts).toHaveLength(2)
   })
 
+  // ─── Clean auto-merge: notify + advise, no file writes (U3) ─────────────────
+
+  it('on 200 merged: prints the auto-merge notice and reports the server counts (AE2)', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      // Server auto-merged: counts describe the MERGED tree, not the local 2-file diff.
+      return apiOk({
+        added: 5, changed: 2, deleted: 1, merged: true,
+        head: HEAD_2, files: { 'readme.md': 'a'.repeat(64) },
+      })
+    })
+
+    const client = createApiClient(baseConfig())
+    // casSync never touches the filesystem (push-only) — nothing to write.
+    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+
+    expect(result.merged).toBe(true)
+    expect(result).toMatchObject({ added: 5, changed: 2, deleted: 1 }) // server counts, not local
+    expect(result.uploaded).toBe(2) // blob-transfer stats stay local
+
+    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+    expect(logged).toMatch(/auto-merged/i)
+    expect(logged).toMatch(/behind|pull|re-sync/i)
+  })
+
+  it('on a plain 200 fast-forward (no merged): local counts, merged=false, no notice (R7)', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return apiOk({ added: 99, changed: 99, deleted: 99 }) // no `merged` → server counts ignored
+    })
+
+    const client = createApiClient(baseConfig())
+    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+
+    expect(result.merged).toBe(false)
+    // Local diff: server empty, 2 local files → 2 added.
+    expect(result).toMatchObject({ added: 2, changed: 0, deleted: 0 })
+
+    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+    expect(logged).not.toMatch(/auto-merged/i)
+  })
+
   it('SIGINT during the 409-retry window → ConflictError naming the signal, no second POST', async () => {
     // The handler re-raises via process.kill — spy it out so the test runner
     // doesn't actually receive a SIGINT.

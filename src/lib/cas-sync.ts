@@ -14,6 +14,7 @@ export interface CasSyncResult {
   deleted: number
   uploaded: number   // blobs actually transferred
   skipped: number    // blobs already on server
+  merged: boolean    // server 3-way-merged this push with a concurrent edit
 }
 
 interface ManifestResponse {
@@ -77,6 +78,27 @@ function mapSyncError(err: unknown): never {
     )
   }
   throw err
+}
+
+/** Server counts from a clean auto-merge (`200 { merged: true, ... }`). */
+interface ServerMergeCounts {
+  added: number
+  changed: number
+  deleted: number
+}
+
+/**
+ * Detect a clean server-side auto-merge from a manifest POST response. The
+ * server returns `{ merged: true, added, changed, deleted, head, files }` when
+ * it merged this push with a concurrent edit; a plain fast-forward omits
+ * `merged`. Returns the server's merge counts, or null for a fast-forward.
+ */
+function parseMergeResult(resp: unknown): ServerMergeCounts | null {
+  if (!resp || typeof resp !== 'object') return null
+  if ((resp as { merged?: unknown }).merged !== true) return null
+  const r = resp as { added?: unknown; changed?: unknown; deleted?: unknown }
+  const n = (v: unknown): number => (typeof v === 'number' ? v : 0)
+  return { added: n(r.added), changed: n(r.changed), deleted: n(r.deleted) }
 }
 
 /**
@@ -219,8 +241,12 @@ export async function casSync(
       files: localFiles,
     })
 
+    // The manifest POST response carries the clean-auto-merge signal
+    // (`merged: true` + the server's merge counts). A plain fast-forward
+    // returns just `{ added, changed, deleted }`.
+    let postResp: unknown
     try {
-      await client.post(`${basePath}/manifest`, commitBody(manifest.headSha))
+      postResp = await client.post(`${basePath}/manifest`, commitBody(manifest.headSha))
     } catch (err) {
       // Post-PR2 a SYNC_MERGE_CONFLICT is ALWAYS a real content conflict: the
       // server already 3-way-merges head-moves, so refetch-and-repush would
@@ -256,7 +282,7 @@ export async function casSync(
       throwIfInterrupted()
 
       try {
-        await client.post(`${basePath}/manifest`, commitBody(fresh.headSha))
+        postResp = await client.post(`${basePath}/manifest`, commitBody(fresh.headSha))
       } catch (retryErr) {
         if (retryErr instanceof ConflictError) {
           throw new ConflictError(
@@ -269,12 +295,29 @@ export async function casSync(
       }
     }
 
+    // Clean auto-merge (R4, KTD3): the server merged this push with a concurrent
+    // edit. The CLI is push-only — it never writes document content (the working
+    // copy is the user's own git repo) — so we cannot apply the merged tree. We
+    // report the server's merge counts (not the local diff) and advise the user
+    // their copy is behind. `skipped`/`uploaded` stay local — they describe blob
+    // transfer, not the merge.
+    const merge = parseMergeResult(postResp)
+    if (merge) {
+      process.stderr.write(
+        `[margins] Your push was auto-merged with a concurrent edit on the server ` +
+        `(${merge.added} added, ${merge.changed} changed, ${merge.deleted} deleted). ` +
+        `Your local copy is now behind the merged result — pull / re-sync the latest ` +
+        `before editing again.\n`,
+      )
+    }
+
     return {
-      added,
-      changed,
-      deleted,
+      added: merge ? merge.added : added,
+      changed: merge ? merge.changed : changed,
+      deleted: merge ? merge.deleted : deleted,
       uploaded,
       skipped: files.length - added - changed,
+      merged: merge !== null,
     }
   } finally {
     process.off('SIGINT', onSigint)
