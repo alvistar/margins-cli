@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
 import { casSync, syntheticCommitSha } from '../src/lib/cas-sync.js'
-import { ConflictError } from '../src/lib/errors.js'
+import { ConflictError, MergeConflictError } from '../src/lib/errors.js'
 
 // Shared test vector — must stay byte-identical to the desktop implementation
 // (margins-desktop src-tauri/src/sync/cas_sync.rs synthetic_commit_sha).
@@ -184,6 +184,57 @@ describe('casSync', () => {
 
     // Exactly one retry: two POSTs total, no third attempt
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2)
+  })
+
+  // ─── SYNC_MERGE_CONFLICT: surface-and-stop, never clobber (U2) ──────────────
+
+  const mergeConflict = (head: string, conflicts = [{ path: 'readme.md', reason: 'content' }]) =>
+    new Response(JSON.stringify({
+      error: 'SYNC_MERGE_CONFLICT',
+      message: 'Divergent push could not be merged cleanly; resolve the conflicts and re-push.',
+      merged: false,
+      conflicts,
+      head,
+    }), { status: 409 })
+
+  it('on SYNC_MERGE_CONFLICT: exactly one POST, no refetch, no clobber re-push (AE1, AE3)', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return mergeConflict(HEAD_1) // POST → merge conflict
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(MergeConflictError)
+    expect((caught as MergeConflictError).exitCode).toBe(1) // non-zero exit
+    // The clobbering refetch-and-repost never runs: one POST, one GET.
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+  })
+
+  it('names the conflicting file(s) and a reconcile next step', async () => {
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return mergeConflict(HEAD_1, [
+        { path: 'readme.md', reason: 'content' },
+        { path: 'docs/nested.md', reason: 'delete-modify' },
+      ])
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+
+    const msg = (caught as MergeConflictError).userMessage
+    expect(msg).toContain('readme.md')
+    expect(msg).toContain('docs/nested.md')
+    expect(msg).toMatch(/did not land|reconcile|pull/i)
+    // Conflict payload is preserved on the thrown error.
+    expect((caught as MergeConflictError).conflicts).toHaveLength(2)
   })
 
   it('SIGINT during the 409-retry window → ConflictError naming the signal, no second POST', async () => {

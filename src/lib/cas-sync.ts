@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { ApiClient } from './api-client.js'
-import { ConflictError, ServerError, ValidationError } from './errors.js'
+import {
+  ConflictError, MergeConflictError, ServerError, ValidationError,
+  type SyncConflictEntry,
+} from './errors.js'
 import { poolMap } from './pool.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -74,6 +77,21 @@ function mapSyncError(err: unknown): never {
     )
   }
   throw err
+}
+
+/**
+ * Build the user-facing message for a server-side merge conflict: name the
+ * conflicting file(s) and the reconcile next step. A whole-tree conflict
+ * (path `"*"`, e.g. an unreconstructable base) gets a generic phrasing.
+ */
+function formatMergeConflictMessage(conflicts: SyncConflictEntry[]): string {
+  const next = 'Pull the latest, reconcile, and push again.'
+  const paths = conflicts.map((c) => c.path).filter((p) => p !== '*')
+  if (paths.length === 0) {
+    return `Your push conflicts with a newer change and was not applied. ${next}`
+  }
+  const verb = paths.length === 1 ? 'conflicts' : 'conflict'
+  return `${paths.join(', ')} ${verb} with a newer change — your push did not land. ${next}`
 }
 
 // ─── CAS sync ────────────────────────────────────────────────────────────────
@@ -204,11 +222,23 @@ export async function casSync(
     try {
       await client.post(`${basePath}/manifest`, commitBody(manifest.headSha))
     } catch (err) {
+      // Post-PR2 a SYNC_MERGE_CONFLICT is ALWAYS a real content conflict: the
+      // server already 3-way-merges head-moves, so refetch-and-repush would
+      // clobber the other writer. Surface the conflicting files + next step and
+      // STOP — never re-push. The CLI writes no local files, so the user's
+      // working copy is preserved for free. (R1/R2/R3, KTD2)
+      if (err instanceof MergeConflictError) {
+        throw new MergeConflictError(
+          err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
+        )
+      }
+
       if (!(err instanceof ConflictError)) mapSyncError(err)
 
-      // 409: server headSha moved between our GET and POST. Git is the source
-      // of truth — refetch the headSha and retry ONCE (the local manifest and
-      // commitSha are unchanged), overwriting the concurrent write by contract.
+      // Legacy / non-merge 409 (stale headSha): the server no longer emits this
+      // post-PR2, but keep the refetch-and-retry-once path defensively. Git is
+      // the source of truth — refetch the headSha and retry ONCE (the local
+      // manifest and commitSha are unchanged), overwriting the concurrent write.
       throwIfInterrupted()
 
       const fresh = await client.get(
