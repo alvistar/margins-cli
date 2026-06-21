@@ -87,6 +87,28 @@ export class ConflictError extends MarginsError {
   }
 }
 
+/** A single per-path conflict from a server-side 3-way merge. */
+export interface SyncConflictEntry {
+  path: string
+  reason: string
+}
+
+/**
+ * A divergent CAS push the server could not merge cleanly
+ * (`409 SYNC_MERGE_CONFLICT`). Distinct from a plain {@link ConflictError} so
+ * the sync layer can surface-and-stop (no clobber) instead of re-pushing.
+ * Carries the per-file conflict list and the unchanged server head.
+ */
+export class MergeConflictError extends ConflictError {
+  constructor(
+    public readonly conflicts: SyncConflictEntry[],
+    public readonly head: string | null,
+    message = 'Your push conflicts with a newer change and was not applied.',
+  ) {
+    super(message)
+  }
+}
+
 export class WorkspaceNotFoundError extends MarginsError {
   constructor(slug: string) {
     super(`Workspace not found: ${slug}`, `Workspace '${slug}' not found.`, 1)

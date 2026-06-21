@@ -6,7 +6,7 @@ import type { ResolvedConfig } from '../src/lib/config.js'
 import { _resetStore } from '../src/lib/config.js'
 import {
   AuthExpired, ForbiddenError, NotFoundError, ServerError,
-  NetworkError, ResponseParseError,
+  ConflictError, MergeConflictError, NetworkError, ResponseParseError,
 } from '../src/lib/errors.js'
 
 // Isolate config store — prevents token refresh tests from writing to the
@@ -292,6 +292,70 @@ describe('api client — GitHub Actions OIDC token', () => {
       .filter((line) => line.startsWith('::add-mask::'))
     expect(masks).toEqual(['::add-mask::gh.oidc.token\n']) // once, not per request
     stdoutSpy.mockRestore()
+  })
+})
+
+describe('api client — 409 conflict typing (merge vs generic)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const HEAD = 'ab'.repeat(32)
+
+  // The merge-conflict 409 body is TOP-LEVEL (not in the { data } envelope) and
+  // its `error` is a flat string code — mirrors the server's manifest route.
+  const mergeBody = {
+    error: 'SYNC_MERGE_CONFLICT',
+    message: 'Divergent push could not be merged cleanly; resolve the conflicts and re-push.',
+    merged: false,
+    conflicts: [{ path: 'notes.md', reason: 'content' }],
+    head: HEAD,
+  }
+
+  it('types a 409 SYNC_MERGE_CONFLICT as MergeConflictError exposing conflicts + head (AE4)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(mergeBody), { status: 409 }),
+    ))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(MergeConflictError)
+    expect(caught).toBeInstanceOf(ConflictError) // subclass — legacy `instanceof ConflictError` still catches it
+    const err = caught as MergeConflictError
+    expect(err.conflicts).toEqual([{ path: 'notes.md', reason: 'content' }])
+    expect(err.head).toBe(HEAD)
+    expect(err.userMessage).toContain('could not be merged')
+  })
+
+  it('falls back to a plain ConflictError on a 409 with a non-merge code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'SOMETHING_ELSE' }), { status: 409 }),
+    ))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(ConflictError)
+    expect(caught).not.toBeInstanceOf(MergeConflictError)
+  })
+
+  it('falls back to a plain ConflictError on a non-JSON 409 body (no crash)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<<not json>>', { status: 409 })))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(ConflictError)
+    expect(caught).not.toBeInstanceOf(MergeConflictError)
+  })
+
+  it('reads a flat-string `error` code into ServerError.code (real apiError shape)', async () => {
+    // The live server emits { error: "CODE", message } (flat). Regression guard:
+    // before this, readErrorCode only handled the nested { error: { code } } shape.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'PUSH_SYNC_NOT_SUPPORTED', message: 'nope' }), { status: 422 }),
+    ))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(ServerError)
+    expect((caught as ServerError).code).toBe('PUSH_SYNC_NOT_SUPPORTED')
   })
 })
 
