@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
 import { casSync, syntheticCommitSha } from '../src/lib/cas-sync.js'
-import { ConflictError } from '../src/lib/errors.js'
+import { ConflictError, MergeConflictError } from '../src/lib/errors.js'
 
 // Shared test vector — must stay byte-identical to the desktop implementation
 // (margins-desktop src-tauri/src/sync/cas_sync.rs synthetic_commit_sha).
@@ -135,105 +135,122 @@ describe('casSync', () => {
     expect(body.parentSha).toBeNull()
   })
 
-  it('on 409 refetches the manifest once and retries with the new headSha', async () => {
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    const calls = stubFetch((method, _url, counts) => {
-      if (method === 'GET') {
-        return apiOk({ files: {}, headSha: counts.get === 1 ? HEAD_1 : HEAD_2 })
-      }
-      if (method === 'PUT') return apiOk({ stored: true })
-      // POST: first attempt conflicts, retry succeeds
-      if (counts.post === 1) {
-        return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
-      }
-      return apiOk({ ok: true })
-    })
-
-    const client = createApiClient(baseConfig())
-    const result = await casSync(client, 'ws-1', 'main', syncFiles())
-    expect(result.uploaded).toBe(2)
-
-    // Exact call sequence: GET manifest, 2 blob PUTs, POST (409), GET refetch, POST retry
-    const sequence = calls.map((c) => c.method)
-    expect(sequence).toEqual(['GET', 'PUT', 'PUT', 'POST', 'GET', 'POST'])
-
-    const posts = calls.filter((c) => c.method === 'POST')
-    const retryBody = JSON.parse(posts[1]!.body!) as { parentSha: string | null; commitSha: string }
-    expect(retryBody.parentSha).toBe(HEAD_2) // refetched headSha
-    expect(retryBody.commitSha).toBe(vector.expectedSyntheticSha) // manifest unchanged
-
-    // Loud log naming the replaced headSha and the differing file count
-    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
-    expect(logged).toContain(HEAD_2)
-    expect(logged).toMatch(/2 file/)
-  })
-
-  it('throws a typed ConflictError when the retry also returns 409', async () => {
-    const calls = stubFetch((method, _url, counts) => {
-      if (method === 'GET') {
-        return apiOk({ files: {}, headSha: counts.get === 1 ? HEAD_1 : HEAD_2 })
-      }
-      if (method === 'PUT') return apiOk({ stored: true })
-      return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
-    })
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-
-    const client = createApiClient(baseConfig())
-    await expect(casSync(client, 'ws-1', 'main', syncFiles()))
-      .rejects.toBeInstanceOf(ConflictError)
-
-    // Exactly one retry: two POSTs total, no third attempt
-    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2)
-  })
-
-  it('SIGINT during the 409-retry window → ConflictError naming the signal, no second POST', async () => {
-    // The handler re-raises via process.kill — spy it out so the test runner
-    // doesn't actually receive a SIGINT.
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    const calls = stubFetch((method, _url, counts) => {
+  it('on an unrecognized (non-merge) 409: surfaces-and-stops, NEVER refetches or re-pushes', async () => {
+    // Post-PR2 the server only emits SYNC_MERGE_CONFLICT for a 409, but an
+    // unrecognized 409 must still surface-and-stop — never overwrite. Exactly
+    // one POST, no refetch GET.
+    const calls = stubFetch((method) => {
       if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
       if (method === 'PUT') return apiOk({ stored: true })
-      if (counts.post === 1) {
-        // Deliver the signal between the 409 response and the retry path
-        process.emit('SIGINT')
-        return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
-      }
-      return apiOk({ ok: true })
+      return new Response(JSON.stringify({ error: 'SOME_OTHER_409' }), { status: 409 })
     })
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', syncFiles()).catch((err) => { caught = err })
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
 
     expect(caught).toBeInstanceOf(ConflictError)
-    expect((caught as Error).message).toContain('SIGINT')
-    // The retry POST was never sent — only the conflicting first attempt
+    expect(caught).not.toBeInstanceOf(MergeConflictError)
+    // No clobber: exactly one POST, exactly one GET (no refetch-and-repush).
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
-    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT')
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
   })
 
-  it('signal handler removes itself and re-raises so default termination proceeds', async () => {
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    let postCount = 0
-    stubFetch((method) => {
+  // ─── SYNC_MERGE_CONFLICT: surface-and-stop, never clobber (U2) ──────────────
+
+  const mergeConflict = (head: string, conflicts = [{ path: 'readme.md', reason: 'content' }]) =>
+    new Response(JSON.stringify({
+      error: 'SYNC_MERGE_CONFLICT',
+      message: 'Divergent push could not be merged cleanly; resolve the conflicts and re-push.',
+      merged: false,
+      conflicts,
+      head,
+    }), { status: 409 })
+
+  it('on SYNC_MERGE_CONFLICT: exactly one POST, no refetch, no clobber re-push (AE1, AE3)', async () => {
+    const calls = stubFetch((method) => {
       if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
       if (method === 'PUT') return apiOk({ stored: true })
-      if (++postCount === 1) {
-        const before = process.listeners('SIGINT').length
-        process.emit('SIGINT')
-        // Handler removed itself before re-raising
-        expect(process.listeners('SIGINT').length).toBe(before - 1)
-        return new Response(JSON.stringify({ error: { code: 'CONFLICT' } }), { status: 409 })
-      }
-      return apiOk({ ok: true })
+      return mergeConflict(HEAD_1) // POST → merge conflict
     })
 
     const client = createApiClient(baseConfig())
-    await expect(casSync(client, 'ws-1', 'main', syncFiles()))
-      .rejects.toBeInstanceOf(ConflictError)
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
 
-    // Re-raised the same signal at itself for default disposition
-    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT')
+    expect(caught).toBeInstanceOf(MergeConflictError)
+    expect((caught as MergeConflictError).exitCode).toBe(1) // non-zero exit
+    // The clobbering refetch-and-repost never runs: one POST, one GET.
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+  })
+
+  it('names the conflicting file(s) and a reconcile next step', async () => {
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return mergeConflict(HEAD_1, [
+        { path: 'readme.md', reason: 'content' },
+        { path: 'docs/nested.md', reason: 'delete-modify' },
+      ])
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+
+    const msg = (caught as MergeConflictError).userMessage
+    expect(msg).toContain('readme.md')
+    expect(msg).toContain('docs/nested.md')
+    expect(msg).toMatch(/did not land|reconcile|pull/i)
+    // Conflict payload is preserved on the thrown error.
+    expect((caught as MergeConflictError).conflicts).toHaveLength(2)
+  })
+
+  // ─── Clean auto-merge: notify + advise, no file writes (U3) ─────────────────
+
+  it('on 200 merged: prints the auto-merge notice and reports the server counts (AE2)', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      // Server auto-merged: counts describe the MERGED tree, not the local 2-file diff.
+      return apiOk({
+        added: 5, changed: 2, deleted: 1, merged: true,
+        head: HEAD_2, files: { 'readme.md': 'a'.repeat(64) },
+      })
+    })
+
+    const client = createApiClient(baseConfig())
+    // casSync never touches the filesystem (push-only) — nothing to write.
+    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+
+    expect(result.merged).toBe(true)
+    expect(result).toMatchObject({ added: 5, changed: 2, deleted: 1 }) // server counts, not local
+    expect(result.uploaded).toBe(2) // blob-transfer stats stay local
+
+    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+    expect(logged).toMatch(/auto-merged/i)
+    expect(logged).toMatch(/behind|pull|re-sync/i)
+  })
+
+  it('on a plain 200 fast-forward (no merged): local counts, merged=false, no notice (R7)', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return apiOk({ added: 99, changed: 99, deleted: 99 }) // no `merged` → server counts ignored
+    })
+
+    const client = createApiClient(baseConfig())
+    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+
+    expect(result.merged).toBe(false)
+    // Local diff: server empty, 2 local files → 2 added.
+    expect(result).toMatchObject({ added: 2, changed: 0, deleted: 0 })
+
+    const logged = stderrSpy.mock.calls.map((c) => String(c[0])).join('')
+    expect(logged).not.toMatch(/auto-merged/i)
   })
 
   it('maps 422 PUSH_SYNC_NOT_SUPPORTED to an actionable error message', async () => {

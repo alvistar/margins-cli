@@ -2,6 +2,17 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.8.0] - 2026-06-22
+
+### Added
+- **Client merge-conflict handling.** Now that the server 3-way-merges a divergent push, the CLI reads the manifest-push response and acts on it instead of clobbering the other writer:
+  - On `409 SYNC_MERGE_CONFLICT` the push **surfaces the conflicting file(s)** and a reconcile next step, exits non-zero, and **never re-pushes** — the concurrent writer's change is preserved. (U1, U2)
+  - On a clean `200` auto-merge the CLI reports the **server's merge counts** and advises that the local copy is now behind (pull / re-sync); `merged` is surfaced in `--json` output for `margins push` and `margins sync`. (U3)
+
+### Changed
+- **Any `409` from the manifest push now surfaces-and-stops.** The legacy refetch-and-retry-once path — which could overwrite a concurrent writer on a stale push — was removed; the CLI never re-pushes on a conflict. (Gates server PR #73 / v0.28.0.)
+- `api-client` reads the server error code across all body shapes it ships (flat-string `{ error: "CODE" }`, nested `{ error: { code } }`, and top-level `{ code }`), fixing a latent gap where the live server's flat-string code was not read.
+
 ## [0.7.1] - 2026-06-11
 
 ### Changed

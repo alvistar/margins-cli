@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { ApiClient } from './api-client.js'
-import { ConflictError, ServerError, ValidationError } from './errors.js'
+import {
+  ConflictError, MergeConflictError, ServerError, ValidationError,
+  type SyncConflictEntry,
+} from './errors.js'
 import { poolMap } from './pool.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -11,6 +14,7 @@ export interface CasSyncResult {
   deleted: number
   uploaded: number   // blobs actually transferred
   skipped: number    // blobs already on server
+  merged: boolean    // server 3-way-merged this push with a concurrent edit
 }
 
 interface ManifestResponse {
@@ -52,18 +56,6 @@ export function syntheticCommitSha(manifest: Record<string, string>): string {
   return sha256(Buffer.from(buf, 'utf-8'))
 }
 
-/** Count paths whose hash differs (or exists on only one side) between two manifests. */
-function countManifestDiff(a: Record<string, string>, b: Record<string, string>): number {
-  let diff = 0
-  for (const [path, hash] of Object.entries(a)) {
-    if (b[path] !== hash) diff++
-  }
-  for (const path of Object.keys(b)) {
-    if (!(path in a)) diff++
-  }
-  return diff
-}
-
 /** Map a 422 PUSH_SYNC_NOT_SUPPORTED server error to an actionable message. */
 function mapSyncError(err: unknown): never {
   if (err instanceof ServerError && err.code === 'PUSH_SYNC_NOT_SUPPORTED') {
@@ -74,6 +66,42 @@ function mapSyncError(err: unknown): never {
     )
   }
   throw err
+}
+
+/** Server counts from a clean auto-merge (`200 { merged: true, ... }`). */
+interface ServerMergeCounts {
+  added: number
+  changed: number
+  deleted: number
+}
+
+/**
+ * Detect a clean server-side auto-merge from a manifest POST response. The
+ * server returns `{ merged: true, added, changed, deleted, head, files }` when
+ * it merged this push with a concurrent edit; a plain fast-forward omits
+ * `merged`. Returns the server's merge counts, or null for a fast-forward.
+ */
+function parseMergeResult(resp: unknown): ServerMergeCounts | null {
+  if (!resp || typeof resp !== 'object') return null
+  if ((resp as { merged?: unknown }).merged !== true) return null
+  const r = resp as { added?: unknown; changed?: unknown; deleted?: unknown }
+  const n = (v: unknown): number => (typeof v === 'number' ? v : 0)
+  return { added: n(r.added), changed: n(r.changed), deleted: n(r.deleted) }
+}
+
+/**
+ * Build the user-facing message for a server-side merge conflict: name the
+ * conflicting file(s) and the reconcile next step. A whole-tree conflict
+ * (path `"*"`, e.g. an unreconstructable base) gets a generic phrasing.
+ */
+function formatMergeConflictMessage(conflicts: SyncConflictEntry[]): string {
+  const next = 'Pull the latest, reconcile, and push again.'
+  const paths = conflicts.map((c) => c.path).filter((p) => p !== '*')
+  if (paths.length === 0) {
+    return `Your push conflicts with a newer change and was not applied. ${next}`
+  }
+  const verb = paths.length === 1 ? 'conflicts' : 'conflict'
+  return `${paths.join(', ')} ${verb} with a newer change — your push did not land. ${next}`
 }
 
 // ─── CAS sync ────────────────────────────────────────────────────────────────
@@ -91,10 +119,12 @@ const UPLOAD_CONCURRENCY = 5
  *    server's headSha from step 1. SHAs are computed here — callers never
  *    supply them (git SHAs are the wrong shape AND the wrong semantics).
  *
- * On a 409 (headSha moved under us): refetch the manifest once, log loudly
- * what we're replacing, and retry with the fresh headSha. A second 409 is a
- * hard error. The retry is skipped if the process received SIGINT/SIGTERM
- * (e.g. a cancelled CI run must not overwrite a newer run's tree).
+ * On ANY 409 the push surfaces-and-stops — it is NEVER re-pushed. Post-PR2 the
+ * server 3-way-merges a divergent push, so a 409 is always a real content
+ * conflict (SYNC_MERGE_CONFLICT); re-pushing would clobber the writer the
+ * server preserved. An unrecognized 409 is treated the same way (a hard
+ * conflict to reconcile), never an overwrite. The CLI writes no local files,
+ * so the user's working copy is preserved.
  */
 export async function casSync(
   client: ApiClient,
@@ -104,150 +134,118 @@ export async function casSync(
 ): Promise<CasSyncResult> {
   const basePath = `/api/workspaces/${workspaceId}/sync`
 
-  // Signal handling: record the signal for the 409-retry guard, then remove
-  // ourselves and RE-RAISE so Node's default disposition proceeds (a handler
-  // that only sets a flag would swallow Ctrl-C for the whole push, and a
-  // cancelled CI run would still POST its manifest on the non-409 path).
-  // throwIfInterrupted stays as the guard for the 409-retry path, which can
-  // run before the re-raised signal actually terminates the process.
-  let interrupted: string | null = null
-  const makeHandler = (signal: NodeJS.Signals): (() => void) => {
-    const handler = (): void => {
-      interrupted = signal
-      process.off(signal, handler)
-      process.kill(process.pid, signal)
-    }
-    return handler
-  }
-  const onSigint = makeHandler('SIGINT')
-  const onSigterm = makeHandler('SIGTERM')
-  process.on('SIGINT', onSigint)
-  process.on('SIGTERM', onSigterm)
+  // Step 1: Fetch current server manifest
+  const manifest = await client.get(
+    `${basePath}/manifest`,
+    { branch },
+  ).catch(mapSyncError) as ManifestResponse
 
-  /** Abort instead of retrying once a termination signal has been received. */
-  const throwIfInterrupted = (): void => {
-    if (interrupted) {
-      throw new ConflictError(
-        `Manifest push conflicted (409) but the process received ${interrupted} — ` +
-        'aborting without retrying. Re-run the push to sync.',
-      )
-    }
+  const serverFiles = manifest.files ?? {}
+
+  // Step 2: Compute local hashes and diff
+  const localFiles: Record<string, string> = {}
+  const localByHash = new Map<string, SyncFile>()
+
+  for (const file of files) {
+    const hash = sha256(file.content)
+    localFiles[file.path] = hash
+    localByHash.set(hash, file)
   }
 
-  try {
-    // Step 1: Fetch current server manifest
-    const manifest = await client.get(
-      `${basePath}/manifest`,
-      { branch },
-    ).catch(mapSyncError) as ManifestResponse
+  // Determine what changed
+  let added = 0
+  let changed = 0
+  const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
 
-    const serverFiles = manifest.files ?? {}
+  // Collect hashes that need uploading (new or changed content)
+  const hashesOnServer = new Set(Object.values(serverFiles))
+  const hashesToUpload = new Set<string>()
 
-    // Step 2: Compute local hashes and diff
-    const localFiles: Record<string, string> = {}
-    const localByHash = new Map<string, SyncFile>()
-
-    for (const file of files) {
-      const hash = sha256(file.content)
-      localFiles[file.path] = hash
-      localByHash.set(hash, file)
-    }
-
-    // Determine what changed
-    let added = 0
-    let changed = 0
-    const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
-
-    // Collect hashes that need uploading (new or changed content)
-    const hashesOnServer = new Set(Object.values(serverFiles))
-    const hashesToUpload = new Set<string>()
-
-    for (const [filePath, hash] of Object.entries(localFiles)) {
-      const serverHash = serverFiles[filePath]
-      if (serverHash === undefined) {
-        added++
-        if (!hashesOnServer.has(hash)) {
-          hashesToUpload.add(hash)
-        }
-      } else if (serverHash !== hash) {
-        changed++
-        if (!hashesOnServer.has(hash)) {
-          hashesToUpload.add(hash)
-        }
+  for (const [filePath, hash] of Object.entries(localFiles)) {
+    const serverHash = serverFiles[filePath]
+    if (serverHash === undefined) {
+      added++
+      if (!hashesOnServer.has(hash)) {
+        hashesToUpload.add(hash)
+      }
+    } else if (serverHash !== hash) {
+      changed++
+      if (!hashesOnServer.has(hash)) {
+        hashesToUpload.add(hash)
       }
     }
+  }
 
-    // Step 3: Upload blobs concurrently
-    const toUpload = [...hashesToUpload]
+  // Step 3: Upload blobs concurrently
+  const toUpload = [...hashesToUpload]
 
-    await poolMap(toUpload, UPLOAD_CONCURRENCY, async (hash) => {
-      const file = localByHash.get(hash)!
-      await client.putRaw(
-        `${basePath}/objects/${hash}`,
-        file.content,
-        file.contentType,
-      )
-    })
+  await poolMap(toUpload, UPLOAD_CONCURRENCY, async (hash) => {
+    const file = localByHash.get(hash)!
+    await client.putRaw(
+      `${basePath}/objects/${hash}`,
+      file.content,
+      file.contentType,
+    )
+  })
 
-    const uploaded = toUpload.length
+  const uploaded = toUpload.length
 
-    // Step 4: Commit the new manifest. commitSha is synthetic and derived
-    // from localFiles; parentSha is the server's headSha (CAS swap contract).
-    const commitSha = syntheticCommitSha(localFiles)
-    const commitBody = (parentSha: string | null) => ({
+  // Step 4: Commit the new manifest. commitSha is synthetic and derived from
+  // localFiles; parentSha is the server's headSha (CAS swap contract). The
+  // response carries the clean-auto-merge signal (`merged: true` + the server's
+  // merge counts); a plain fast-forward returns just `{ added, changed, deleted }`.
+  const commitSha = syntheticCommitSha(localFiles)
+  let postResp: unknown
+  try {
+    postResp = await client.post(`${basePath}/manifest`, {
       branch,
       commitSha,
-      parentSha,
+      parentSha: manifest.headSha,
       files: localFiles,
     })
-
-    try {
-      await client.post(`${basePath}/manifest`, commitBody(manifest.headSha))
-    } catch (err) {
-      if (!(err instanceof ConflictError)) mapSyncError(err)
-
-      // 409: server headSha moved between our GET and POST. Git is the source
-      // of truth — refetch the headSha and retry ONCE (the local manifest and
-      // commitSha are unchanged), overwriting the concurrent write by contract.
-      throwIfInterrupted()
-
-      const fresh = await client.get(
-        `${basePath}/manifest`,
-        { branch },
-      ).catch(mapSyncError) as ManifestResponse
-
-      const differing = countManifestDiff(localFiles, fresh.files ?? {})
-      process.stderr.write(
-        `[margins] Manifest conflict (409): another writer moved headSha to ` +
-        `${fresh.headSha ?? '(none)'}. Retrying once — this push will replace that ` +
-        `manifest (${differing} file(s) differ vs the server manifest).\n`,
+  } catch (err) {
+    // A server-side merge conflict: name the conflicting files + next step and
+    // STOP. (R1/R2/R3, KTD2)
+    if (err instanceof MergeConflictError) {
+      throw new MergeConflictError(
+        err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
       )
-
-      throwIfInterrupted()
-
-      try {
-        await client.post(`${basePath}/manifest`, commitBody(fresh.headSha))
-      } catch (retryErr) {
-        if (retryErr instanceof ConflictError) {
-          throw new ConflictError(
-            'Manifest push conflicted twice (server headSha keeps moving). ' +
-            'Another writer is actively pushing to this workspace — wait for it ' +
-            'to finish and re-run the push.',
-          )
-        }
-        mapSyncError(retryErr)
-      }
     }
-
-    return {
-      added,
-      changed,
-      deleted,
-      uploaded,
-      skipped: files.length - added - changed,
+    // ANY other 409 also surfaces-and-stops — we NEVER refetch-and-repush
+    // (that would clobber a concurrent writer). Post-PR2 the server only emits
+    // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
+    // user must reconcile, not an overwrite.
+    if (err instanceof ConflictError) {
+      throw new ConflictError(
+        'Your push conflicted with the server and was not applied. ' +
+        'Pull the latest, reconcile, and push again.',
+      )
     }
-  } finally {
-    process.off('SIGINT', onSigint)
-    process.off('SIGTERM', onSigterm)
+    mapSyncError(err)
+  }
+
+  // Clean auto-merge (R4, KTD3): the server merged this push with a concurrent
+  // edit. The CLI is push-only — it never writes document content (the working
+  // copy is the user's own git repo) — so we cannot apply the merged tree. We
+  // report the server's merge counts (not the local diff) and advise the user
+  // their copy is behind. `skipped`/`uploaded` stay local — they describe blob
+  // transfer, not the merge.
+  const merge = parseMergeResult(postResp)
+  if (merge) {
+    process.stderr.write(
+      `[margins] Your push was auto-merged with a concurrent edit on the server ` +
+      `(${merge.added} added, ${merge.changed} changed, ${merge.deleted} deleted). ` +
+      `Your local copy is now behind the merged result — pull / re-sync the latest ` +
+      `before editing again.\n`,
+    )
+  }
+
+  return {
+    added: merge ? merge.added : added,
+    changed: merge ? merge.changed : changed,
+    deleted: merge ? merge.deleted : deleted,
+    uploaded,
+    skipped: files.length - added - changed,
+    merged: merge !== null,
   }
 }

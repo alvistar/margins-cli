@@ -3,7 +3,8 @@ import type { ResolvedConfig } from './config.js'
 import { setGlobalConfig } from './config.js'
 import {
   AuthExpired, ForbiddenError, NotFoundError, ServerError, ConflictError,
-  NetworkError, TimeoutError, ResponseParseError,
+  MergeConflictError, NetworkError, TimeoutError, ResponseParseError,
+  type SyncConflictEntry,
 } from './errors.js'
 import { maskKey } from './output.js'
 import { CLI_VERSION } from './version.js'
@@ -172,27 +173,72 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     return resolveBearer(config)
   }
 
+  interface ParsedErrorBody {
+    code?: string
+    message?: string
+    conflicts?: SyncConflictEntry[]
+    head?: string | null
+  }
+
+  /**
+   * Parse a JSON error body once, normalizing the server's error code across
+   * every shape it ships:
+   *   - flat string  `{ error: "CODE", message }`     ← apiError() / merge-conflict 409
+   *   - nested object `{ error: { code: "CODE" } }`    ← legacy
+   *   - top-level     `{ code: "CODE" }`
+   * Also surfaces a merge-conflict 409's `conflicts` + `head`. A Response body
+   * can only be read once, so callers must use this XOR read the body elsewhere.
+   */
+  async function parseErrorBody(response: Response): Promise<ParsedErrorBody | undefined> {
+    let parsed: Record<string, unknown> | null
+    try {
+      parsed = await response.json() as Record<string, unknown> | null
+    } catch {
+      return undefined // Non-JSON error body — nothing to extract
+    }
+    if (!parsed || typeof parsed !== 'object') return undefined
+
+    const err = parsed['error']
+    let code: string | undefined
+    if (typeof err === 'string') code = err
+    else if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') {
+      code = (err as { code: string }).code
+    } else if (typeof parsed['code'] === 'string') {
+      code = parsed['code'] as string
+    }
+
+    const message = typeof parsed['message'] === 'string' ? parsed['message'] as string : undefined
+    const conflicts = Array.isArray(parsed['conflicts'])
+      ? (parsed['conflicts'] as unknown[]).filter(
+          (c): c is SyncConflictEntry =>
+            !!c && typeof c === 'object'
+            && typeof (c as { path?: unknown }).path === 'string'
+            && typeof (c as { reason?: unknown }).reason === 'string',
+        )
+      : undefined
+    const head = typeof parsed['head'] === 'string' ? parsed['head'] as string
+      : parsed['head'] === null ? null : undefined
+
+    return { code, message, conflicts, head }
+  }
+
   /** Extract the server error code from an error response body, if any. */
   async function readErrorCode(response: Response): Promise<string | undefined> {
-    try {
-      const parsed = await response.json() as {
-        error?: { code?: string } | string
-        code?: string
-      } | null
-      if (parsed && typeof parsed.error === 'object' && parsed.error?.code) {
-        return parsed.error.code
-      }
-      if (parsed?.code) return parsed.code
-    } catch {
-      // Non-JSON error body — no code available
-    }
-    return undefined
+    return (await parseErrorBody(response))?.code
   }
   /** Map an error response status to the matching typed error. */
   async function throwForStatus(response: Response, path: string): Promise<void> {
     if (response.status === 403) throw new ForbiddenError(path)
     if (response.status === 404) throw new NotFoundError(path)
-    if (response.status === 409) throw new ConflictError(`Conflict while calling ${path}`)
+    if (response.status === 409) {
+      // Read the body to tell a server-side merge conflict (SYNC_MERGE_CONFLICT,
+      // never auto-overwrite) apart from a generic/legacy 409.
+      const body = await parseErrorBody(response)
+      if (body?.code === 'SYNC_MERGE_CONFLICT') {
+        throw new MergeConflictError(body.conflicts ?? [], body.head ?? null, body.message)
+      }
+      throw new ConflictError(`Conflict while calling ${path}`)
+    }
     if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
   }
 
