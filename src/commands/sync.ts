@@ -173,7 +173,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   // >2 MB file must not 413-abort the whole push. Reported on stderr.
   const syncFiles = skipOversized(collected)
 
-  let pushResult = { added: 0, changed: 0, skipped: 0 }
+  let pushResult = { added: 0, changed: 0, skipped: 0, merged: false }
 
   if (mdCount > 0) {
     if (!isJson) {
@@ -190,6 +190,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     pushResult.added = casResult.added
     pushResult.changed = casResult.changed
     pushResult.skipped = casResult.skipped
+    pushResult.merged = casResult.merged // surface auto-merge in --json (parity with `workspace push`)
   }
 
   // Step 7: Write lastMtimes + add to repos.json
