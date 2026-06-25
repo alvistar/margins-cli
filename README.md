@@ -300,6 +300,30 @@ margins workspace sync                         # pull the committed version into
 
 ---
 
+### `stash`
+
+Publish a **single** markdown document to a Margins **stash** — a one-off,
+single-doc workspace for review. No repo, no workspace to pick, no folder
+binding. Returns a review URL.
+
+```sh
+margins stash notes.md                      # publish a file
+cat notes.md | margins stash                # or pipe markdown via stdin
+margins stash notes.md --title "Q3 plan"    # set the title explicitly
+margins stash notes.md --json               # machine-readable: { id, slug, url }
+```
+
+| Flag | Description |
+|---|---|
+| `--title <title>` | Title for the stash doc. Defaults to the document's first `#` heading, then the file name, then "Untitled stash doc". |
+
+The document comes from the `[file]` argument, or from piped stdin when no file
+is given (or the argument is `-`). The stash is reviewed like any Margins doc —
+open discussions, address them, resolve. Markdown only; for images, use
+`workspace push` or the Margins desktop app.
+
+---
+
 ### `discuss`
 
 Manage discussions on Markdown artifacts.

@@ -151,6 +151,18 @@ program
     await handleSync(cfg, { dir, json: cfg.json })
   })
 
+// ─── stash (top-level) ────────────────────────────────────────────────────────
+
+program
+  .command('stash [file]')
+  .description('Publish a single markdown document to a Margins stash for review')
+  .option('--title <title>', 'Title for the stash doc (default: first heading or filename)')
+  .action(async (file, opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleStash } = await import('./commands/stash.js')
+    await handleStash(cfg, file, { title: opts.title })
+  })
+
 // ─── workspace subcommand ─────────────────────────────────────────────────────
 
 const wsCmd = program.command('workspace').description('Workspace management')
