@@ -27,6 +27,13 @@ npm install && npm run build
 npm link   # makes 'margins' available globally
 ```
 
+## Claude Code plugin
+
+The Claude Code plugin that wraps this CLI moved to the
+[`margins-plugins`](https://github.com/alvistar/margins-plugins) marketplace repo.
+Add that marketplace and install the **`margins`** plugin there; this repo is the
+npm CLI only.
+
 ## Quick Start
 
 ```sh

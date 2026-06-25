@@ -7,14 +7,15 @@ Published as a separate repo at `github.com/alvistar/margins-cli`.
 
 ## Versioning
 
-**CLI and plugin share one version.** `package.json` and
-`margins-plugin/.claude-plugin/plugin.json` must always have the same version.
-Bump both together on every release, whether the change is CLI code, skill
-content, or both. Claude Code uses `plugin.json` version for cache invalidation,
-so a skill-only change still needs a version bump to reach users.
+`package.json` is the CLI's version — bump it on every release. The CLI is
+published to npm; the npm registry is the canonical install path.
+
+The **Claude Code plugin** that wraps this CLI no longer lives here. It moved to
+the [`margins-plugins`](https://github.com/alvistar/margins-plugins) marketplace
+repo and versions independently there (its own `plugin.json`).
 
 The root `VERSION` file tracks the **margins web app**, not the CLI. Do not bump
-it for CLI or skill changes. It drives Flux image automation and GHCR tags.
+it for CLI changes. It drives Flux image automation and GHCR tags.
 
 All versions must use strict 3-segment semver (`MAJOR.MINOR.PATCH`).
 
@@ -68,8 +69,6 @@ src/
     output.ts           # Formatting helpers (JSON/human output, error formatting)
     resolve-workspace.ts # .margins.json file discovery + workspace slug resolution
 __tests__/              # Vitest tests mirroring src/ structure
-margins-plugin/
-  skills/               # Claude Code skills (margins, margins-read, margins-setup)
 ```
 
 ## Adding a new command
@@ -91,11 +90,11 @@ are present. Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `a
 `install-hook`, `audit`) skip the gate — `audit` is exempt so it can run in gh-only
 mode; `workspace unsync` is exempt as a local-only subcommand.
 
-## Plugin / Skills
+## Claude Code plugin
 
-`margins-plugin/skills/` contains Claude Code skills that wrap CLI commands:
-- `margins` — full review workflow (push + discuss)
-- `margins-read` — read-only workspace access
-- `margins-setup` — workspace setup and auth
+The Claude Code plugin that wraps this CLI (skills `margins`, `margins-read`,
+`margins-setup`) moved to the
+[`margins-plugins`](https://github.com/alvistar/margins-plugins) marketplace repo.
+Install it from there; this repo ships the npm CLI only.
 
 These skills are designed to be installed into Claude Code via the plugin system.
