@@ -6,8 +6,6 @@ __tests__/
 .env.local
 coverage/
 .DS_Store
-.claude-plugin/
-margins-plugin/
 tsdown.config.ts
 tsconfig.json
 vitest.config.ts

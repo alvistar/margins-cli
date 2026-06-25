@@ -1,6 +1,0 @@
-{
-  "name": "margins",
-  "version": "0.7.1",
-  "description": "Margins code review platform integration for Claude Code",
-  "author": { "name": "Alessandro Vigano" }
-}
