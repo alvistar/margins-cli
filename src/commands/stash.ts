@@ -3,7 +3,7 @@ import { basename, extname } from 'node:path'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient } from '../lib/api-client.js'
 import { formatJson } from '../lib/output.js'
-import { ValidationError, ConflictError, ServerError } from '../lib/errors.js'
+import { ValidationError, ConflictError, ServerError, NotFoundError } from '../lib/errors.js'
 
 // The stash's single document lives at this fixed path on the local "main"
 // branch (mirrors the web app's stash-constants). The reader deep-link is
@@ -17,6 +17,8 @@ interface StashResponse {
 
 export interface StashOptions {
   title?: string
+  /** Also mint a shareable /s/<slug> link for the new stash and print it. */
+  share?: boolean
 }
 
 /**
@@ -64,12 +66,32 @@ export async function handleStash(
 
   const url = buildReviewUrl(cfg.serverUrl, workspace.slug)
 
+  // --share: mint the stable /s/<slug> link in the same step (opt-in). The stash
+  // is already created, so a share failure reports clearly without losing it.
+  let shareUrl: string | undefined
+  if (opts.share) {
+    try {
+      const shareRes = (await client.post('/api/stash/share', { slug: workspace.slug })) as {
+        shareUrl: string
+      }
+      shareUrl = shareRes.shareUrl
+    } catch (err) {
+      if (err instanceof NotFoundError && !err.code) {
+        throw new ValidationError(
+          `Stashed for review: ${url}\nBut this Margins server does not support share links yet — update the server to use --share.`,
+        )
+      }
+      throw err
+    }
+  }
+
   if (cfg.json) {
-    console.log(formatJson({ id: workspace.id, slug: workspace.slug, url }))
+    console.log(formatJson({ id: workspace.id, slug: workspace.slug, url, ...(shareUrl ? { shareUrl } : {}) }))
     return
   }
 
   console.log(`Stashed for review: ${url}`)
+  if (shareUrl) console.log(`Share link: ${shareUrl}`)
 }
 
 /**

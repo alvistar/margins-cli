@@ -2,6 +2,23 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.10.0] - 2026-06-25
+
+### Added
+- **`margins share <stash>` command.** Get a stable, shareable `/s/<slug>` link
+  for an existing stash without leaving the terminal — accepts the stash slug
+  (`stash/alice/1a2b3c4d`) or a full reader URL (the slug is parsed out). The
+  server is get-or-create, so re-running prints the **same** link until it is
+  revoked. `--json` for machine output. (U5)
+- **`margins stash --share` flag.** Publish a stash and mint its share link in
+  one step; prints both the review URL and the `/s/<slug>` link (and `shareUrl`
+  in `--json`). (U5)
+- Both paths **feature-detect an out-of-date server**: a `404` with no error body
+  on `/api/stash/share` (the route is absent on older Margins) yields a clear
+  "update the server" message and a non-zero exit — never a silent failure.
+  `NotFoundError` now carries the server error code so callers can tell a real
+  "stash not found" from a missing endpoint.
+
 ## [0.9.0] - 2026-06-25
 
 ### Added

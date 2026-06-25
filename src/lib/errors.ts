@@ -62,7 +62,13 @@ export class ForbiddenError extends MarginsError {
 }
 
 export class NotFoundError extends MarginsError {
-  constructor(resource: string) {
+  constructor(
+    resource: string,
+    /** Server error code from the 404 body, when present. Absent for a 404 that
+     * carries no JSON error body — e.g. a route that doesn't exist on an older
+     * server, which lets callers feature-detect an out-of-date endpoint. */
+    public readonly code?: string,
+  ) {
     super(`Not found: ${resource}`, `Not found: ${resource}.`, 1)
   }
 }
