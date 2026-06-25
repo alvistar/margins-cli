@@ -2,6 +2,17 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.9.0] - 2026-06-25
+
+### Added
+- **`margins stash` command.** Publish a single markdown document to a Margins
+  stash (a one-off, single-doc workspace) for review — from a file argument or
+  piped stdin (`cat doc.md | margins stash`). POSTs to the existing `/api/stash`
+  endpoint with the CLI's bearer auth and prints the review URL (`--json` for
+  machine output). `--title` is derived from the document's first `#` heading,
+  then the file name, when omitted. Reaches CLI / Claude Code parity with the
+  `create_stash_doc` MCP tool and the Cowork `/margins-stash` command. (U1, U2)
+
 ## [0.8.0] - 2026-06-22
 
 ### Added
