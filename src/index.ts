@@ -157,10 +157,22 @@ program
   .command('stash [file]')
   .description('Publish a single markdown document to a Margins stash for review')
   .option('--title <title>', 'Title for the stash doc (default: first heading or filename)')
+  .option('--share', 'Also mint a shareable /s/<slug> link and print it')
   .action(async (file, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleStash } = await import('./commands/stash.js')
-    await handleStash(cfg, file, { title: opts.title })
+    await handleStash(cfg, file, { title: opts.title, share: opts.share })
+  })
+
+// ─── share (top-level) ─────────────────────────────────────────────────────────
+
+program
+  .command('share <stash>')
+  .description('Get a shareable /s/<slug> link for a stash (accepts a slug or a /w/ URL)')
+  .action(async (stash, _opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleShare } = await import('./commands/share.js')
+    await handleShare(cfg, stash)
   })
 
 // ─── workspace subcommand ─────────────────────────────────────────────────────

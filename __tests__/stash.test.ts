@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { handleStash } from '../src/commands/stash.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
-import { ConflictError, ValidationError, ServerError } from '../src/lib/errors.js'
+import { ConflictError, ValidationError, ServerError, NotFoundError } from '../src/lib/errors.js'
 
 const { mockPost, mockReadFileSync } = vi.hoisted(() => ({
   mockPost: vi.fn(),
@@ -119,5 +119,48 @@ describe('handleStash', () => {
     setTTY(true)
     await expect(handleStash(makeConfig(), undefined, {})).rejects.toThrow(/pipe markdown|file path/i)
     expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  describe('--share', () => {
+    const SHARE = { shareUrl: 'https://margins.test/s/Xk9z', slug: 'Xk9z', created: true }
+
+    it('mints a share link in the same step and prints both URLs', async () => {
+      mockReadFileSync.mockReturnValue('# Notes\n\nbody')
+      mockPost.mockReset().mockResolvedValueOnce(OK).mockResolvedValueOnce(SHARE)
+
+      await handleStash(makeConfig(), 'notes.md', { share: true })
+
+      expect(mockPost).toHaveBeenNthCalledWith(1, '/api/stash', expect.objectContaining({ content: '# Notes\n\nbody' }))
+      expect(mockPost).toHaveBeenNthCalledWith(2, '/api/stash/share', { slug: 'stash/alice/abcd1234' })
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(DOC_URL))
+      expect(logSpy).toHaveBeenCalledWith(`Share link: ${SHARE.shareUrl}`)
+    })
+
+    it('includes shareUrl in --json output', async () => {
+      mockReadFileSync.mockReturnValue('body')
+      mockPost.mockReset().mockResolvedValueOnce(OK).mockResolvedValueOnce(SHARE)
+
+      await handleStash(makeConfig({ json: true }), 'notes.md', { share: true })
+      const out = logSpy.mock.calls[0]?.[0] as string
+      expect(JSON.parse(out)).toEqual({ id: 'ws_1', slug: 'stash/alice/abcd1234', url: DOC_URL, shareUrl: SHARE.shareUrl })
+    })
+
+    it('does not call the share endpoint without --share', async () => {
+      mockReadFileSync.mockReturnValue('body')
+      await handleStash(makeConfig(), 'notes.md', {})
+      expect(mockPost).toHaveBeenCalledTimes(1)
+      expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.anything())
+    })
+
+    it('reports an upgrade message when the server lacks the share endpoint (stash still created)', async () => {
+      mockReadFileSync.mockReturnValue('body')
+      mockPost
+        .mockReset()
+        .mockResolvedValueOnce(OK)
+        .mockRejectedValueOnce(new NotFoundError('/api/stash/share')) // no code → route absent
+      await expect(handleStash(makeConfig(), 'notes.md', { share: true })).rejects.toThrow(
+        /does not support share links|update the server/i,
+      )
+    })
   })
 })
