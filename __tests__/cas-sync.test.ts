@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
 import { casSync, syntheticCommitSha } from '../src/lib/cas-sync.js'
-import { ConflictError, MergeConflictError } from '../src/lib/errors.js'
+import { ConflictError, MergeConflictError, FullDeleteNotConfirmedError } from '../src/lib/errors.js'
 
 // Shared test vector — must stay byte-identical to the desktop implementation
 // (margins-desktop src-tauri/src/sync/cas_sync.rs synthetic_commit_sha).
@@ -267,4 +268,99 @@ describe('casSync', () => {
     await expect(casSync(client, 'ws-1', 'main', syncFiles()))
       .rejects.toThrow(/does not support client push sync/)
   })
+
+  // ─── Full-branch-delete guard (U5) ─────────────────────────────────────────
+
+  it('refuses a push that empties a populated branch without the flag (sends nothing destructive)', async () => {
+    const calls = stubFetch((method) => {
+      // Server has a file; the local push carries none → would empty the branch.
+      if (method === 'GET') return apiOk({ files: { 'readme.md': 'ab'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return apiOk({ added: 0, changed: 0, deleted: 1 })
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', []).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(FullDeleteNotConfirmedError)
+    expect((caught as FullDeleteNotConfirmedError).userMessage).toMatch(/--confirm-full-delete/)
+    // Nothing destructive left the client: no POST manifest, no PUT blob.
+    expect(calls.some((c) => c.method === 'POST')).toBe(false)
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false)
+  })
+
+  it('with the flag, posts files:{} and confirmFullDelete:true and succeeds', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { 'readme.md': 'ab'.repeat(32) }, headSha: HEAD_1 })
+      return apiOk({ added: 0, changed: 0, deleted: 1 })
+    })
+
+    const client = createApiClient(baseConfig())
+    const result = await casSync(client, 'ws-1', 'main', [], { confirmFullDelete: true })
+
+    const post = calls.find((c) => c.method === 'POST')
+    expect(post).toBeDefined()
+    const body = JSON.parse(post!.body!) as {
+      files: Record<string, string>
+      confirmFullDelete?: boolean
+    }
+    expect(body.files).toEqual({})
+    expect(body.confirmFullDelete).toBe(true)
+    expect(result.deleted).toBe(1)
+  })
+
+  it('does not require the flag for a partial delete (some files remain)', async () => {
+    const calls = stubFetch((method) => {
+      // Server has two files; local keeps readme.md and drops extra.md.
+      if (method === 'GET') {
+        return apiOk({
+          files: { 'readme.md': sha256y(), 'extra.md': 'cd'.repeat(32) },
+          headSha: HEAD_1,
+        })
+      }
+      return apiOk({ added: 0, changed: 0, deleted: 1 })
+    })
+
+    const client = createApiClient(baseConfig())
+    const result = await casSync(
+      client,
+      'ws-1',
+      'main',
+      [{ path: 'readme.md', content: Buffer.from('y'), contentType: 'text/markdown' }],
+    )
+
+    const post = calls.find((c) => c.method === 'POST')
+    expect(post).toBeDefined()
+    const body = JSON.parse(post!.body!) as { files: Record<string, string>; confirmFullDelete?: boolean }
+    expect(Object.keys(body.files)).toEqual(['readme.md'])
+    expect(body.confirmFullDelete).toBeUndefined() // flag omitted when not requested
+    expect(result.deleted).toBe(1)
+  })
+
+  it("maps a server 409 SYNC_FULL_DELETE_NOT_CONFIRMED to an actionable error", async () => {
+    // Contrived: local is non-empty (proactive guard passes) but the server
+    // still rejects — exercises the api-client 409 → error mapping.
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { 'old.md': 'cd'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return new Response(
+        JSON.stringify({ error: 'SYNC_FULL_DELETE_NOT_CONFIRMED', message: 'This push would delete all files.' }),
+        { status: 409 },
+      )
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await casSync(client, 'ws-1', 'main', [
+      { path: 'readme.md', content: Buffer.from('y'), contentType: 'text/markdown' },
+    ]).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(FullDeleteNotConfirmedError)
+  })
 })
+
+/** sha256 of 'y' — the hash the server reports for readme.md in partial-delete. */
+function sha256y(): string {
+  return createHash('sha256').update(Buffer.from('y')).digest('hex')
+}

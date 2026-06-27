@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { ApiClient } from './api-client.js'
 import {
   ConflictError, MergeConflictError, ServerError, ValidationError,
+  FullDeleteNotConfirmedError,
   type SyncConflictEntry,
 } from './errors.js'
 import { poolMap } from './pool.js'
@@ -126,11 +127,21 @@ const UPLOAD_CONCURRENCY = 5
  * conflict to reconcile), never an overwrite. The CLI writes no local files,
  * so the user's working copy is preserved.
  */
+export interface CasSyncOptions {
+  /**
+   * Allow a push that would delete every file on the branch. Without it, such a
+   * push is refused locally (nothing destructive is sent) and the server's
+   * matching guard (`SYNC_FULL_DELETE_NOT_CONFIRMED`) is a backstop.
+   */
+  confirmFullDelete?: boolean
+}
+
 export async function casSync(
   client: ApiClient,
   workspaceId: string,
   branch: string,
   files: SyncFile[],
+  opts: CasSyncOptions = {},
 ): Promise<CasSyncResult> {
   const basePath = `/api/workspaces/${workspaceId}/sync`
 
@@ -150,6 +161,17 @@ export async function casSync(
     const hash = sha256(file.content)
     localFiles[file.path] = hash
     localByHash.set(hash, file)
+  }
+
+  // Guard: a push that empties a populated branch is almost always an accident
+  // (wrong cwd, a removed working tree). Refuse it locally — uploading nothing,
+  // committing nothing — unless the caller explicitly confirmed. Mirrors the
+  // server's SYNC_FULL_DELETE_NOT_CONFIRMED guard so behaviour is identical
+  // whether or not the server is reached.
+  const wouldEmptyBranch =
+    Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
+  if (wouldEmptyBranch && !opts.confirmFullDelete) {
+    throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
   }
 
   // Determine what changed
@@ -202,6 +224,7 @@ export async function casSync(
       commitSha,
       parentSha: manifest.headSha,
       files: localFiles,
+      ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
     })
   } catch (err) {
     // A server-side merge conflict: name the conflicting files + next step and

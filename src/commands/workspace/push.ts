@@ -31,7 +31,7 @@ function gitBranch(cwd: string): string {
 
 export async function handlePush(
   cfg: ResolvedConfig,
-  opts: { workspace?: string; project?: string; dir?: string }
+  opts: { workspace?: string; project?: string; dir?: string; confirmFullDelete?: boolean }
 ): Promise<void> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
@@ -107,6 +107,7 @@ export async function handlePush(
     workspaceId,
     branch,
     syncFiles,
+    { confirmFullDelete: opts.confirmFullDelete },
   )
 
   if (cfg.json) {
