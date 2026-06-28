@@ -32,6 +32,7 @@ interface MarginsJson {
 interface SyncOpts {
   dir?: string
   json?: boolean
+  confirmFullDelete?: boolean
 }
 
 export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<void> {
@@ -185,6 +186,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       workspaceId,
       branch === '@local' ? 'main' : branch,
       syncFiles,
+      { confirmFullDelete: opts.confirmFullDelete },
     )
 
     pushResult.added = casResult.added

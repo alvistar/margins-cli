@@ -145,10 +145,11 @@ authCmd
 program
   .command('sync [dir]')
   .description('Set up a folder for continuous sync with Margins')
-  .action(async (dir, _opts, cmd) => {
+  .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
+  .action(async (dir, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleSync } = await import('./commands/sync.js')
-    await handleSync(cfg, { dir, json: cfg.json })
+    await handleSync(cfg, { dir, json: cfg.json, confirmFullDelete: opts.confirmFullDelete })
   })
 
 // ─── stash (top-level) ────────────────────────────────────────────────────────
@@ -222,6 +223,7 @@ wsCmd
   .option('--workspace <id>', 'Workspace ID (omit to create new with --project)')
   .option('--project <name>', 'Create a new local workspace with this name')
   .option('--dir <path>', 'Directory to scan for .md files (default: cwd)')
+  .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
   .action(async (opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handlePush } = await import('./commands/workspace/push.js')

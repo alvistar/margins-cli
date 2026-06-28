@@ -2,6 +2,19 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.11.0] - 2026-06-27
+
+### Added
+- **`--confirm-full-delete` flag** on `margins workspace push` and `margins sync`.
+  A push that would delete **every** file on the branch (an empty local tree
+  against a populated branch) is now refused locally — nothing destructive is
+  uploaded or committed — unless you pass `--confirm-full-delete`. This guards
+  against an accidental wipe from the wrong directory or a dropped working tree.
+  Mirrors the server's new `SYNC_FULL_DELETE_NOT_CONFIRMED` guard, so behaviour
+  is identical whether or not the rejection comes from the server; a server-side
+  rejection is mapped to the same actionable error. Partial deletes and pushes to
+  an empty/new branch are unaffected.
+
 ## [0.10.0] - 2026-06-25
 
 ### Added

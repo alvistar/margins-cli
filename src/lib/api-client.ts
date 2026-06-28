@@ -3,7 +3,8 @@ import type { ResolvedConfig } from './config.js'
 import { setGlobalConfig } from './config.js'
 import {
   AuthExpired, ForbiddenError, NotFoundError, ServerError, ConflictError,
-  MergeConflictError, NetworkError, TimeoutError, ResponseParseError,
+  MergeConflictError, FullDeleteNotConfirmedError, NetworkError, TimeoutError,
+  ResponseParseError,
   type SyncConflictEntry,
 } from './errors.js'
 import { maskKey } from './output.js'
@@ -241,6 +242,12 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
       const body = await parseErrorBody(response)
       if (body?.code === 'SYNC_MERGE_CONFLICT') {
         throw new MergeConflictError(body.conflicts ?? [], body.head ?? null, body.message)
+      }
+      if (body?.code === 'SYNC_FULL_DELETE_NOT_CONFIRMED') {
+        throw new FullDeleteNotConfirmedError(
+          body.message ??
+            'This push would delete every file on the branch. Re-run with --confirm-full-delete.',
+        )
       }
       throw new ConflictError(`Conflict while calling ${path}`)
     }

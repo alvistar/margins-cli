@@ -115,6 +115,28 @@ export class MergeConflictError extends ConflictError {
   }
 }
 
+/**
+ * The push would delete every file on the branch and `confirmFullDelete` was not
+ * set (`409 SYNC_FULL_DELETE_NOT_CONFIRMED`). Deliberately NOT a
+ * {@link ConflictError} so the sync layer's generic-conflict handler does not
+ * rewrite the actionable message. Raised both proactively (client-side, before
+ * any destructive request) and on the server's rejection.
+ */
+export class FullDeleteNotConfirmedError extends MarginsError {
+  constructor(message: string) {
+    super('Full-branch delete not confirmed', message, 1)
+  }
+
+  /** Proactive client-side form: we know the branch + file count. */
+  static forBranch(branch: string, fileCount: number): FullDeleteNotConfirmedError {
+    return new FullDeleteNotConfirmedError(
+      `This push would delete all ${fileCount} file(s) on branch '${branch}'. ` +
+        'If that is intended, re-run with --confirm-full-delete; otherwise check ' +
+        'you are in the right directory and that your files were not removed.',
+    )
+  }
+}
+
 export class WorkspaceNotFoundError extends MarginsError {
   constructor(slug: string) {
     super(`Workspace not found: ${slug}`, `Workspace '${slug}' not found.`, 1)
