@@ -56,7 +56,14 @@ export class ServerError extends MarginsError {
 }
 
 export class ForbiddenError extends MarginsError {
-  constructor(resource = 'this resource') {
+  constructor(
+    resource = 'this resource',
+    /** Server error code from the 403 body, when present — mirrors NotFoundError.
+     * The stash update flow branches on it: NOT_A_MEMBER (a foreign binding —
+     * recreating a fresh stash is safe) vs INSUFFICIENT_ROLE (comment-only access
+     * to a shared doc — recreating would silently fork it). */
+    public readonly code?: string,
+  ) {
     super(`Access denied to ${resource}`, `Access denied to ${resource}.`, 1)
   }
 }

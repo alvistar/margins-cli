@@ -77,6 +77,24 @@ describe('api client — basic auth', () => {
     await expect(createApiClient(baseConfig()).get('/api/test')).rejects.toBeInstanceOf(ForbiddenError)
   })
 
+  // Stash update flow (U6): the 403 body's error code decides recreate-vs-error,
+  // mirroring the NotFoundError code capture below.
+  it('captures the 403 body error code on ForbiddenError (NOT_A_MEMBER / INSUFFICIENT_ROLE)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'NOT_A_MEMBER', message: 'no access' }), { status: 403 }),
+    ))
+    const err = await createApiClient(baseConfig()).get('/api/test').catch((e) => e)
+    expect(err).toBeInstanceOf(ForbiddenError)
+    expect((err as ForbiddenError).code).toBe('NOT_A_MEMBER')
+  })
+
+  it('leaves ForbiddenError.code undefined for a 403 with no JSON body (regression)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 403 })))
+    const err = await createApiClient(baseConfig()).get('/api/test').catch((e) => e)
+    expect(err).toBeInstanceOf(ForbiddenError)
+    expect((err as ForbiddenError).code).toBeUndefined()
+  })
+
   it('throws NotFoundError on 404', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 404 })))
     await expect(createApiClient(baseConfig()).get('/api/test')).rejects.toBeInstanceOf(NotFoundError)
