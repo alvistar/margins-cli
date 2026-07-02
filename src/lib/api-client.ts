@@ -254,7 +254,9 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
             'This push would delete every file on the branch. Re-run with --confirm-full-delete.',
         )
       }
-      throw new ConflictError(`Conflict while calling ${path}`)
+      // Carry the server's message + code when present (e.g. REVERT_UNSUPPORTED
+      // from the stash update path) so callers can show an actionable line.
+      throw new ConflictError(body?.message ?? `Conflict while calling ${path}`, body?.code)
     }
     if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
   }

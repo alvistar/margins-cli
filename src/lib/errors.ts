@@ -95,7 +95,11 @@ export class ConfigParseError extends MarginsError {
 }
 
 export class ConflictError extends MarginsError {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** Server error code from the 409 body, when present (e.g. REVERT_UNSUPPORTED). */
+    public readonly code?: string,
+  ) {
     super(`Conflict: ${message}`, message, 1)
   }
 }
