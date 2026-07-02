@@ -307,6 +307,14 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
       expect(mockPost).not.toHaveBeenCalled()
     })
 
+    it('400 validation on update → actionable message, NO fork', async () => {
+      bind()
+      mockReadFileSync.mockReturnValue('body')
+      mockPut.mockRejectedValue(new ServerError(400))
+      await expect(handleStash(makeConfig(), 'notes.md', {})).rejects.toThrow(/rejected|--verbose/i)
+      expect(mockPost).not.toHaveBeenCalled()
+    })
+
     it('405 (old server, route exists without PUT) → upgrade error, NO fork', async () => {
       bind()
       mockReadFileSync.mockReturnValue('body')
@@ -352,7 +360,7 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
 
       await handleStash(makeConfig(), 'notes.md', {})
       expect(mockConfirm).toHaveBeenCalled()
-      expect(bindings.recordAcceptance).toHaveBeenCalledWith(BINDING.slug)
+      expect(bindings.recordAcceptance).toHaveBeenCalledWith(STORE, BINDING)
       expect(mockPut).toHaveBeenCalled()
     })
 
@@ -377,7 +385,7 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
 
       await handleStash(makeConfig(), 'notes.md', { yes: true })
       expect(mockConfirm).not.toHaveBeenCalled()
-      expect(bindings.recordAcceptance).toHaveBeenCalledWith(BINDING.slug)
+      expect(bindings.recordAcceptance).toHaveBeenCalledWith(STORE, BINDING)
       expect(mockPut).toHaveBeenCalled()
     })
 
@@ -392,6 +400,18 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
       expect(mockPost).not.toHaveBeenCalled()
     })
 
+    it('non-accepted binding declined via clack CANCEL also falls back to a fresh create', async () => {
+      bind()
+      bindings.isAccepted.mockReturnValue(false)
+      setTTY(true)
+      mockConfirm.mockResolvedValue(Symbol.for('clack:cancel'))
+      mockReadFileSync.mockReturnValue('body')
+
+      await handleStash(makeConfig(), 'notes.md', {})
+      expect(mockPut).not.toHaveBeenCalled()
+      expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.anything())
+    })
+
     it('accepted bindings never prompt (solo dogfood flow stays frictionless)', async () => {
       bind()
       bindings.isAccepted.mockReturnValue(true)
@@ -400,6 +420,34 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
 
       await handleStash(makeConfig(), 'notes.md', {})
       expect(mockConfirm).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('update title semantics', () => {
+    it('does NOT send a filename-stem title on update (no custom-title clobber)', async () => {
+      bind()
+      mockReadFileSync.mockReturnValue('no heading here, just prose')
+      mockPut.mockResolvedValue(UPDATED)
+
+      await handleStash(makeConfig(), 'notes.md', {})
+      expect(mockPut).toHaveBeenCalledWith('/api/stash', { slug: BINDING.slug, content: 'no heading here, just prose' })
+    })
+
+    it('sends the H1-derived title on update (deliberate rename tracking)', async () => {
+      bind()
+      mockReadFileSync.mockReturnValue('# New Heading\n\nbody')
+      mockPut.mockResolvedValue(UPDATED)
+      await handleStash(makeConfig(), 'notes.md', {})
+      expect(mockPut).toHaveBeenCalledWith('/api/stash', expect.objectContaining({ title: 'New Heading' }))
+    })
+  })
+
+  describe('create-failure leaves no binding', () => {
+    it('does not record a binding when the create POST fails', async () => {
+      mockReadFileSync.mockReturnValue('body')
+      mockPost.mockRejectedValue(new ServerError(500))
+      await expect(handleStash(makeConfig(), 'notes.md', {})).rejects.toBeInstanceOf(ServerError)
+      expect(bindings.recordBinding).not.toHaveBeenCalled()
     })
   })
 

@@ -17,6 +17,7 @@ import {
   isAccepted,
   recordAcceptance,
   type StashBinding,
+  type ResolvedBindingStore,
 } from '../lib/stash-bindings.js'
 
 // The stash's single document lives at this fixed path on the local "main"
@@ -89,7 +90,12 @@ export async function handleStash(
   if (fileName && !opts.new) {
     const hit = lookupBinding(fileName)
     if (hit) {
-      const done = await tryUpdate(cfg, client, hit.binding, content, title, opts)
+      // Updates send a title only from --title or the H1 (deliberate rename
+      // signals). The filename-stem fallback stays create-only — on update it
+      // would clobber a custom title the owner set (e.g. via --title or the
+      // web UI) every time a heading-less doc is re-stashed.
+      const updateTitle = opts.title?.trim() || deriveHeadingTitle(content)
+      const done = await tryUpdate(cfg, client, hit.store, hit.binding, content, updateTitle, opts)
       if (done) return
       // Recoverable failure or declined trust → fall through to a fresh create
       // (which re-binds the file to the new stash).
@@ -125,7 +131,7 @@ export async function handleStash(
   }
 
   const url = buildReviewUrl(cfg.serverUrl, workspace.slug)
-  const shareUrl = opts.share ? await mintShareLink(client, workspace.slug, url) : undefined
+  const shareUrl = opts.share ? await mintShareLink(client, workspace.slug, url, 'Stashed for review') : undefined
 
   if (cfg.json) {
     console.log(
@@ -146,6 +152,7 @@ export async function handleStash(
 async function tryUpdate(
   cfg: ResolvedConfig,
   client: ApiClient,
+  store: ResolvedBindingStore,
   binding: StashBinding,
   content: string,
   title: string | undefined,
@@ -154,9 +161,9 @@ async function tryUpdate(
   const url = buildReviewUrl(cfg.serverUrl, binding.slug)
 
   // ── Trust gate (R13): confirm a binding this machine didn't record ──
-  if (!isAccepted(binding.slug)) {
+  if (!isAccepted(store, binding)) {
     if (opts.yes) {
-      recordAcceptance(binding.slug)
+      recordAcceptance(store, binding)
     } else if (!process.stdin.isTTY) {
       throw new ValidationError(
         `This file is bound to an existing stash (${binding.slug}) but the binding was not created on this machine.\n` +
@@ -170,7 +177,7 @@ async function tryUpdate(
         console.error('Not updating that stash — creating a fresh one instead.')
         return false // fall through to create + rebind
       }
-      recordAcceptance(binding.slug)
+      recordAcceptance(store, binding)
     }
   }
 
@@ -212,6 +219,14 @@ async function tryUpdate(
       console.error('The bound stash belongs to a different account — creating a fresh one.')
       return false
     }
+    // 400 — validation (content too large, title too long, non-stash slug).
+    // Mirror the create path: the api client collapses 400s to a generic
+    // ServerError whose message would misleadingly say "try again later".
+    if (err instanceof ServerError && err.status === 400) {
+      throw new ValidationError(
+        'The stash update was rejected (content too large, title too long, or the bound slug is not a stash). Use --verbose for the server response.',
+      )
+    }
     // 409 — e.g. REVERT_UNSUPPORTED; the message now carries the server's text.
     if (err instanceof ConflictError) {
       throw new ValidationError(err.userMessage)
@@ -219,7 +234,7 @@ async function tryUpdate(
     throw err
   }
 
-  const shareUrl = opts.share ? await mintShareLink(client, binding.slug, url) : undefined
+  const shareUrl = opts.share ? await mintShareLink(client, binding.slug, url, 'Updated stash') : undefined
 
   if (cfg.json) {
     console.log(
@@ -242,14 +257,19 @@ async function tryUpdate(
 }
 
 /** Mint (or fetch) the stable share link; stable across updates by design. */
-async function mintShareLink(client: ApiClient, slug: string, reviewUrl: string): Promise<string> {
+async function mintShareLink(
+  client: ApiClient,
+  slug: string,
+  reviewUrl: string,
+  outcome: string,
+): Promise<string> {
   try {
     const shareRes = (await client.post('/api/stash/share', { slug })) as { shareUrl: string }
     return shareRes.shareUrl
   } catch (err) {
     if (err instanceof NotFoundError && !err.code) {
       throw new ValidationError(
-        `Stashed for review: ${reviewUrl}\nBut this Margins server does not support share links yet — update the server to use --share.`,
+        `${outcome}: ${reviewUrl}\nBut this Margins server does not support share links yet — update the server to use --share.`,
       )
     }
     throw err

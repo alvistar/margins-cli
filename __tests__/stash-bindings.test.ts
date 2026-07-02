@@ -146,8 +146,8 @@ describe('tolerant load (R10)', () => {
 describe('trust acceptances (R13)', () => {
   it('bindings recorded by this CLI are auto-accepted', () => {
     const root = makeProject()
-    recordBinding(path.join(root, 'doc.md'), BINDING)
-    expect(isAccepted(BINDING.slug)).toBe(true)
+    const store = recordBinding(path.join(root, 'doc.md'), BINDING)
+    expect(isAccepted(store, BINDING)).toBe(true)
   })
 
   it('a planted project binding is NOT accepted until confirmed', () => {
@@ -160,11 +160,28 @@ describe('trust acceptances (R13)', () => {
       JSON.stringify({ version: 1, bindings: { 'doc.md': BINDING } }),
     )
 
-    expect(lookupBinding(path.join(root, 'doc.md'))?.binding).toEqual(BINDING) // visible…
-    expect(isAccepted(BINDING.slug)).toBe(false) // …but untrusted
+    const hit = lookupBinding(path.join(root, 'doc.md'))!
+    expect(hit.binding).toEqual(BINDING) // visible…
+    expect(isAccepted(hit.store, hit.binding)).toBe(false) // …but untrusted
 
-    recordAcceptance(BINDING.slug)
-    expect(isAccepted(BINDING.slug)).toBe(true)
+    recordAcceptance(hit.store, hit.binding)
+    expect(isAccepted(hit.store, hit.binding)).toBe(true)
+  })
+
+  it('a planted binding reusing an ALREADY-ACCEPTED slug still prompts (identity-keyed trust)', () => {
+    // The user legitimately accepted their own stash in project A…
+    const trusted = makeProject('trusted')
+    const store = recordBinding(path.join(trusted, 'doc.md'), BINDING)
+    expect(isAccepted(store, BINDING)).toBe(true)
+
+    // …a malicious clone plants a binding to the SAME slug for a different file.
+    const evil = makeProject('evil-clone')
+    const evilStore = path.join(evil, '.margins', 'stash-bindings.json')
+    fs.mkdirSync(path.dirname(evilStore), { recursive: true })
+    fs.writeFileSync(evilStore, JSON.stringify({ version: 1, bindings: { 'README.md': BINDING } }))
+
+    const hit = lookupBinding(path.join(evil, 'README.md'))!
+    expect(isAccepted(hit.store, hit.binding)).toBe(false) // must re-prompt
   })
 
   it('acceptances live in the global store, not the committable project file', () => {
@@ -175,7 +192,53 @@ describe('trust acceptances (R13)', () => {
     )
     expect(projectFile.accepted).toBeUndefined()
     const globalFile = JSON.parse(fs.readFileSync(path.join(configDir, 'stash-bindings.json'), 'utf-8'))
-    expect(globalFile.accepted[BINDING.slug]).toBe(true)
+    // Identity-keyed: values carry the accepted slug.
+    expect(Object.values(globalFile.accepted)).toContain(BINDING.slug)
+  })
+})
+
+describe('symlink guards (planted-clone hardening)', () => {
+  it('refuses to write through a symlinked stash-bindings.json', () => {
+    const root = makeProject()
+    const target = path.join(tmp, 'victim.txt')
+    fs.writeFileSync(target, 'precious')
+    fs.mkdirSync(path.join(root, '.margins'), { recursive: true })
+    fs.symlinkSync(target, path.join(root, '.margins', 'stash-bindings.json'))
+
+    expect(() => recordBinding(path.join(root, 'doc.md'), BINDING)).toThrow(/symlink/i)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('precious') // untouched
+  })
+
+  it('refuses when the .margins directory itself is a symlink', () => {
+    const root = makeProject()
+    const elsewhere = path.join(tmp, 'elsewhere')
+    fs.mkdirSync(elsewhere, { recursive: true })
+    fs.symlinkSync(elsewhere, path.join(root, '.margins'))
+    expect(() => recordBinding(path.join(root, 'doc.md'), BINDING)).toThrow(/symlink/i)
+  })
+
+  it('refuses to append to a symlinked .gitignore', () => {
+    const root = makeProject()
+    const target = path.join(tmp, 'gitignore-victim.txt')
+    fs.writeFileSync(target, 'keep me')
+    fs.symlinkSync(target, path.join(root, '.gitignore'))
+    expect(() => recordBinding(path.join(root, 'doc.md'), BINDING)).toThrow(/symlink/i)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('keep me')
+  })
+
+  it('a "__proto__" binding key stays a plain property (no prototype pollution)', () => {
+    const root = makeProject()
+    const storePath = path.join(root, '.margins', 'stash-bindings.json')
+    fs.mkdirSync(path.dirname(storePath), { recursive: true })
+    // Hand-built JSON: an object literal { __proto__: ... } would set the
+    // prototype at literal-creation time and serialize as {}.
+    fs.writeFileSync(
+      storePath,
+      `{"version":1,"bindings":{"__proto__":{"slug":"${BINDING.slug}","workspaceId":"${BINDING.workspaceId}"}}}`,
+    )
+    const hit = lookupBinding(path.join(root, '__proto__'))
+    expect(hit?.binding).toEqual(BINDING)
+    expect(({} as Record<string, unknown>)['slug']).toBeUndefined()
   })
 })
 
@@ -195,6 +258,21 @@ describe('.gitignore upkeep (idempotent)', () => {
     fs.writeFileSync(path.join(root, '.gitignore'), '.margins/\n')
     recordBinding(path.join(root, 'doc.md'), BINDING)
     expect(fs.readFileSync(path.join(root, '.gitignore'), 'utf-8')).toBe('.margins/\n')
+  })
+
+  it('respects a glob rule (.margins/*) without a duplicate append', () => {
+    const root = makeProject()
+    fs.writeFileSync(path.join(root, '.gitignore'), '.margins/*\n')
+    recordBinding(path.join(root, 'doc.md'), BINDING)
+    expect(fs.readFileSync(path.join(root, '.gitignore'), 'utf-8')).toBe('.margins/*\n')
+  })
+
+  it('acceptance round-trips even when the global file was corrupt (rewritten empty)', () => {
+    const globalPath = path.join(configDir, 'stash-bindings.json')
+    fs.writeFileSync(globalPath, '{ corrupt !!!')
+    const root = makeProject()
+    const store = recordBinding(path.join(root, 'doc.md'), BINDING)
+    expect(isAccepted(store, BINDING)).toBe(true)
   })
 
   it('preserves existing .gitignore content when appending', () => {

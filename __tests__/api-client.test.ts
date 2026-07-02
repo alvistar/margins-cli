@@ -354,6 +354,16 @@ describe('api client — 409 conflict typing (merge vs generic)', () => {
     expect(caught).not.toBeInstanceOf(MergeConflictError)
   })
 
+  it('carries the 409 body message + code on the plain ConflictError (e.g. REVERT_UNSUPPORTED)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'REVERT_UNSUPPORTED', message: 'This content is byte-identical to an earlier version.' }), { status: 409 }),
+    ))
+    const err = await createApiClient(baseConfig()).put('/api/stash', {}).catch((e) => e)
+    expect(err).toBeInstanceOf(ConflictError)
+    expect((err as ConflictError).code).toBe('REVERT_UNSUPPORTED')
+    expect((err as ConflictError).userMessage).toContain('byte-identical')
+  })
+
   it('falls back to a plain ConflictError on a non-JSON 409 body (no crash)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<<not json>>', { status: 409 })))
     let caught: unknown

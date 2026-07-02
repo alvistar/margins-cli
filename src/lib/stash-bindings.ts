@@ -36,8 +36,14 @@ export interface StashBinding {
 interface BindingsFile {
   version: number
   bindings: Record<string, StashBinding>
-  /** Global file only: per-slug trust acceptances (R13). */
-  accepted?: Record<string, true>
+  /**
+   * Global file only: trust acceptances (R13), keyed by the full binding
+   * identity `<storePath>::<key>` and valued with the accepted slug. Keying on
+   * slug alone would let a planted binding that reuses an already-accepted slug
+   * (every stash the user ever created is auto-accepted, and slugs are visible
+   * in review URLs) bypass the trust prompt entirely.
+   */
+  accepted?: Record<string, string>
 }
 
 export interface ResolvedBindingStore {
@@ -51,7 +57,7 @@ export interface ResolvedBindingStore {
 }
 
 function emptyFile(): BindingsFile {
-  return { version: BINDINGS_VERSION, bindings: {} }
+  return { version: BINDINGS_VERSION, bindings: Object.create(null) as Record<string, StashBinding> }
 }
 
 /** Walk up from `dir` for a project root: the first directory containing
@@ -93,7 +99,31 @@ function globalBindingsPath(): string {
 
 /** Tolerant read: a missing, corrupt, wrong-shape, or future-versioned file
  *  behaves as empty (with a one-line warning for the corrupt/future cases). */
+/**
+ * Refuse to touch a path whose file or parent directory is a symlink. A
+ * malicious clone can commit a symlink at .margins/stash-bindings.json (or the
+ * .margins dir, or .gitignore); fs.writeFileSync follows symlinks, so without
+ * this guard the FIRST `margins stash` in that clone would overwrite an
+ * arbitrary file — before any trust decision runs.
+ */
+function assertNotSymlink(target: string): void {
+  for (const p of [target, path.dirname(target)]) {
+    let st
+    try {
+      st = fs.lstatSync(p)
+    } catch {
+      continue // missing is fine — will be created fresh
+    }
+    if (st.isSymbolicLink()) {
+      throw new Error(
+        `Refusing to use ${p}: it is a symlink. Remove it (it did not come from this CLI) and retry.`,
+      )
+    }
+  }
+}
+
 function readBindingsFile(storePath: string): BindingsFile {
+  assertNotSymlink(storePath)
   let raw: string
   try {
     raw = fs.readFileSync(storePath, 'utf-8')
@@ -118,7 +148,16 @@ function readBindingsFile(storePath: string): BindingsFile {
       )
       return emptyFile()
     }
-    return { version: BINDINGS_VERSION, bindings: parsed.bindings as Record<string, StashBinding>, ...(parsed.accepted ? { accepted: parsed.accepted as Record<string, true> } : {}) }
+    // Null-prototype copy: a binding key literally named "__proto__" must set a
+    // plain property, never the object's prototype.
+    const bindings: Record<string, StashBinding> = Object.assign(
+      Object.create(null),
+      parsed.bindings as Record<string, StashBinding>,
+    )
+    const accepted = parsed.accepted
+      ? (Object.assign(Object.create(null), parsed.accepted) as Record<string, string>)
+      : undefined
+    return { version: BINDINGS_VERSION, bindings, ...(accepted ? { accepted } : {}) }
   } catch {
     console.error(`Warning: ${storePath} is corrupt; treating it as empty. The next stash rewrites it.`)
     return emptyFile()
@@ -126,7 +165,9 @@ function readBindingsFile(storePath: string): BindingsFile {
 }
 
 function writeBindingsFile(storePath: string, file: BindingsFile): void {
+  assertNotSymlink(storePath)
   fs.mkdirSync(path.dirname(storePath), { recursive: true })
+  assertNotSymlink(storePath) // re-check: mkdir may have just materialized the dir
   fs.writeFileSync(storePath, `${JSON.stringify(file, null, 2)}\n`, 'utf-8')
 }
 
@@ -146,7 +187,7 @@ export function recordBinding(filePath: string, binding: StashBinding): Resolved
   const file = readBindingsFile(store.storePath)
   file.bindings[store.key] = binding
   writeBindingsFile(store.storePath, file)
-  recordAcceptance(binding.slug)
+  recordAcceptance(store, binding)
   if (store.kind === 'project' && store.root) ensureGitignored(store.root)
   return store
 }
@@ -162,16 +203,28 @@ export function removeBinding(filePath: string): void {
 }
 
 // ─── Trust acceptances (R13, global file only) ────────────────────────────────
+//
+// Keyed by the FULL binding identity (store path + binding key), valued with
+// the accepted slug — so acceptance means "I trust THIS file→stash mapping",
+// not "I trust this slug from anywhere". A planted binding in another repo (or
+// another key in the same repo) pointing at an already-accepted slug still
+// prompts.
 
-export function isAccepted(slug: string): boolean {
-  const file = readBindingsFile(globalBindingsPath())
-  return file.accepted?.[slug] === true
+function acceptanceKey(store: ResolvedBindingStore): string {
+  return `${store.storePath}::${store.key}`
 }
 
-export function recordAcceptance(slug: string): void {
+export function isAccepted(store: ResolvedBindingStore, binding: StashBinding): boolean {
+  const file = readBindingsFile(globalBindingsPath())
+  return file.accepted?.[acceptanceKey(store)] === binding.slug
+}
+
+export function recordAcceptance(store: ResolvedBindingStore, binding: StashBinding): void {
   const storePath = globalBindingsPath()
   const file = readBindingsFile(storePath)
-  file.accepted = { ...(file.accepted ?? {}), [slug]: true }
+  const accepted = Object.assign(Object.create(null) as Record<string, string>, file.accepted ?? {})
+  accepted[acceptanceKey(store)] = binding.slug
+  file.accepted = accepted
   writeBindingsFile(storePath, file)
 }
 
@@ -183,6 +236,7 @@ const GITIGNORE_ENTRY = `${PROJECT_DIRNAME}/${BINDINGS_BASENAME}`
  *  satisfied by a broader existing rule that ignores the whole .margins dir. */
 function ensureGitignored(root: string): void {
   const gitignorePath = path.join(root, '.gitignore')
+  assertNotSymlink(gitignorePath)
   let existing = ''
   try {
     existing = fs.readFileSync(gitignorePath, 'utf-8')
@@ -191,7 +245,16 @@ function ensureGitignored(root: string): void {
   }
   const lines = existing.split('\n').map((l) => l.trim())
   const covered = lines.some(
-    (l) => l === GITIGNORE_ENTRY || l === `/${GITIGNORE_ENTRY}` || l === PROJECT_DIRNAME || l === `${PROJECT_DIRNAME}/` || l === `/${PROJECT_DIRNAME}/` || l === `/${PROJECT_DIRNAME}`,
+    (l) =>
+      l === GITIGNORE_ENTRY ||
+      l === `/${GITIGNORE_ENTRY}` ||
+      l === PROJECT_DIRNAME ||
+      l === `${PROJECT_DIRNAME}/` ||
+      l === `/${PROJECT_DIRNAME}/` ||
+      l === `/${PROJECT_DIRNAME}` ||
+      l === `${PROJECT_DIRNAME}/*` ||
+      l === `**/${PROJECT_DIRNAME}/` ||
+      l === `**/${PROJECT_DIRNAME}`,
   )
   if (covered) return
   const sep = existing.length === 0 || existing.endsWith('\n') ? '' : '\n'
