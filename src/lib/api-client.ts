@@ -229,7 +229,12 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
   }
   /** Map an error response status to the matching typed error. */
   async function throwForStatus(response: Response, path: string): Promise<void> {
-    if (response.status === 403) throw new ForbiddenError(path)
+    if (response.status === 403) {
+      // Capture the error code (when the body carries one) — mirrors the 404
+      // branch below. The stash update flow branches on NOT_A_MEMBER vs
+      // INSUFFICIENT_ROLE to decide recreate-vs-error.
+      throw new ForbiddenError(path, await readErrorCode(response))
+    }
     if (response.status === 404) {
       // Capture the error code (if the 404 carries a JSON body) so callers can
       // tell a real "resource not found" from a route that doesn't exist on an
@@ -249,7 +254,9 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
             'This push would delete every file on the branch. Re-run with --confirm-full-delete.',
         )
       }
-      throw new ConflictError(`Conflict while calling ${path}`)
+      // Carry the server's message + code when present (e.g. REVERT_UNSUPPORTED
+      // from the stash update path) so callers can show an actionable line.
+      throw new ConflictError(body?.message ?? `Conflict while calling ${path}`, body?.code)
     }
     if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
   }

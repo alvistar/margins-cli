@@ -124,6 +124,16 @@ export function clearGlobalConfig(): void {
   getStore().clear()
 }
 
+/**
+ * Directory holding the CLI's global state (config.json and, for the stash
+ * update path, the global stash-bindings.json). Follows the same resolution
+ * order as the conf store itself: MARGINS_CONFIG_DIR → existing XDG dir →
+ * platform default.
+ */
+export function getConfigDir(): string {
+  return path.dirname(getStore().path)
+}
+
 // ─── Local .margins.json ──────────────────────────────────────────────────────
 
 /**

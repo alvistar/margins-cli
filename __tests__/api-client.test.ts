@@ -77,6 +77,24 @@ describe('api client — basic auth', () => {
     await expect(createApiClient(baseConfig()).get('/api/test')).rejects.toBeInstanceOf(ForbiddenError)
   })
 
+  // Stash update flow (U6): the 403 body's error code decides recreate-vs-error,
+  // mirroring the NotFoundError code capture below.
+  it('captures the 403 body error code on ForbiddenError (NOT_A_MEMBER / INSUFFICIENT_ROLE)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'NOT_A_MEMBER', message: 'no access' }), { status: 403 }),
+    ))
+    const err = await createApiClient(baseConfig()).get('/api/test').catch((e) => e)
+    expect(err).toBeInstanceOf(ForbiddenError)
+    expect((err as ForbiddenError).code).toBe('NOT_A_MEMBER')
+  })
+
+  it('leaves ForbiddenError.code undefined for a 403 with no JSON body (regression)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 403 })))
+    const err = await createApiClient(baseConfig()).get('/api/test').catch((e) => e)
+    expect(err).toBeInstanceOf(ForbiddenError)
+    expect((err as ForbiddenError).code).toBeUndefined()
+  })
+
   it('throws NotFoundError on 404', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 404 })))
     await expect(createApiClient(baseConfig()).get('/api/test')).rejects.toBeInstanceOf(NotFoundError)
@@ -334,6 +352,16 @@ describe('api client — 409 conflict typing (merge vs generic)', () => {
 
     expect(caught).toBeInstanceOf(ConflictError)
     expect(caught).not.toBeInstanceOf(MergeConflictError)
+  })
+
+  it('carries the 409 body message + code on the plain ConflictError (e.g. REVERT_UNSUPPORTED)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'REVERT_UNSUPPORTED', message: 'This content is byte-identical to an earlier version.' }), { status: 409 }),
+    ))
+    const err = await createApiClient(baseConfig()).put('/api/stash', {}).catch((e) => e)
+    expect(err).toBeInstanceOf(ConflictError)
+    expect((err as ConflictError).code).toBe('REVERT_UNSUPPORTED')
+    expect((err as ConflictError).userMessage).toContain('byte-identical')
   })
 
   it('falls back to a plain ConflictError on a non-JSON 409 body (no crash)', async () => {
