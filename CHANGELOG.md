@@ -2,6 +2,34 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.12.0] - 2026-07-02
+
+### Added
+- **Re-stashing a document now updates the same stash instead of creating a duplicate.**
+  `margins stash <file>` remembers which stash a file was published to (a local
+  file→stash binding), so running it again pushes the changed file back to the same
+  stash via the server's new `PUT /api/stash` — the reader shows the update as a new
+  version rather than forking a second doc. The binding lives per-account and is kept
+  out of version control; a stale binding (the stash was deleted, or belongs to a
+  different account) falls back to creating a fresh stash and rebinding.
+- **`--new` and `--yes` flags on `margins stash`.** `--new` forces a fresh stash even
+  when a binding exists (deliberately fork); `--yes` accepts a binding this machine did
+  not itself record (for non-interactive/CI use) instead of prompting.
+
+### Security
+- **First-use trust gate on stash bindings.** A binding that this machine did not record
+  (e.g. one committed into a cloned repo) is confirmed before it can redirect a re-stash,
+  so a planted `.margins/stash-bindings.json` cannot silently overwrite a stash the caller
+  happens to be able to edit. The binding store also refuses to follow a symlink at its
+  path and keys acceptance on the full binding identity, not the slug alone.
+
+### Changed
+- **Graceful version-skew handling.** Against a server too old to support in-place updates
+  (no `PUT /api/stash`), the CLI detects the `405` and falls back to creating a fresh stash
+  rather than failing — so a new CLI against an old server degrades safely. `403` responses
+  now carry the server's structured error code, so a comment-only reviewer is told to use
+  `--new` instead of silently forking.
+
 ## [0.11.0] - 2026-06-27
 
 ### Added
