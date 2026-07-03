@@ -10,6 +10,12 @@ vi.mock('../src/lib/cas-sync.js', () => ({
 vi.mock('../src/lib/api-client.js', () => ({
   createApiClient: () => ({}),
 }))
+// gitBranch() shells out to `git rev-parse --abbrev-ref HEAD`; stub it so the
+// fallback assertion is deterministic (not "whatever branch the repo happens to
+// be on") and actually proves the detected value flows to casSync.
+vi.mock('node:child_process', () => ({
+  execSync: vi.fn(() => 'detected/branch\n'),
+}))
 
 function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
@@ -49,9 +55,8 @@ describe('handlePush --branch resolution (U6)', () => {
       dir: `${import.meta.dirname}/fixtures/docs`,
     })
     expect(mockCasSync).toHaveBeenCalledTimes(1)
-    const branchArg = mockCasSync.mock.calls[0][2] as string
-    expect(typeof branchArg).toBe('string')
-    expect(branchArg.length).toBeGreaterThan(0)
-    expect(branchArg).not.toBe('feat/x') // came from git detection, not the override
+    // The stubbed git detection returned "detected/branch"; assert it flowed through
+    // (proves gitBranch's output is used, not a hardcoded fallback).
+    expect(mockCasSync.mock.calls[0][2]).toBe('detected/branch')
   })
 })

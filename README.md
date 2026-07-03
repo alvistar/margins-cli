@@ -327,7 +327,9 @@ margins workspace archive-branch --workspace <id> --branch feat/my-feature
 - The workspace's default branch is never archived (a no-op).
 - Soft and reversible: the branch row and its discussions are never deleted; pushing
   to the same branch name un-archives it.
-- Authenticates the same way as `push` (GitHub OIDC in CI, or a stored API key locally).
+- **GitHub OIDC only.** The server's archive endpoint accepts only a GitHub Actions
+  OIDC principal — this command is meant for the sync Action's `delete`-event path,
+  not manual/local use. A stored API key is rejected with a 403.
 
 ---
 

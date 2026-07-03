@@ -5,7 +5,13 @@
  * survives the tsdown bundle into the published package — a file asset would
  * be missing at runtime on the npx path, and mocked-fs tests wouldn't catch it.
  *
- * Content mirrors margins-sync-action/templates/margins-sync.yml exactly.
+ * Content mirrors margins-sync-action/templates/margins-sync.yml EXACTLY, byte for
+ * byte (install.test.ts pins the widened shape). Any change here — the `on:`
+ * triggers, permissions, or the stamped `schema-version` — must land in that file
+ * too AND bump the action's EXPECTED_SCHEMA_VERSION in the same release (see the
+ * sync-action RELEASING.md). Current schema-version is 2 (all-branches push +
+ * `delete:` archive trigger); the pinned action must support it before consumers
+ * re-run `margins install`.
  *
  * NOTE on trigger paths: the `on.push.paths` extension list below is a static
  * convenience subset of the syncable types. The authoritative list of image

@@ -10,10 +10,12 @@ interface ArchiveResult {
 
 /**
  * Archive a workspace branch. Used by the sync Action's `delete`-event path to
- * hide a workspace branch when its git branch is deleted. Auth flows through the
- * shared ApiClient (OIDC bearer + remint in CI, or a stored key locally); the
- * server endpoint is OIDC-only today. Idempotent: an unknown or already-archived
- * branch returns archived:false with no error, and the default branch is a no-op.
+ * hide a workspace branch when its git branch is deleted. The request goes through
+ * the shared ApiClient (which sends the GitHub OIDC bearer + re-mints on 401 in
+ * CI), but the server's archive endpoint is OIDC-only — a stored API key is
+ * rejected with 403, so this is effectively a CI-only command. Idempotent: an
+ * unknown or already-archived branch returns archived:false with no error, and
+ * the default branch is a no-op.
  */
 export async function handleArchiveBranch(
   cfg: ResolvedConfig,

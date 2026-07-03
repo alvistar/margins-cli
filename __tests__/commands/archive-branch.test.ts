@@ -46,6 +46,13 @@ describe('handleArchiveBranch', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"archived": true'))
   })
 
+  it('prints the no-op result in json mode (archived:false)', async () => {
+    mockPost.mockResolvedValue({ branch: 'feat/gone', archived: false })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await handleArchiveBranch(makeConfig({ json: true }), { workspace: 'ws-1', branch: 'feat/gone' })
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"archived": false'))
+  })
+
   it('throws ValidationError when --workspace is missing (no request sent)', async () => {
     await expect(handleArchiveBranch(makeConfig(), { branch: 'feat/x' })).rejects.toThrow(ValidationError)
     expect(mockPost).not.toHaveBeenCalled()

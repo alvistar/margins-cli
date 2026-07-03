@@ -14,7 +14,8 @@ All notable changes to margins-cli will be documented in this file.
   discussions are retained and revived on the next push). Used by the sync Action's
   `delete`-event path when a git branch is deleted. Idempotent: an unknown or
   already-archived branch is a no-op, and the workspace's default branch is never archived.
-  Authenticates through the same path as `push` (GitHub OIDC in CI, or a stored key locally).
+  GitHub OIDC only — the server's archive endpoint rejects stored-key auth (403); this
+  command is the sync Action's `delete`-event path, not a manual/local command.
 - **`margins install` stamps a workflow that syncs every branch and archives on delete.**
   The stamped `.github/workflows/margins-sync.yml` drops the default-branch pin (every
   branch now matches the `paths` filter), adds a `delete:` trigger, and bumps its
