@@ -31,7 +31,7 @@ function gitBranch(cwd: string): string {
 
 export async function handlePush(
   cfg: ResolvedConfig,
-  opts: { workspace?: string; project?: string; dir?: string; confirmFullDelete?: boolean }
+  opts: { workspace?: string; project?: string; dir?: string; branch?: string; confirmFullDelete?: boolean }
 ): Promise<void> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
@@ -97,9 +97,11 @@ export async function handlePush(
   // >2 MB file must not 413-abort the whole push. Reported on stderr.
   const syncFiles = skipOversized(collected)
 
-  // Detect git branch (SHAs are computed inside casSync — synthetic
-  // manifest hash + server headSha, never git SHAs)
-  const branch = gitBranch(cwd)
+  // Resolve the branch: an explicit --branch wins (CI often checks out a detached
+  // HEAD, where git rev-parse yields "HEAD", and the delete-event path has no
+  // checkout at all), else detect the current git branch. (SHAs are computed
+  // inside casSync — synthetic manifest hash + server headSha, never git SHAs.)
+  const branch = opts.branch ?? gitBranch(cwd)
 
   // Sync via CAS protocol
   const result: CasSyncResult = await casSync(
