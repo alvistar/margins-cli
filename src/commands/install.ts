@@ -188,7 +188,6 @@ async function processRepo(
   }
 
   const stamped = stampTemplate({
-    defaultBranch: repo.defaultBranch,
     serverUrl: cfg.serverUrl,
     workspaceId,
   })
