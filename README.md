@@ -283,6 +283,7 @@ margins workspace push --workspace <github-workspace-id> --dir ./docs
 | `--project <name>` | one of | Create a new local workspace with this name. Slug becomes `local/<your-username>/<name>`. The name must be alphanumeric (hyphens, dots, underscores allowed). |
 | `--workspace <id>` | one of | Push to an existing workspace by UUID. Use this for re-pushes and for pushing into GitHub workspaces. |
 | `--dir <path>` | no | Directory to recursively scan for `.md` files. Defaults to the current directory. Hidden files, `node_modules/`, and symlinks are skipped. |
+| `--branch <branch>` | no | Branch to push to. Defaults to the current git branch (`git rev-parse --abbrev-ref HEAD`). Pass it explicitly in CI, where `actions/checkout` may leave a detached HEAD. |
 
 **Behavior:**
 - Recursively scans `--dir` for `.md` files (max 50 per push, max 1 MB per file, max 10 MB total)
@@ -304,6 +305,29 @@ margins workspace open                         # opens browser, switch to @local
 git commit -am "Refine spec"                  # then commit for real
 margins workspace sync                         # pull the committed version into main
 ```
+
+#### `workspace archive-branch`
+
+Archive a workspace branch — hide it from the active branch list. The branch and
+its review discussions are **retained** and are automatically **revived** on the
+next push to that branch. Used by the Margins sync GitHub Action's `delete`-event
+path to archive a workspace branch when its git branch is deleted.
+
+```sh
+margins workspace archive-branch --workspace <id> --branch feat/my-feature
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--workspace <id>` | yes | Workspace UUID. |
+| `--branch <branch>` | yes | Branch name to archive. |
+
+**Behavior:**
+- Idempotent — archiving an unknown or already-archived branch is a no-op success.
+- The workspace's default branch is never archived (a no-op).
+- Soft and reversible: the branch row and its discussions are never deleted; pushing
+  to the same branch name un-archives it.
+- Authenticates the same way as `push` (GitHub OIDC in CI, or a stored API key locally).
 
 ---
 

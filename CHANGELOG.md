@@ -2,6 +2,20 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.14.0] - 2026-07-03
+
+### Added
+- **`--branch <branch>` on `margins workspace push`.** Overrides the auto-detected git
+  branch. Needed in CI, where `actions/checkout` can leave a detached HEAD (so
+  `git rev-parse --abbrev-ref HEAD` yields `HEAD`), and on the delete-event path where
+  there is no checkout at all. Absent, `push` still detects the current git branch as before.
+- **`margins workspace archive-branch --workspace <id> --branch <name>`.** Archives a
+  workspace branch (hides it from the active branch list; the branch and its review
+  discussions are retained and revived on the next push). Used by the sync Action's
+  `delete`-event path when a git branch is deleted. Idempotent: an unknown or
+  already-archived branch is a no-op, and the workspace's default branch is never archived.
+  Authenticates through the same path as `push` (GitHub OIDC in CI, or a stored key locally).
+
 ## [0.13.0] - 2026-07-03
 
 ### Added
