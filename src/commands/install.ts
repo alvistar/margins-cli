@@ -11,9 +11,10 @@
  * GitHub access uses the operator's ambient `gh` auth (src/lib/gh.ts);
  * Margins auth uses the existing CLI config.
  */
+import * as p from '@clack/prompts'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
-import { ConflictError } from '../lib/errors.js'
+import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
 import {
   checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
@@ -36,6 +37,8 @@ export interface InstallOpts {
   include?: string[]
   exclude?: string[]
   dryRun?: boolean
+  /** Accept an auto-detected origin repo without the confirmation prompt. */
+  yes?: boolean
   /** Injectable for tests — defaults to a real setTimeout sleep. */
   sleep?: (ms: number) => Promise<void>
 }
@@ -259,11 +262,34 @@ export async function handleInstall(
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const client = createApiClient(cfg)
 
-  // Resolve the repo list: single target, or org listing with include/exclude.
-  const repos = await resolveRepoTargets(target, opts)
+  // Resolve the repo list: single target, org listing, or the current repo's
+  // origin remote when neither was given.
+  const { targets: repos, autoDetected } = await resolveRepoTargets(target, opts)
   if (repos.length === 0) {
     console.log(`No repos matched in ${opts.org}.`)
     return
+  }
+
+  // Auto-detected origin (no target given): confirm the guessed repo before
+  // opening any PR. `--yes` accepts it; a non-interactive context (no TTY or
+  // --json) has no way to prompt, so it must pass --yes or an explicit target.
+  // Dry-run writes nothing, so it skips the gate.
+  if (autoDetected && !dryRun) {
+    const label = `${autoDetected.owner}/${autoDetected.repo}`
+    if (opts.yes) {
+      if (!cfg.json) console.error(`Using detected repo: ${label}`)
+    } else if (!process.stdin.isTTY || cfg.json) {
+      throw new ValidationError(
+        `No repo specified and stdin isn't a TTY. ` +
+          `Pass owner/repo, or --yes to use the detected origin (${label}).`,
+      )
+    } else {
+      const ok = await p.confirm({ message: `Install Margins sync for ${label}?` })
+      if (p.isCancel(ok) || !ok) {
+        console.error('Cancelled — no changes made.')
+        return
+      }
+    }
   }
 
   // Workspace list fetched once per run; processRepo appends what it creates.

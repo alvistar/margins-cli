@@ -17,6 +17,17 @@ vi.mock('../../src/lib/gh.js', async () => {
   }
 })
 
+// ─── git-remote boundary mock (origin auto-detection) ────────────────────────
+
+const { mockDetect } = vi.hoisted(() => ({ mockDetect: vi.fn() }))
+
+vi.mock('../../src/lib/detect-git-remote.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/detect-git-remote.js')>(
+    '../../src/lib/detect-git-remote.js',
+  )
+  return { ...actual, detectGitRemote: mockDetect }
+})
+
 import * as gh from '../../src/lib/gh.js'
 import { GhError } from '../../src/lib/gh.js'
 import { handleAudit, parseActionPin, evaluatePin, toCsv, ACTION_REPO } from '../../src/commands/audit.js'
@@ -160,6 +171,7 @@ async function auditRows(
 beforeEach(() => {
   vi.clearAllMocks()
   ghDefaults()
+  mockDetect.mockReturnValue({ type: 'none' }) // default: no origin unless a test sets one
   stubServer(boundWorkspace())
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 })
@@ -460,8 +472,48 @@ describe('handleAudit', () => {
     expect(output()).toContain(`1 ok (latest action: ${LATEST_TAG})`)
   })
 
-  it('requires a target or --org', async () => {
+  it('no target, no --org, and no git origin → requires a target', async () => {
+    mockDetect.mockReturnValue({ type: 'none' })
     await expect(handleAudit(cfg(), undefined, {})).rejects.toThrow('Specify a repo')
+  })
+})
+
+// ─── handleAudit — origin auto-detection ──────────────────────────────────────
+
+describe('handleAudit — origin auto-detection', () => {
+  const githubOrigin = (): void => {
+    mockDetect.mockReturnValue({ type: 'github', owner: 'acme', repo: 'docs' })
+  }
+
+  it('GitHub origin → announces "Auditing owner/repo" and reports it (no prompt)', async () => {
+    githubOrigin()
+    await handleAudit(cfg(), undefined, {})
+    expect(output()).toContain('Auditing acme/docs')
+    expect(output()).toContain(`1 ok (latest action: ${LATEST_TAG})`)
+  })
+
+  it('GitHub origin + --json → runs, human "Auditing" line suppressed', async () => {
+    githubOrigin()
+    const rows = await auditRows(cfg(), undefined, {})
+    expect(rows.map((r) => r.repo)).toContain('acme/docs')
+    expect(output()).not.toContain('Auditing')
+  })
+
+  it('GitHub origin + --csv → runs, human "Auditing" line suppressed', async () => {
+    githubOrigin()
+    await handleAudit(cfg(), undefined, { csv: true })
+    expect(output()).not.toContain('Auditing')
+    expect(output()).toContain('acme/docs')
+  })
+
+  it('non-GitHub origin → GitHub-required error', async () => {
+    mockDetect.mockReturnValue({ type: 'other', url: 'https://gitlab.com/acme/docs.git' })
+    await expect(handleAudit(cfg(), undefined, {})).rejects.toThrow(/is not a GitHub repo/)
+  })
+
+  it('explicit target → detection not run', async () => {
+    await handleAudit(cfg(), 'acme/docs', {})
+    expect(mockDetect).not.toHaveBeenCalled()
   })
 })
 

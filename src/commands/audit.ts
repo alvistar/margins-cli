@@ -259,15 +259,22 @@ export async function handleAudit(
   }
 
   // The three startup lookups are independent — run them concurrently.
-  const [latest, workspaces, repos] = await Promise.all([
+  const [latest, workspaces, resolved] = await Promise.all([
     resolveLatestAction(),
     fetchWorkspaces(),
     resolveRepoTargets(target, opts),
   ])
+  const repos = resolved.targets
 
   if (repos.length === 0) {
     console.log(`No repos matched in ${opts.org}.`)
     return
+  }
+
+  // Auto-detected origin (no target given): announce the repo being audited.
+  // Read-only, so no confirmation — suppressed under machine output.
+  if (resolved.autoDetected && !opts.csv && !cfg.json) {
+    console.log(`Auditing ${resolved.autoDetected.owner}/${resolved.autoDetected.repo}`)
   }
 
   const drift: DriftContext | null = client && workspaces ? { client, workspaces } : null
