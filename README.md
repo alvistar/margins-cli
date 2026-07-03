@@ -501,8 +501,15 @@ margins install                      # onboard the current repo
 margins install owner/repo           # onboard a specific repo
 margins install --org my-org         # onboard every repo in an org (or user account)
 margins install --org my-org --include 'docs-*' --exclude 'archived-*'
+margins install --yes                # accept the origin-detected repo without confirming (CI)
 margins install --dry-run            # print intended actions without writing anything
 ```
+
+With no argument, `install` resolves the target from the current repo's `origin`
+remote and asks you to confirm before opening a PR. Pass `--yes` to skip the prompt —
+required in a non-interactive context (no TTY, or `--json`), where it will otherwise
+error rather than open a PR against a guessed repo. A non-GitHub or missing `origin`
+errors instead of guessing.
 
 | Flag | Required | Description |
 |---|---|---|
@@ -510,6 +517,7 @@ margins install --dry-run            # print intended actions without writing an
 | `--include <glob...>` | no | With `--org`: only repos matching these globs. |
 | `--exclude <glob...>` | no | With `--org`: skip repos matching these globs. |
 | `--dry-run` | no | Print the planned workspace / binding / PR actions without writing anything. |
+| `--yes` | no | Accept the origin-detected repo without the confirmation prompt. Required when no repo is given in a non-interactive context (no TTY or `--json`). |
 
 The stamped workflow uses the
 [margins-sync-action](https://github.com/alvistar/margins-sync-action) and a pinned CLI
@@ -528,6 +536,10 @@ margins audit                        # audit the current repo
 margins audit --org my-org           # audit every repo in an org
 margins audit --org my-org --csv     # CSV output for spreadsheets
 ```
+
+With no argument, `audit` resolves the target from the current repo's `origin` remote
+and prints which repo it is auditing. It writes nothing, so there is no prompt; a
+non-GitHub or missing `origin` errors instead of guessing.
 
 | Flag | Required | Description |
 |---|---|---|
