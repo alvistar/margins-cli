@@ -19,6 +19,25 @@ vi.mock('../../src/lib/gh.js', async () => {
   }
 })
 
+// ─── @clack/prompts + git-remote boundary mocks (origin auto-detection) ──────
+
+const { mockConfirm, mockDetect } = vi.hoisted(() => ({
+  mockConfirm: vi.fn(),
+  mockDetect: vi.fn(),
+}))
+
+vi.mock('@clack/prompts', () => ({
+  confirm: mockConfirm,
+  isCancel: (v: unknown) => v === Symbol.for('clack:cancel'),
+}))
+
+vi.mock('../../src/lib/detect-git-remote.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/detect-git-remote.js')>(
+    '../../src/lib/detect-git-remote.js',
+  )
+  return { ...actual, detectGitRemote: mockDetect }
+})
+
 import * as gh from '../../src/lib/gh.js'
 import { GhError } from '../../src/lib/gh.js'
 import { handleInstall } from '../../src/commands/install.js'
@@ -145,12 +164,17 @@ function stampedContent(): string {
   return Buffer.from(call![1].contentBase64, 'base64').toString('utf-8')
 }
 
+function setTTY(value: boolean): void {
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true })
+}
+
 let logSpy: ReturnType<typeof vi.spyOn>
 let errSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   vi.clearAllMocks()
   ghDefaults()
+  mockDetect.mockReturnValue({ type: 'none' }) // default: no origin unless a test sets one
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
@@ -453,7 +477,8 @@ describe('handleInstall', () => {
     expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
   })
 
-  it('requires a target or --org', async () => {
+  it('no target, no --org, and no git origin → requires a target', async () => {
+    mockDetect.mockReturnValue({ type: 'none' })
     stubServer({ workspaces: [], bindings: {} })
     await expect(handleInstall(cfg(), undefined, {})).rejects.toThrow('Specify a repo')
   })
@@ -508,5 +533,104 @@ describe('handleInstall', () => {
     expect(output).not.toContain('awaiting permissions')
     expect(output).toContain('PR opened')
     expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+})
+
+// ─── handleInstall — origin auto-detection ────────────────────────────────────
+
+describe('handleInstall — origin auto-detection', () => {
+  const githubOrigin = (): void => {
+    mockDetect.mockReturnValue({ type: 'github', owner: 'acme', repo: 'docs' })
+  }
+
+  it('TTY + confirm accepted → onboards the detected repo, prompt names owner/repo', async () => {
+    githubOrigin()
+    setTTY(true)
+    mockConfirm.mockResolvedValue(true)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await handleInstall(cfg(), undefined, {})
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('acme/docs') }),
+    )
+    expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/docs', expect.anything())
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+
+  it('TTY + confirm declined → nothing written, exit 0', async () => {
+    githubOrigin()
+    setTTY(true)
+    mockConfirm.mockResolvedValue(false)
+    const calls = stubServer({ workspaces: [], bindings: {} })
+
+    await handleInstall(cfg(), undefined, {})
+
+    expect(writeCalls(calls)).toHaveLength(0)
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+
+  it('TTY + confirm cancelled (Ctrl-C) → treated as declined, exit 0', async () => {
+    githubOrigin()
+    setTTY(true)
+    mockConfirm.mockResolvedValue(Symbol.for('clack:cancel'))
+    stubServer({ workspaces: [], bindings: {} })
+
+    await handleInstall(cfg(), undefined, {})
+
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+    expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
+  })
+
+  it('non-TTY without --yes → errors naming the detected repo, no prompt, no writes', async () => {
+    githubOrigin()
+    setTTY(false)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await expect(handleInstall(cfg(), undefined, {})).rejects.toThrow('acme/docs')
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+  })
+
+  it('--yes → onboards without prompting even with no TTY', async () => {
+    githubOrigin()
+    setTTY(false)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await handleInstall(cfg(), undefined, { yes: true })
+
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/docs', expect.anything())
+  })
+
+  it('--json without --yes → errors (JSON output is non-interactive)', async () => {
+    githubOrigin()
+    setTTY(true)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await expect(handleInstall(cfg({ json: true }), undefined, {})).rejects.toThrow('acme/docs')
+    expect(mockConfirm).not.toHaveBeenCalled()
+  })
+
+  it('non-GitHub origin → GitHub-required error surfaces from the command', async () => {
+    mockDetect.mockReturnValue({ type: 'other', url: 'https://gitlab.com/acme/docs.git' })
+    setTTY(true)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await expect(handleInstall(cfg(), undefined, {})).rejects.toThrow(/is not a GitHub repo/)
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+  })
+
+  it('explicit target with --yes → --yes is a no-op, no detection, normal onboarding', async () => {
+    setTTY(true)
+    stubServer({ workspaces: [], bindings: {} })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(mockDetect).not.toHaveBeenCalled()
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/docs', expect.anything())
   })
 })

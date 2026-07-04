@@ -2,6 +2,22 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.13.0] - 2026-07-03
+
+### Added
+- **`margins install` and `margins audit` detect the repo from `origin` when you don't pass one.**
+  Running either command inside a repo clone with no `owner/repo` argument (and no `--org`) now
+  resolves the target from the current repo's `origin` remote instead of erroring. `install` shows
+  the detected repo and asks for confirmation before opening a PR; `audit` is read-only, so it just
+  prints `Auditing owner/repo` and proceeds.
+- **`--yes` flag on `margins install`.** Skips the confirmation prompt and accepts the
+  origin-detected repo. Required when no repo is given in a non-interactive context (no TTY or
+  `--json`), where `install` otherwise errors rather than open a PR against a guessed repo.
+
+### Changed
+- A non-GitHub `origin` (e.g. GitLab) or a missing remote now produces a clear, tailored error for
+  `install` / `audit` ("... is not a GitHub repo") instead of the generic "specify a repo" message.
+
 ## [0.12.0] - 2026-07-02
 
 ### Added

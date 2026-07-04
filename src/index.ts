@@ -320,6 +320,7 @@ program
   .option('--include <glob...>', 'With --org: only repos matching these globs')
   .option('--exclude <glob...>', 'With --org: skip repos matching these globs')
   .option('--dry-run', 'Print intended actions without writing anything')
+  .option('--yes', 'Accept the auto-detected origin repo without confirmation (required when no repo is given in a non-interactive context)')
   .action(async (target, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleInstall } = await import('./commands/install.js')
@@ -328,6 +329,7 @@ program
       include: opts.include,
       exclude: opts.exclude,
       dryRun: opts.dryRun,
+      yes: opts.yes,
     })
   })
 
