@@ -5,7 +5,13 @@
  * survives the tsdown bundle into the published package — a file asset would
  * be missing at runtime on the npx path, and mocked-fs tests wouldn't catch it.
  *
- * Content mirrors margins-sync-action/templates/margins-sync.yml exactly.
+ * Content mirrors margins-sync-action/templates/margins-sync.yml EXACTLY, byte for
+ * byte (install.test.ts pins the widened shape). Any change here — the `on:`
+ * triggers, permissions, or the stamped `schema-version` — must land in that file
+ * too AND bump the action's EXPECTED_SCHEMA_VERSION in the same release (see the
+ * sync-action RELEASING.md). Current schema-version is 2 (all-branches push +
+ * `delete:` archive trigger); the pinned action must support it before consumers
+ * re-run `margins install`.
  *
  * NOTE on trigger paths: the `on.push.paths` extension list below is a static
  * convenience subset of the syncable types. The authoritative list of image
@@ -14,18 +20,16 @@
  * Rarer types (avif/ico/bmp/tiff) still sync when a listed path retriggers.
  */
 
-import { ValidationError } from '../lib/errors.js'
-
 export const WORKFLOW_PATH = '.github/workflows/margins-sync.yml'
 
-export const MARGINS_SYNC_TEMPLATE = `# Margins sync — stamped by \`margins install\` (schema-version 1).
+export const MARGINS_SYNC_TEMPLATE = `# Margins sync — stamped by \`margins install\` (schema-version 2).
 # Pushes this repo's markdown + referenced images to its Margins workspace on
-# every merge to the default branch. Auth is GitHub OIDC: no secrets stored.
+# every branch (paths-filtered), and archives a workspace branch when its git
+# branch is deleted. Auth is GitHub OIDC: no secrets stored.
 name: Margins sync
 
 on:
   push:
-    branches: ["__DEFAULT_BRANCH__"]
     paths:
       - "**.md"
       - "**.png"
@@ -37,6 +41,7 @@ on:
       # Config changes must retrigger sync too:
       - ".marginsignore"
       - ".github/workflows/margins-sync.yml"
+  delete:
   workflow_dispatch:
 
 # Queue, don't cancel: cancellation has a grace window in which an older run's
@@ -59,33 +64,24 @@ jobs:
         with:
           server-url: "__SERVER_URL__"
           workspace-id: "__WORKSPACE_ID__"
-          schema-version: 1
+          schema-version: 2
 `
 
 export interface StampOptions {
-  defaultBranch: string
   serverUrl: string
   workspaceId: string
 }
 
-/** Conservative branch-name shape — anything else could break the stamped YAML. */
-const BRANCH_NAME_RE = /^[A-Za-z0-9._/-]+$/
-
 /**
  * Stamp the template placeholders. `serverUrl` is normalized to the origin
  * (scheme + host, no trailing slash) — it doubles as the OIDC audience, which
- * the server pins as an exact string. `defaultBranch` is validated against a
- * conservative character set before stamping (workspaceId is server-issued).
+ * the server pins as an exact string. The default branch is no longer stamped:
+ * the workflow triggers on all branches, and the server owns the default-branch
+ * guard for archive.
  */
 export function stampTemplate(opts: StampOptions): string {
-  if (!BRANCH_NAME_RE.test(opts.defaultBranch)) {
-    throw new ValidationError(
-      `Invalid default branch name for workflow stamping: "${opts.defaultBranch}"`,
-    )
-  }
   const origin = new URL(opts.serverUrl).origin
   return MARGINS_SYNC_TEMPLATE
-    .replaceAll('__DEFAULT_BRANCH__', opts.defaultBranch)
     .replaceAll('__SERVER_URL__', origin)
     .replaceAll('__WORKSPACE_ID__', opts.workspaceId)
 }

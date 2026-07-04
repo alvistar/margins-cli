@@ -227,11 +227,23 @@ wsCmd
   .option('--workspace <id>', 'Workspace ID (omit to create new with --project)')
   .option('--project <name>', 'Create a new local workspace with this name')
   .option('--dir <path>', 'Directory to scan for .md files (default: cwd)')
+  .option('--branch <branch>', 'Branch to push to (default: current git branch; pass explicitly in CI where HEAD may be detached)')
   .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
   .action(async (opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handlePush } = await import('./commands/workspace/push.js')
     await handlePush(cfg, opts)
+  })
+
+wsCmd
+  .command('archive-branch')
+  .description('Archive a workspace branch (hides it from the active list; retained and revived on next push)')
+  .option('--workspace <id>', 'Workspace ID')
+  .option('--branch <branch>', 'Branch name to archive')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleArchiveBranch } = await import('./commands/workspace/archive-branch.js')
+    await handleArchiveBranch(cfg, opts)
   })
 
 wsCmd

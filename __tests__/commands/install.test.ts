@@ -189,21 +189,21 @@ afterEach(() => {
 // ─── Template ─────────────────────────────────────────────────────────────────
 
 describe('margins-sync template', () => {
-  it('stamps default branch, server origin, and workspace id', () => {
+  it('stamps server origin and workspace id (no default-branch pin)', () => {
     const out = stampTemplate({
-      defaultBranch: 'develop',
       serverUrl: 'https://margins.test/',
       workspaceId: 'ws-42',
     })
-    expect(out).toContain('branches: ["develop"]')
     expect(out).toContain('server-url: "https://margins.test"') // origin, no trailing slash
     expect(out).toContain('workspace-id: "ws-42"')
     expect(out).not.toContain('__DEFAULT_BRANCH__')
     expect(out).not.toContain('__SERVER_URL__')
     expect(out).not.toContain('__WORKSPACE_ID__')
+    // Per-branch sync: no `branches:` pin — every branch matches the paths filter.
+    expect(out).not.toContain('branches:')
   })
 
-  it('queues instead of cancelling, restricts permissions, retriggers on config changes', () => {
+  it('triggers on all branches + delete, queues, restricts permissions, retriggers on config changes', () => {
     expect(MARGINS_SYNC_TEMPLATE).toContain('cancel-in-progress: false')
     expect(MARGINS_SYNC_TEMPLATE).toContain('group: margins-sync-${{ github.ref }}')
     expect(MARGINS_SYNC_TEMPLATE).toContain('id-token: write')
@@ -211,8 +211,10 @@ describe('margins-sync template', () => {
     expect(MARGINS_SYNC_TEMPLATE).toContain('".marginsignore"')
     expect(MARGINS_SYNC_TEMPLATE).toContain('".github/workflows/margins-sync.yml"')
     expect(MARGINS_SYNC_TEMPLATE).toContain('workflow_dispatch:')
+    expect(MARGINS_SYNC_TEMPLATE).toContain('delete:') // archive-on-delete trigger
+    expect(MARGINS_SYNC_TEMPLATE).not.toContain('branches:') // all branches, paths-filtered
     expect(MARGINS_SYNC_TEMPLATE).toContain('alvistar/margins-sync-action@v1')
-    expect(MARGINS_SYNC_TEMPLATE).toContain('schema-version: 1')
+    expect(MARGINS_SYNC_TEMPLATE).toContain('schema-version: 2')
     for (const ext of ['md', 'png', 'jpg', 'jpeg', 'svg', 'gif', 'webp']) {
       expect(MARGINS_SYNC_TEMPLATE).toContain(`"**.${ext}"`)
     }
@@ -274,7 +276,8 @@ describe('handleInstall', () => {
     expect(mocked.createBranch).toHaveBeenCalledWith('acme/docs', 'margins/install-sync', 'base-sha')
     const content = stampedContent()
     expect(content).toContain('workspace-id: "ws-new-1"')
-    expect(content).toContain('branches: ["main"]')
+    expect(content).toContain('delete:') // per-branch sync: all branches + delete trigger
+    expect(content).not.toContain('branches:')
     expect(content).toContain('cancel-in-progress: false')
     expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/docs', expect.objectContaining({
       head: 'margins/install-sync',
@@ -429,14 +432,17 @@ describe('handleInstall', () => {
     expect(mocked.createPullRequest).toHaveBeenCalledTimes(1) // resumed and finished
   })
 
-  it('stamps a non-main default branch correctly', async () => {
+  it('opens the install PR against the repo default branch; the stamped template is branch-independent', async () => {
     stubServer({ workspaces: [], bindings: {} })
     mocked.getRepo.mockResolvedValue(repoInfo({ defaultBranch: 'develop' }))
 
     await handleInstall(cfg(), 'acme/docs', {})
 
     const content = stampedContent()
-    expect(content).toContain('branches: ["develop"]')
+    // The widened template no longer pins or names the default branch.
+    expect(content).not.toContain('branches:')
+    expect(content).not.toContain('develop')
+    // The install PR still targets the repo's default branch.
     expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/docs', expect.objectContaining({ base: 'develop' }))
   })
 
