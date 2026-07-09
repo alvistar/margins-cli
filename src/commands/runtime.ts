@@ -4,7 +4,7 @@
  * active one, `clean` frees space by removing all but the active. (ensureRuntime also auto-prunes
  * to active + previous on every install, so the cache can't grow unbounded even without `clean`.)
  */
-import { listRuntimes, cleanRuntimes } from '../lib/runtime.js'
+import { listRuntimes, cleanRuntimes, liveRuntimeVersion } from '../lib/runtime.js'
 import { formatJson, formatTable } from '../lib/output.js'
 
 function humanSize(bytes: number): string {
@@ -20,16 +20,23 @@ function humanSize(bytes: number): string {
 
 export function handleRuntimeList(json: boolean): string {
   const runtimes = listRuntimes()
+  const inUse = liveRuntimeVersion() // the version a running daemon is serving from (protected from clean)
   if (json) {
     return formatJson(
-      runtimes.map((r, i) => ({ version: r.version, active: i === 0, sizeBytes: r.sizeBytes, path: r.path })),
+      runtimes.map((r, i) => ({
+        version: r.version,
+        active: i === 0,
+        inUse: r.version === inUse,
+        sizeBytes: r.sizeBytes,
+        path: r.path,
+      })),
     )
   }
   if (runtimes.length === 0) {
     return 'No Margins Light runtimes cached. Run `margins open <folder>` to install one.'
   }
   const rows = runtimes.map((r, i) => [
-    r.version + (i === 0 ? ' (active)' : ''),
+    r.version + (i === 0 ? ' (active)' : '') + (r.version === inUse ? ' (in use)' : ''),
     humanSize(r.sizeBytes),
     r.path,
   ])
@@ -44,12 +51,15 @@ export function handleRuntimeWhich(json: boolean): string {
 
 export function handleRuntimeClean(json: boolean): string {
   const active = listRuntimes()[0]?.version
+  const inUse = liveRuntimeVersion()
   const removed = cleanRuntimes(active)
-  if (json) return formatJson({ kept: active ?? null, removed })
+  // A live daemon may be serving from a NON-active version; clean keeps it (deleting = crash — M4).
+  const keptInUse = inUse && inUse !== active ? inUse : undefined
+  if (json) return formatJson({ kept: active ?? null, keptInUse: keptInUse ?? null, removed })
+  const inUseNote = keptInUse ? ` Kept the in-use runtime ${keptInUse} (a daemon is running from it).` : ''
   if (removed.length === 0) {
-    return active
-      ? `Nothing to clean — only the active runtime ${active} is cached.`
-      : 'No Margins Light runtimes cached.'
+    if (!active) return 'No Margins Light runtimes cached.'
+    return `Nothing to clean — only the active runtime ${active} is cached.${inUseNote}`
   }
-  return `Removed ${removed.length} runtime(s): ${removed.join(', ')}. Kept the active ${active}.`
+  return `Removed ${removed.length} runtime(s): ${removed.join(', ')}. Kept the active ${active}.${inUseNote}`
 }

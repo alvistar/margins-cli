@@ -297,22 +297,66 @@ export function compareVersionsDesc(a: string, b: string): number {
   return 0
 }
 
-/** Keep the newest KEEP_RUNTIMES; delete older. The non-deferrable slice (KTD, plan U7). */
+// A live daemon may have booted from an OLDER cached runtime than the newest; deleting that dir
+// out from under it crashes the process on its next lazy require() (M4). The daemon records the
+// dir it is serving from in ~/.margins/daemon.json (margins-cli M4 contract) — read it and never
+// prune/clean that version while its PID is alive.
+const DISCOVERY_MARKER = 'margins-daemon'
+
+/** The runtime dir a currently-live daemon booted from (from the discovery file), or null. */
+export function liveRuntimeDir(): string | null {
+  let disc: { marker?: string; pid?: unknown; runtimeDir?: unknown }
+  try {
+    disc = JSON.parse(fs.readFileSync(path.join(marginsHome(), 'daemon.json'), 'utf8'))
+  } catch {
+    return null // no daemon, or unreadable/corrupt discovery
+  }
+  if (disc?.marker !== DISCOVERY_MARKER || typeof disc.runtimeDir !== 'string') return null
+  const pid = Number(disc.pid)
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  try {
+    process.kill(pid, 0) // liveness probe
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return null // daemon is gone
+  }
+  return disc.runtimeDir
+}
+
+/** True if `version`'s cache dir is the one the live daemon is serving from (path-prefix match). */
+function isVersionInUse(version: string, live: string | null): boolean {
+  if (!live) return false
+  const dir = versionDir(version)
+  return live === dir || live.startsWith(dir + path.sep)
+}
+
+/** The cached version a live daemon is currently serving from (for `runtime list`/`clean` UI), or null. */
+export function liveRuntimeVersion(): string | null {
+  const live = liveRuntimeDir()
+  if (!live) return null
+  for (const r of listRuntimes()) if (isVersionInUse(r.version, live)) return r.version
+  return null
+}
+
+/** Keep the newest KEEP_RUNTIMES; delete older — but NEVER a version a live daemon booted from. */
 export function pruneRuntimes(keep: number = KEEP_RUNTIMES): string[] {
   const versions = listRuntimes().map((r) => r.version)
+  const live = liveRuntimeDir()
   const removed: string[] = []
   for (const v of versions.slice(keep)) {
+    if (isVersionInUse(v, live)) continue // a live daemon is serving from it (M4)
     fs.rmSync(versionDir(v), { recursive: true, force: true })
     removed.push(v)
   }
   return removed
 }
 
-/** Remove all cached runtimes except the active one (or all if none active). */
+/** Remove all cached runtimes except the active one (and any a live daemon is serving from — M4). */
 export function cleanRuntimes(keepVersion?: string): string[] {
+  const live = liveRuntimeDir()
   const removed: string[] = []
   for (const r of listRuntimes()) {
     if (r.version === keepVersion) continue
+    if (isVersionInUse(r.version, live)) continue // don't yank a running daemon's files (M4)
     fs.rmSync(r.path, { recursive: true, force: true })
     removed.push(r.version)
   }

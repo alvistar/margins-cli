@@ -7,6 +7,7 @@ import {
   pruneRuntimes,
   cleanRuntimes,
   pkgRootFor,
+  liveRuntimeVersion,
   runtimeSchemaVersion,
   readStoreSchemaHead,
   recordStoreSchemaHead,
@@ -65,6 +66,58 @@ describe('runtime cache — list / prune / clean (U7)', () => {
   it('empty-cache messages', () => {
     expect(handleRuntimeList(false)).toMatch(/No Margins Light runtimes cached/)
     expect(handleRuntimeWhich(false)).toMatch(/No Margins Light runtime cached/)
+  })
+})
+
+describe('runtime cache — in-use guard (M4)', () => {
+  /** Write a daemon discovery file naming the runtime dir `version` booted from. */
+  function writeDiscovery(version: string, pid: number) {
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'daemon.json'),
+      JSON.stringify({ marker: 'margins-daemon', pid, port: 3000, token: 'x', runtimeDir: pkgRootFor(version) }),
+    )
+  }
+
+  it('pruneRuntimes NEVER deletes the version a LIVE daemon is serving from', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeDiscovery('0.1.0', process.pid) // an old daemon is live on 0.1.0
+    expect(pruneRuntimes(2)).toEqual([]) // 0.1.0 would be pruned, but it's in use → skipped
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+  })
+
+  it('pruneRuntimes prunes normally when the daemon PID is dead (recovery)', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeDiscovery('0.1.0', 999999) // discovery names a holder that no longer exists
+    expect(pruneRuntimes(2)).toEqual(['0.1.0']) // dead daemon → not in use → prune proceeds
+  })
+
+  it('pruneRuntimes prunes normally when there is no daemon at all', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    expect(pruneRuntimes(2)).toEqual(['0.1.0'])
+  })
+
+  it('cleanRuntimes keeps the in-use version even though it is not the active one', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeDiscovery('0.1.0', process.pid)
+    expect(cleanRuntimes('0.3.0')).toEqual(['0.2.0']) // 0.1.0 in use → kept; only 0.2.0 removed
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+  })
+
+  it('liveRuntimeVersion maps the discovery dir back to a cached version (null if dead)', () => {
+    fakeRuntime('0.1.0')
+    writeDiscovery('0.1.0', process.pid)
+    expect(liveRuntimeVersion()).toBe('0.1.0')
+    writeDiscovery('0.1.0', 999999)
+    expect(liveRuntimeVersion()).toBeNull()
   })
 })
 
