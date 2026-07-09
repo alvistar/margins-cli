@@ -26,6 +26,7 @@ const RUNTIME_SCOPE = '@alvistar'
 const RUNTIME_REGISTRY = 'https://npm.pkg.github.com'
 export const MIN_NODE_MAJOR = 20
 const KEEP_RUNTIMES = 2 // active + previous (rollback), older pruned
+const STALE_MS = 10 * 60_000 // a lock/temp dir older than this (or whose holder is dead) is reclaimable
 
 // ─── locations ──────────────────────────────────────────────────────────────
 /** ~/.margins (or MARGINS_HOME) — the same root the daemon uses. */
@@ -72,51 +73,122 @@ function npmrcContent(token: string): string {
 function classifyInstallError(err: unknown): Error {
   if (err instanceof NpmExecError) {
     const s = err.stderr
-    if (/\b(401|403)\b|Unauthorized|Forbidden|Permission/i.test(s)) return new RuntimeAuthError()
+    if (/\b(401|403)\b|E401|E403|Unauthorized|Forbidden|Permission/i.test(s)) return new RuntimeAuthError()
     if (/\b404\b|Not Found|E404/i.test(s)) return new RuntimeNotPublishedError()
     return new RuntimeInstallError(err.message.split('\n')[0] || 'npm install failed')
   }
   return new RuntimeInstallError(err instanceof Error ? err.message : String(err))
 }
 
-// ─── version resolution ─────────────────────────────────────────────────────
-/** The latest published runtime version (private registry, authed). 404 → not-published. */
-export async function resolveRuntimeVersion(token: string): Promise<string> {
+/**
+ * Run `fn` with a short-lived, 0600 `.npmrc` holding the token, then delete it. The credential
+ * file lives in os.tmpdir (NEVER inside the cached runtime dir), is mode 0600 (not world-readable),
+ * and is removed in `finally` — so the PAT is never persisted at rest in ~/.margins (Security F1/F2).
+ */
+async function withNpmrc<T>(token: string, fn: (npmrcPath: string) => Promise<T>): Promise<T> {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-npmrc-'))
   const npmrc = path.join(tmp, '.npmrc')
   try {
-    fs.writeFileSync(npmrc, npmrcContent(token))
-    return await npmViewVersion(RUNTIME_PKG, npmrc)
-  } catch (err) {
-    throw classifyInstallError(err)
+    fs.writeFileSync(npmrc, npmrcContent(token), { mode: 0o600 })
+    return await fn(npmrc)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 }
 
+// ─── version resolution ─────────────────────────────────────────────────────
+/** The latest published runtime version (private registry, authed). 404 → not-published. */
+export async function resolveRuntimeVersion(token: string): Promise<string> {
+  try {
+    return await withNpmrc(token, (npmrc) => npmViewVersion(RUNTIME_PKG, npmrc))
+  } catch (err) {
+    throw classifyInstallError(err)
+  }
+}
+
 // ─── per-version install lock (concurrency) ───────────────────────────────────
+/** True if a lockfile is abandoned: its holder PID is dead, or it is older than STALE_MS. */
+function isStaleLock(lock: string): boolean {
+  let st: fs.Stats
+  try {
+    st = fs.statSync(lock)
+  } catch {
+    return false // lock vanished — nothing to reclaim
+  }
+  if (Date.now() - st.mtimeMs > STALE_MS) return true
+  const pid = Number(fs.readFileSync(lock, 'utf8').trim())
+  if (!Number.isInteger(pid) || pid <= 0) return true // unreadable/empty PID → abandoned
+  try {
+    process.kill(pid, 0) // signal 0 = liveness probe, no signal delivered
+    return false // holder alive
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH' // no such process → dead → stale
+  }
+}
+
+/** Sweep abandoned install state a crash/Ctrl-C left behind (stale locks + orphaned temp dirs). */
+function sweepOrphans(): void {
+  const root = runtimeRoot()
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(root)
+  } catch {
+    return
+  }
+  for (const name of entries) {
+    const p = path.join(root, name)
+    try {
+      if (name.startsWith('.lock-')) {
+        if (isStaleLock(p)) fs.rmSync(p, { force: true })
+      } else if (name.startsWith('.tmp-') && Date.now() - fs.statSync(p).mtimeMs > STALE_MS) {
+        fs.rmSync(p, { recursive: true, force: true }) // a killed install's half-written node_modules
+      }
+    } catch {
+      // best-effort — another process may be racing the same sweep
+    }
+  }
+}
+
 async function withVersionLock<T>(version: string, fn: () => Promise<T>): Promise<T> {
   fs.mkdirSync(runtimeRoot(), { recursive: true })
   const lock = path.join(runtimeRoot(), `.lock-${version}`)
   for (let i = 0; i < 600; i++) {
     // ~60s
+    let fd: number
     try {
-      const fd = fs.openSync(lock, 'wx') // O_EXCL — fails if another holder exists
-      fs.writeFileSync(fd, String(process.pid))
-      fs.closeSync(fd)
-      try {
-        return await fn()
-      } finally {
-        fs.rmSync(lock, { force: true })
-      }
+      fd = fs.openSync(lock, 'wx') // O_EXCL — fails if another holder exists
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      // held by another install: if the runtime appeared meanwhile, the caller re-checks.
+      // Held by another install. Reclaim it if the holder died mid-install (Ctrl-C/OOM/crash),
+      // otherwise wait — but if the runtime appeared meanwhile, the caller re-checks and returns.
+      if (isStaleLock(lock)) {
+        fs.rmSync(lock, { force: true })
+        continue // retry the O_EXCL create immediately
+      }
       if (isInstalled(version)) return fn() // fn() re-checks and returns the cached path
       await new Promise((r) => setTimeout(r, 100))
+      continue
+    }
+    // Acquired. Record the holder PID (for stale detection), guaranteeing the fd + lock are freed
+    // even if the write fails (e.g. ENOSPC) — otherwise the lockfile would wedge every future run.
+    try {
+      fs.writeFileSync(fd, String(process.pid))
+    } catch (err) {
+      fs.closeSync(fd)
+      fs.rmSync(lock, { force: true })
+      throw err
+    }
+    fs.closeSync(fd)
+    try {
+      return await fn()
+    } finally {
+      fs.rmSync(lock, { force: true })
     }
   }
-  throw new RuntimeInstallError(`timed out waiting for a concurrent install of ${version}`)
+  throw new RuntimeInstallError(
+    `timed out waiting for a concurrent install of ${version}. If no other \`margins open\` is ` +
+      `running, delete ${lock} and retry.`,
+  )
 }
 
 // ─── ensureRuntime (the core) ─────────────────────────────────────────────────
@@ -133,6 +205,7 @@ export async function ensureRuntime(opts: EnsureOpts = {}): Promise<{ version: s
   assertNode()
   const token = await resolveRuntimeToken(opts.env)
   if (!token) throw new RuntimeAuthError()
+  sweepOrphans() // reclaim stale locks + orphaned temp dirs a prior crash/Ctrl-C left behind
 
   let version: string
   if (opts.version) {
@@ -141,8 +214,10 @@ export async function ensureRuntime(opts: EnsureOpts = {}): Promise<{ version: s
     try {
       version = await resolveRuntimeVersion(token)
     } catch (err) {
-      // Offline / not-yet-published: fall back to the newest cached runtime if we have one,
-      // so `margins open` still works without the registry.
+      // Only fall back to a cached runtime for a genuine registry/network failure — NOT for auth
+      // (expired token) or not-published (yanked), which must SURFACE rather than silently pin the
+      // user to a stale cached runtime with no signal (Correctness P3).
+      if (!(err instanceof RuntimeInstallError)) throw err
       const cached = listRuntimes()[0]
       if (!cached) throw err
       opts.log?.(`Registry unreachable — using the cached runtime ${cached.version}.`)
@@ -156,13 +231,14 @@ export async function ensureRuntime(opts: EnsureOpts = {}): Promise<{ version: s
     if (isInstalled(version)) return // won the race
     const tmp = fs.mkdtempSync(path.join(runtimeRoot(), `.tmp-${version}-`))
     try {
-      fs.writeFileSync(path.join(tmp, '.npmrc'), npmrcContent(token))
+      // NOTE: the token .npmrc is intentionally NOT written here — it would be renamed into the
+      // persistent cache. withNpmrc keeps it in an ephemeral 0600 file (Security F1/F2).
       fs.writeFileSync(
         path.join(tmp, 'package.json'),
         JSON.stringify({ name: 'margins-runtime-cache', private: true }) + '\n',
       )
       opts.log?.(`Installing Margins Light runtime ${version}…`)
-      await npmInstall(`${RUNTIME_PKG}@${version}`, tmp, path.join(tmp, '.npmrc'))
+      await withNpmrc(token, (npmrc) => npmInstall(`${RUNTIME_PKG}@${version}`, tmp, npmrc))
       if (!fs.existsSync(path.join(tmp, 'node_modules', RUNTIME_PKG, 'server.js'))) {
         throw new RuntimeInstallError('server.js missing after install (corrupt package)')
       }

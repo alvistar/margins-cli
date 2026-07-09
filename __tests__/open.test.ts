@@ -64,7 +64,7 @@ describe('handleOpen — local vs hosted (U6)', () => {
     expect(mocks.ensureRuntime).toHaveBeenCalledOnce()
     expect(mocks.spawn).toHaveBeenCalledOnce()
     const [cmd, args] = mocks.spawn.mock.calls[0] as [string, string[]]
-    expect(cmd).toBe('node')
+    expect(cmd).toBe(process.execPath) // the CLI's own interpreter, not a PATH `node` (M3)
     expect(args).toEqual([path.join(pkgRoot, 'scripts', 'launcher.mjs'), 'open', folder])
     expect(mocks.handleHostedOpen).not.toHaveBeenCalled()
   })

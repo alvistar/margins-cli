@@ -120,6 +120,47 @@ describe('ensureRuntime — resolve → install → cache (U5)', () => {
     await expect(ensureRuntime({ version: '0.1.0' })).rejects.toBeInstanceOf(RuntimeAuthError)
     expect(mocks.npmInstall).not.toHaveBeenCalled()
   })
+
+  it('the token .npmrc is NEVER persisted in the runtime cache (Security F1)', async () => {
+    mocks.npmInstall.mockImplementation(async (_s: string, cwd: string, userconfig: string) => {
+      // present in the ephemeral userconfig during the install…
+      expect(fs.readFileSync(userconfig, 'utf8')).toContain('_authToken=tok-classic-pat')
+      fakeInstall(cwd)
+    })
+    await ensureRuntime({ version: '0.1.0' })
+    // …but nothing token-bearing is renamed into the cached version dir
+    expect(fs.existsSync(path.join(home, 'runtime', '0.1.0', '.npmrc'))).toBe(false)
+  })
+
+  it('a stale lock from a dead/crashed install is reclaimed, not wedged (H1/M1)', async () => {
+    fs.mkdirSync(path.join(home, 'runtime'), { recursive: true })
+    const lock = path.join(home, 'runtime', '.lock-0.1.0')
+    fs.writeFileSync(lock, '999999') // a holder PID that no longer exists
+    const old = new Date(Date.now() - 60 * 60_000) // 1h ago → older than the staleness ceiling
+    fs.utimesSync(lock, old, old)
+    mocks.npmInstall.mockImplementation(async (_s: string, cwd: string) => fakeInstall(cwd))
+    const { pkgRoot } = await ensureRuntime({ version: '0.1.0' })
+    expect(fs.existsSync(path.join(pkgRoot, 'server.js'))).toBe(true)
+    expect(mocks.npmInstall).toHaveBeenCalledTimes(1) // installed, did not spin 60s and throw
+    expect(fs.existsSync(lock)).toBe(false) // reclaimed
+  })
+})
+
+describe('offline / registry-down fallback', () => {
+  it('falls back to the newest cached runtime on a network failure', async () => {
+    mocks.npmInstall.mockImplementation(async (_s: string, cwd: string) => fakeInstall(cwd))
+    await ensureRuntime({ version: '0.1.0' }) // seed a cache
+    mocks.npmViewVersion.mockRejectedValue(new NpmExecError('boom', 'network error ETIMEDOUT'))
+    const { version } = await ensureRuntime()
+    expect(version).toBe('0.1.0')
+  })
+
+  it('does NOT silently fall back on an auth failure — surfaces it (Correctness P3)', async () => {
+    mocks.npmInstall.mockImplementation(async (_s: string, cwd: string) => fakeInstall(cwd))
+    await ensureRuntime({ version: '0.1.0' }) // a cache exists…
+    mocks.npmViewVersion.mockRejectedValue(new NpmExecError('x', 'npm error code E401 Unauthorized'))
+    await expect(ensureRuntime()).rejects.toBeInstanceOf(RuntimeAuthError) // …but auth still surfaces
+  })
 })
 
 describe('token + node gates', () => {
