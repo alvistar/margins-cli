@@ -23,7 +23,9 @@ export const program = new Command()
 
 // 'audit' is exempt because gh-only mode is supported: without margins
 // credentials it still reports missing/stale-pin/over-cap (drift is skipped).
-const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit'])
+// 'open' is exempt: `margins open ./folder` (Margins Light, local) needs no Margins-server auth;
+// the hosted `open <slug>` path surfaces a 401 from the API if credentials are absent.
+const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit', 'open', 'runtime'])
 // Subcommands that are local-only and don't need server auth
 const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
 
@@ -178,6 +180,45 @@ program
     const cfg = getConfig(cmd)
     const { handleShare } = await import('./commands/share.js')
     await handleShare(cfg, stash)
+  })
+
+// ─── open (top-level) ──────────────────────────────────────────────────────────
+
+program
+  .command('open [target]')
+  .description('Open a local folder/file for review with Margins Light, or a hosted workspace by slug')
+  .action(async (target, _opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleOpen } = await import('./commands/open.js')
+    await handleOpen(cfg, target)
+  })
+
+// ─── runtime subcommand (Margins Light runtime cache) ───────────────────────────
+
+const runtimeCmd = program.command('runtime').description('Manage cached Margins Light runtimes')
+
+runtimeCmd
+  .command('list')
+  .description('List cached runtime versions and sizes')
+  .action(async () => {
+    const { handleRuntimeList } = await import('./commands/runtime.js')
+    console.log(handleRuntimeList(program.opts().json ?? false))
+  })
+
+runtimeCmd
+  .command('which')
+  .description('Show the active (newest) cached runtime')
+  .action(async () => {
+    const { handleRuntimeWhich } = await import('./commands/runtime.js')
+    console.log(handleRuntimeWhich(program.opts().json ?? false))
+  })
+
+runtimeCmd
+  .command('clean')
+  .description('Remove all cached runtimes except the active one')
+  .action(async () => {
+    const { handleRuntimeClean } = await import('./commands/runtime.js')
+    console.log(handleRuntimeClean(program.opts().json ?? false))
   })
 
 // ─── workspace subcommand ─────────────────────────────────────────────────────
