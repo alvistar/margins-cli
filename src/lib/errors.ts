@@ -181,3 +181,60 @@ export class OAuthError extends MarginsError {
     super(`OAuth error: ${reason}`, `Authentication failed: ${reason}`, 1)
   }
 }
+
+// ─── Margins Light runtime errors (M2 U5–U7) ────────────────────────────────────
+
+/** No usable GitHub Packages token for the private runtime install (Codex #7). */
+export class RuntimeAuthError extends MarginsError {
+  constructor() {
+    super(
+      'No GitHub Packages token',
+      'Margins Light runtime is a private package. Set MARGINS_RUNTIME_TOKEN (a classic PAT with ' +
+        'read:packages), or run `gh auth login` with a packages-capable token. SSO orgs must ' +
+        'authorize the token.',
+      1,
+    )
+  }
+}
+
+/** The runtime package is not published yet / no repo access (404). */
+export class RuntimeNotPublishedError extends MarginsError {
+  constructor() {
+    super(
+      'Runtime not published',
+      'No Margins Light runtime is published (or you lack repo access). Ask for read:packages ' +
+        'access, or wait for the first publish.',
+      1,
+    )
+  }
+}
+
+/** `npm install` of the runtime failed (network / corrupt / registry). */
+export class RuntimeInstallError extends MarginsError {
+  constructor(detail: string) {
+    super(`Runtime install failed: ${detail}`, `Could not install the Margins Light runtime: ${detail}`, 1)
+  }
+}
+
+/** Runtime ↔ store schema skew: an older runtime than the local store's head. */
+export class RuntimeIncompatibleError extends MarginsError {
+  constructor(runtimeSchema: number, storeSchema: number) {
+    super(
+      `Runtime schema ${runtimeSchema} < store schema ${storeSchema}`,
+      `Your ~/.margins/store was written by a newer Margins Light (schema ${storeSchema}); this ` +
+        `runtime is older (schema ${runtimeSchema}). Upgrade the CLI, or run \`margins runtime clean\`.`,
+      1,
+    )
+  }
+}
+
+/** Node is older than the runtime's minimum (KTD6). */
+export class NodeTooOldError extends MarginsError {
+  constructor(current: string, minMajor: number) {
+    super(
+      `Node ${current} < ${minMajor}`,
+      `Margins Light needs Node ${minMajor}+ (you have ${current}). Upgrade Node and retry.`,
+      1,
+    )
+  }
+}

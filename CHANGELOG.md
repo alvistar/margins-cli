@@ -2,6 +2,21 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.15.0] - 2026-07-09
+
+### Added
+- **`margins open <folder|file>` — Margins Light, local review.** Opens a local folder or
+  Markdown file in a self-contained local Margins Light runtime: resolves + installs the private
+  runtime npm package (`@alvistar/margins-light` from GitHub Packages), caches it under
+  `~/.margins/runtime/<version>/`, and spawns the local daemon + reader — no Margins account
+  needed. Disambiguates: an existing/`./`/`../`/`/` path routes local, a slug routes to the
+  existing hosted open. Auth for the private runtime is a classic `read:packages` PAT via
+  `MARGINS_RUNTIME_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`; the install is atomic +
+  concurrency-safe and falls back to a cached runtime when the registry is unreachable.
+- **`margins runtime list | which | clean`.** Manage the runtime cache — list cached versions +
+  sizes (newest = active), name the active one, and prune all but the active. Installs also
+  auto-prune to the active + previous version, so the cache can't grow unbounded.
+
 ## [0.14.0] - 2026-07-03
 
 ### Added
