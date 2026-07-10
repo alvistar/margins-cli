@@ -337,6 +337,58 @@ export function liveRuntimeVersion(): string | null {
   return null
 }
 
+/** Liveness probe (matches liveRuntimeDir): alive unless the PID is gone (ESRCH). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH' // EPERM etc. = exists → alive
+  }
+}
+
+export interface StopResult {
+  stopped: boolean
+  pid?: number
+  /** 'stopped' = SIGTERM sent; 'not-running' = no daemon file/marker; 'stale' = dead PID, file cleaned. */
+  reason: 'stopped' | 'not-running' | 'stale'
+}
+
+/**
+ * Stop the running Margins Light daemon. The launcher advertises `margins stop`, but the command
+ * was missing — the detached daemon could only be killed by PID. Reads ~/.margins/daemon.json, and
+ * if it records a LIVE margins daemon, SIGTERMs its PID and removes the discovery file.
+ * PID-recycle-safe: acts only when the marker is ours AND the PID is alive; a dead PID (crash /
+ * already stopped) just cleans the stale file and reports not-running rather than signalling an
+ * unrelated process that happened to inherit the recycled PID.
+ */
+export function stopDaemon(): StopResult {
+  const daemonFile = path.join(marginsHome(), 'daemon.json')
+  let disc: { marker?: string; pid?: unknown }
+  try {
+    disc = JSON.parse(fs.readFileSync(daemonFile, 'utf8'))
+  } catch {
+    return { stopped: false, reason: 'not-running' } // no daemon, or unreadable/corrupt discovery
+  }
+  if (disc?.marker !== DISCOVERY_MARKER) return { stopped: false, reason: 'not-running' }
+  const pid = Number(disc.pid)
+  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) {
+    fs.rmSync(daemonFile, { force: true }) // stale discovery — clean it, nothing to kill
+    return { stopped: false, reason: 'stale' }
+  }
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+      fs.rmSync(daemonFile, { force: true }) // died between the probe and the signal
+      return { stopped: false, reason: 'stale' }
+    }
+    throw err
+  }
+  fs.rmSync(daemonFile, { force: true })
+  return { stopped: true, pid, reason: 'stopped' }
+}
+
 /** Keep the newest KEEP_RUNTIMES; delete older — but NEVER a version a live daemon booted from. */
 export function pruneRuntimes(keep: number = KEEP_RUNTIMES): string[] {
   const versions = listRuntimes().map((r) => r.version)
@@ -375,7 +427,13 @@ export interface SchemaVersion {
   when?: number
 }
 
-function storeDir(): string {
+/**
+ * The Margins Light store directory the daemon should use. Explicit `MARGINS_PGLITE` wins;
+ * otherwise it follows `marginsHome()` (so `MARGINS_HOME` isolates the store too). `open` passes
+ * this to the launcher's env — the runtime's own default is a hardcoded `~/.margins/store` that
+ * does NOT read `MARGINS_HOME`, so without this the store would escape an isolated home.
+ */
+export function storeDir(): string {
   return process.env['MARGINS_PGLITE'] || path.join(marginsHome(), 'store')
 }
 function storeHeadPath(): string {

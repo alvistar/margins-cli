@@ -17,6 +17,7 @@ import {
   runtimeSchemaVersion,
   assertRuntimeCompat,
   recordStoreSchemaHead,
+  storeDir,
 } from '../lib/runtime.js'
 import { MarginsError } from '../lib/errors.js'
 
@@ -80,7 +81,13 @@ async function openLocal(target: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     // process.execPath, not bare 'node': guarantees the launcher runs under the SAME interpreter
     // that just passed assertNode() (a PATH `node` could be older / absent — M3).
-    const child = spawn(process.execPath, [launcher, 'open', abs], { stdio: 'inherit' })
+    // Pin MARGINS_PGLITE to the CLI-resolved store so the daemon's store follows MARGINS_HOME and
+    // stays in sync with where recordStoreSchemaHead() writes the head — the runtime's own default
+    // hardcodes ~/.margins/store and ignores MARGINS_HOME (would escape an isolated home).
+    const child = spawn(process.execPath, [launcher, 'open', abs], {
+      stdio: 'inherit',
+      env: { ...process.env, MARGINS_PGLITE: storeDir() },
+    })
     child.on('error', (err) =>
       reject(new MarginsError(`launcher spawn failed: ${err.message}`, `Could not start Margins Light: ${err.message}`, 1)),
     )

@@ -14,6 +14,7 @@ vi.mock('../src/lib/runtime.js', () => ({
   runtimeSchemaVersion: () => null, // compat gate inert in this unit (covered by runtime-mgmt.test)
   assertRuntimeCompat: () => undefined,
   recordStoreSchemaHead: () => undefined,
+  storeDir: () => '/fake/store/dir',
 }))
 vi.mock('../src/commands/workspace/open.js', () => ({ handleOpen: mocks.handleHostedOpen }))
 vi.mock('node:child_process', async (orig) => ({
@@ -63,9 +64,18 @@ describe('handleOpen — local vs hosted (U6)', () => {
     await handleOpen(cfg, folder)
     expect(mocks.ensureRuntime).toHaveBeenCalledOnce()
     expect(mocks.spawn).toHaveBeenCalledOnce()
-    const [cmd, args] = mocks.spawn.mock.calls[0] as [string, string[]]
+    const [cmd, args, opts] = mocks.spawn.mock.calls[0] as [
+      string,
+      string[],
+      { stdio?: string; env?: NodeJS.ProcessEnv },
+    ]
     expect(cmd).toBe(process.execPath) // the CLI's own interpreter, not a PATH `node` (M3)
     expect(args).toEqual([path.join(pkgRoot, 'scripts', 'launcher.mjs'), 'open', folder])
+    expect(opts.stdio).toBe('inherit')
+    // The daemon's store must follow MARGINS_HOME: pass the CLI-resolved store as MARGINS_PGLITE
+    // (the runtime otherwise hardcodes ~/.margins/store) — and spread the real env, not replace it.
+    expect(opts.env?.MARGINS_PGLITE).toBe('/fake/store/dir')
+    expect(opts.env?.PATH).toBe(process.env.PATH)
     expect(mocks.handleHostedOpen).not.toHaveBeenCalled()
   })
 
