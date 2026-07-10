@@ -193,6 +193,14 @@ program
     await handleOpen(cfg, target)
   })
 
+program
+  .command('stop')
+  .description('Stop the running Margins Light daemon')
+  .action(async () => {
+    const { handleStop } = await import('./commands/stop.js')
+    console.log(handleStop(program.opts().json ?? false))
+  })
+
 // ─── runtime subcommand (Margins Light runtime cache) ───────────────────────────
 
 const runtimeCmd = program.command('runtime').description('Manage cached Margins Light runtimes')

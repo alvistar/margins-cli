@@ -2,6 +2,22 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.16.0] - 2026-07-10
+
+### Added
+- **`margins stop`** — stop the detached Margins Light daemon that `margins open` starts. The
+  launcher had always instructed users to run `margins stop`, but the command did not exist; the
+  only way to end the daemon was `kill <pid>`. It reads `~/.margins/daemon.json`, SIGTERMs a live
+  margins daemon (PID-recycle-safe: acts only when the discovery marker is ours and the PID is
+  alive), and cleans up the discovery file; a stale/absent daemon is a graceful no-op.
+
+### Fixed
+- **`MARGINS_HOME` now isolates the store.** `margins open` passes the CLI-resolved store path to
+  the daemon as `MARGINS_PGLITE`, so the store follows `MARGINS_HOME` instead of the runtime's
+  hardcoded `~/.margins/store` default (which ignored `MARGINS_HOME`). Previously an isolated
+  `MARGINS_HOME` (e.g. a throwaway test run) leaked its workspace into the shared `~/.margins/store`
+  and desynced the U7 compat gate's recorded schema-head from the store the daemon actually migrated.
+
 ## [0.15.0] - 2026-07-09
 
 ### Added
