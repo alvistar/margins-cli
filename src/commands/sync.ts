@@ -116,6 +116,14 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
           name: folderName,
           source: 'github',
           repoUrl,
+          // Must be explicit: the server defaults source:'github' to syncMode 'server'
+          // (the clone-and-pull path), but everything below this point — the .margins.json
+          // we write and the CAS push we run next — is client sync. Omitting it created a
+          // server-sync workspace and the push then failed 422 PUSH_SYNC_NOT_SUPPORTED,
+          // but ONLY for users with GitHub linked: without it the create throws
+          // GITHUB_NOT_LINKED and the catch below quietly falls back to a local workspace.
+          // `margins install` has always passed this (see commands/install.ts).
+          syncMode: 'client',
         }) as { workspace: { id: string; slug: string } }
 
         workspaceId = result.workspace.id
