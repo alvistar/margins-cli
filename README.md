@@ -471,7 +471,7 @@ After reloading your shell, press `Tab` after `margins workspace sync ` to get l
 
 ### `install-hook`
 
-Installs a git hook that triggers `margins workspace push` on every push (or commit).
+Installs a git hook that syncs to Margins on every push (or commit).
 The hook is **non-blocking**: sync runs in the background and `git push` always succeeds
 regardless of sync outcome. CLI logs a warning on failure.
 
@@ -486,9 +486,32 @@ margins install-hook --force      # overwrite an existing hook without prompting
 | `--on <trigger>` | no | `push` (default) or `commit`. `push` runs the sync when you `git push`; `commit` runs it on every commit. |
 | `--force` | no | Overwrite an existing hook file without prompting. |
 
-**Prerequisite — workspace identification.** The hook script calls `margins workspace push`
-with no arguments, which reads `workspace_id` from `.margins.json` in the repo root. Before
-installing the hook, register the workspace once:
+**The two triggers do different things.**
+
+- `--on push` syncs **what you pushed**. Git tells the hook, on stdin, exactly which
+  commits are going to which remote branches; the hook syncs those. Push a branch you
+  are not standing on, or push `local-name:remote-name`, and the sync follows git —
+  it lands on `remote-name`, not on your current checkout. A multi-branch push syncs
+  each branch independently: one branch failing does not stop the rest. Tag pushes and
+  branch deletions sync nothing.
+- `--on commit` syncs **the commit you just made**, resolved to an immutable object id
+  before the background sync starts — so committing again straight away cannot make the
+  first sync send the second commit.
+
+Whether a sync sends the commit's tree or the working tree is the **workspace's**
+content mode, settled at each push. The hook does not decide it and does not carry it.
+
+> **A pre-push hook runs before the remote accepts the push.** If the remote rejects it
+> (non-fast-forward, a hook on the server, a protected branch), Margins is left holding
+> content the remote never took. The hook mirrors what you intended locally; it cannot
+> speak for the remote.
+
+Hooks are installed via `git rev-parse --git-path hooks`, so linked worktrees
+(`git worktree add`) and submodules — where `.git` is a *file*, not a directory —
+install into the shared hooks directory rather than failing.
+
+**Prerequisite — workspace identification.** The hook reads `workspace_id` from
+`.margins.json` in the repo root. Before installing the hook, register the workspace once:
 
 ```sh
 margins workspace push --workspace <workspace-id>
@@ -506,9 +529,18 @@ fail silently on every push until you create it.
 #!/bin/sh
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
-margins workspace push &
+refs=$(cat)
+margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 ```
+
+`refs=$(cat)` runs *before* the `&` deliberately: git closes the hook's stdin the
+moment the hook exits, so a reader started in the background would find an empty pipe.
+The post-commit hook resolves `git rev-parse HEAD` in the same position and for the
+same reason.
+
+`margins workspace hook-sync` is an internal command invoked by the installed hooks.
+It is not part of the CLI's user-facing surface — use `margins workspace push` by hand.
 
 **Removing the hook:** delete `.git/hooks/pre-push` (or `post-commit`) by hand. There is
 no `uninstall-hook` command yet.

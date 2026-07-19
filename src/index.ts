@@ -291,6 +291,24 @@ wsCmd
     await handlePush(cfg, opts)
   })
 
+// Invoked by the installed git hooks, not typed by hand. The hook script has
+// already captured the state that stops being available when it returns — the
+// pre-push ref lines from stdin, or the object id `HEAD` resolved to — and
+// passes it here so the background sync targets exactly what git named.
+wsCmd
+  .command('hook-sync', { hidden: true })
+  .description('Sync the commits a git hook named (internal: invoked by installed hooks)')
+  .option('--event <event>', 'Which hook fired: pre-push or post-commit')
+  .option('--refs <lines>', "pre-push: git's ref lines, read from the hook's stdin")
+  .option('--rev <sha>', 'post-commit: the object id the hook resolved')
+  .option('--branch <branch>', 'post-commit: the branch the commit was made on')
+  .option('--dir <path>', 'Repository directory (default: cwd)')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleHookSync } = await import('./commands/workspace/push.js')
+    await handleHookSync(cfg, opts)
+  })
+
 wsCmd
   .command('archive-branch')
   .description('Archive a workspace branch (hides it from the active list; retained and revived on next push)')
