@@ -1,8 +1,8 @@
 import { readFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
-import { execSync, type StdioOptions } from 'node:child_process'
 import { registryPath } from '../../lib/registry.js'
+import { currentGitBranch } from '../../lib/git-branch.js'
 import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
@@ -18,21 +18,6 @@ import type { ContentMode } from '../../lib/cas-sync.js'
 
 // Re-exported for backwards compatibility — implementation moved to lib.
 export { globMarkdown } from '../../lib/collect-sync-files.js'
-
-// ─── Git helpers ─────────────────────────────────────────────────────────────
-
-// stdio: ['ignore', 'pipe', 'ignore'] — capture stdout, discard stderr so git's
-// error output (e.g. 'fatal: ambiguous argument HEAD~1' on a first commit) doesn't
-// leak past our try/catch into the user's terminal.
-const GIT_STDIO: StdioOptions = ['ignore', 'pipe', 'ignore']
-
-function gitBranch(cwd: string): string {
-  try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()
-  } catch {
-    return 'main'
-  }
-}
 
 export type CollectForMode = (
   dir: string,
@@ -118,20 +103,23 @@ export async function handlePush(
   // stop the others. The top-level CLI handler turns the throw back into the
   // same message on stderr and the same non-zero exit.
   //
-  // The resolution runs inside the try (a malformed `.margins.json`, or an
-  // unreachable server, must not be mistaken for a refusal) but the refusal
-  // itself is raised OUTSIDE it — a throw from within would be swallowed by the
-  // very catch that exists to tolerate those two cases.
+  // Only the PARSE is wrapped. A malformed `.margins.json` is tolerated (it is
+  // not a refusal, and `resolveConfig` already warned about it), but the catch
+  // must not extend one line further: `resolveSyncMode` raises its own refusal
+  // when a legacy `{ mode: "overlay" }` file leaves the mode unsettled and the
+  // server cannot answer, and swallowing THAT would silently push in whatever
+  // mode the fall-through happened to leave behind. The refusal below is raised
+  // outside the try for the same reason.
   const localCfgForSync = join(cwd, '.margins.json')
-  let resolvedSyncMode: 'server' | 'client' | undefined
+  let localCfg: LocalConfig | undefined
   if (existsSync(localCfgForSync)) {
     try {
-      const localCfg = JSON.parse(readFileSync(localCfgForSync, 'utf-8')) as LocalConfig
-      resolvedSyncMode = await resolveSyncMode(localCfg, client, cwd)
+      localCfg = JSON.parse(readFileSync(localCfgForSync, 'utf-8')) as LocalConfig
     } catch {
-      // Malformed .margins.json or server unreachable — resolveSyncMode handles exit
+      // Malformed .margins.json — fall through; resolveConfig already warned.
     }
   }
+  const resolvedSyncMode = localCfg ? await resolveSyncMode(localCfg, client, cwd) : undefined
   if (resolvedSyncMode === 'server') {
     throw new ValidationError(
       'This workspace uses server-managed sync. Use `margins workspace sync` instead.',
@@ -145,7 +133,7 @@ export async function handlePush(
   // HEAD, where git rev-parse yields "HEAD", and the delete-event path has no
   // checkout at all), else detect the current git branch. (SHAs are computed
   // inside casSync — synthetic manifest hash + server headSha, never git SHAs.)
-  const branch = opts.branch ?? gitBranch(cwd)
+  const branch = opts.branch ?? currentGitBranch(cwd)
 
   // Settle the content mode BEFORE collecting anything (KTD3): the workspace
   // decides, a contradicting flag is refused here, and a server that reports no
@@ -407,7 +395,7 @@ export async function handleHookSync(
   const results: HookSyncResult[] = []
 
   for (const target of targets) {
-    const branch = target.branch ?? gitBranch(cwd)
+    const branch = target.branch ?? currentGitBranch(cwd)
     try {
       await withBranchLock(cwd, branch, () =>
         handlePush(cfg, { dir: cwd, branch, rev: target.rev, collect }))

@@ -27,8 +27,21 @@ export const program = new Command()
 // 'open' is exempt: `margins open ./folder` (Margins Light, local) needs no Margins-server auth;
 // the hosted `open <slug>` path surfaces a 401 from the API if credentials are absent.
 const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit', 'open', 'runtime'])
-// Subcommands that are local-only and don't need server auth
-const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
+// Subcommands the root-level auth gate must not stop.
+//
+// 'unsync' is local-only and needs no server auth at all.
+//
+// 'hook-sync' is a different case: it DOES need credentials, and is exempted
+// precisely so that missing ones fail where they can be RECORDED. It runs under
+// the root `workspace` command, so the gate below used to `process.exit(1)`
+// before `handleHookSync` — and therefore before `settleHookSyncOutcome` — ever
+// ran, making a credential failure the one cause the findability feature (R16,
+// U7) structurally could not see. That is not a rare state: `install-hook` is
+// itself exempt, so a hook can be installed before credentials exist, and a
+// rotated API key puts a working install straight into it. Skipping the gate
+// lets the failure surface through the normal per-branch results path, where it
+// becomes a record the next foreground command reports.
+const NO_AUTH_SUBCOMMANDS = new Set(['unsync', 'hook-sync'])
 
 
 program.hook('preAction', (_thisCommand, actionCommand) => {

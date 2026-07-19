@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { LocalConfig } from './config.js'
 import type { ApiClient } from './api-client.js'
+import { ValidationError } from './errors.js'
 
 /**
  * Resolve the workspace's syncMode from .margins.json, handling legacy
@@ -34,12 +35,27 @@ export async function resolveSyncMode(
       upgradeMarginsJson(config, resolved, configDir)
       return resolved
     } catch {
-      console.error(
+      // THROWS; this used to `console.error` + `process.exit(1)`.
+      //
+      // Exiting is right for a human at a terminal and wrong for every other
+      // caller — and there is another caller: the background hook orchestrator
+      // reaches here once per branch (`handleHookSync` → `handlePush`). A
+      // `process.exit` there does not refuse ONE branch, it kills the process,
+      // so the branches queued behind it never sync and no failure is recorded
+      // for any of them, which is exactly what R17 forbids. Worse, `process.exit`
+      // skips pending `finally` blocks, so the per-branch lock directory
+      // `withBranchLock` holds is never removed and the next sync of that branch
+      // waits out the full stale-lock timeout.
+      //
+      // The top-level CLI handler turns this back into the same message on
+      // stderr and the same non-zero exit, so the human case is unchanged.
+      // (This is the same treatment already applied to the server-sync gate in
+      // `push.ts`; that fix missed this site.)
+      throw new ValidationError(
         'Cannot determine sync mode: server unreachable.\n' +
         'Run again with network access, or manually add "syncMode": "client" ' +
         '(or "server") to .margins.json'
       )
-      process.exit(1)
     }
   }
 

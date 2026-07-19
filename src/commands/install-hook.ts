@@ -20,7 +20,8 @@
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { execFileSync, type StdioOptions } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { GIT_STDIO } from '../lib/git-branch.js'
 import * as p from '@clack/prompts'
 
 interface InstallHookOpts {
@@ -62,8 +63,6 @@ branch=$(git symbolic-ref --short -q HEAD)
 margins workspace hook-sync --event post-commit --rev "$rev" --branch "$branch" &
 exit 0
 `
-
-const GIT_STDIO: StdioOptions = ['ignore', 'pipe', 'ignore']
 
 function gitText(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: GIT_STDIO }).trim()

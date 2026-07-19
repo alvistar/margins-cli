@@ -284,10 +284,64 @@ function refuseDivergentFilters(root: string, relPaths: string[]): void {
   // file's line endings as stored in the index (`i/`) and as written to the
   // working tree (`w/`); they differ exactly when a committed sync's bytes
   // would differ from a working-tree sync's, which is the whole concern.
-  const eol = runGit(root, ['ls-files', '--eol', '-z', '--', ...relPaths])
-  if (!eol.ok) return  // advisory — an unreadable index is caught by the read phase
+  for (const slice of argvSlices(relPaths)) {
+    const eol = runGit(root, ['ls-files', '--eol', '-z', '--', ...slice])
+    if (!eol.ok) return  // advisory — an unreadable index is caught by the read phase
+    refuseDivergentEol(eol.stdout.toString('utf-8'))
+  }
+}
 
-  for (const record of eol.stdout.toString('utf-8').split('\0')) {
+/**
+ * The paths, cut into groups small enough to pass as ARGV.
+ *
+ * `git ls-files` takes its pathspecs as arguments and has NO `--stdin` (git
+ * 2.50.1: "error: unknown option `stdin'"), so unlike the `check-attr` call
+ * above it cannot be fed through a pipe. Handed every collectable path at once
+ * it eventually exceeds the kernel's ARG_MAX, `spawnSync` fails with `E2BIG`,
+ * and the throw takes down EVERY committed sync in that repository — with a
+ * message naming neither the cause nor a way out.
+ *
+ * That is not a distant limit. Measured on macOS (ARG_MAX 1048576): 5,000 files
+ * at realistic nested path lengths overflow it, and 5,000 files is the scale
+ * this module documents as its target.
+ *
+ * Budgeted by BYTES rather than by a path count, because argv is measured in
+ * bytes and path lengths vary by more than an order of magnitude between
+ * repositories — a count that is generous for one repository is an overflow in
+ * another. The budget is far below every platform's real ARG_MAX, leaving room
+ * for the environment block that shares the same allowance.
+ */
+const ARGV_SLICE_BYTES = 128 * 1024
+
+function argvSlices(relPaths: string[]): string[][] {
+  const slices: string[][] = []
+  let current: string[] = []
+  let bytes = 0
+  for (const p of relPaths) {
+    const cost = Buffer.byteLength(p, 'utf-8') + 1  // + the NUL terminator
+    // `current.length > 0`: one path longer than the whole budget still has to
+    // go somewhere, and a slice of one is the smallest thing that can be tried.
+    if (current.length > 0 && bytes + cost > ARGV_SLICE_BYTES) {
+      slices.push(current)
+      current = []
+      bytes = 0
+    }
+    current.push(p)
+    bytes += cost
+  }
+  if (current.length > 0) slices.push(current)
+  return slices
+}
+
+/**
+ * The divergence check for ONE slice's output.
+ *
+ * Split out only so the slicing above stays readable: the semantics are
+ * unchanged and deliberately per-record, so a divergence in ANY slice refuses
+ * the whole collection and names the file that caused it.
+ */
+function refuseDivergentEol(stdout: string): void {
+  for (const record of stdout.split('\0')) {
     if (record === '') continue
     // Each record is `i/<eol>  w/<eol>  attr/<text>\t<path>` — path after a TAB,
     // the fields space-padded to a fixed width.

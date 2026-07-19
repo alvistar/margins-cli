@@ -213,6 +213,57 @@ describe('settleHookSyncOutcome — the background half', () => {
     }
   })
 
+  it('does not erase ANOTHER branch’s unseen record when this branch succeeds', async () => {
+    // The record is keyed by DIRECTORY but written per-invocation, and the two
+    // do not line up: one repository has many branches and each push settles
+    // only its own. Push `feature`, it fails, a record is written — and nobody
+    // has seen it yet, because git exited 0 and the record only surfaces on the
+    // next FOREGROUND command. Push `main`, it succeeds; a whole-directory clear
+    // would delete `feature`'s record on the strength of a run that never went
+    // near `feature`. The failure is then permanently invisible.
+    const { settleHookSyncOutcome, readSyncFailureRecords } =
+      await import('../src/lib/sync-failure-record.js')
+
+    settleHookSyncOutcome(projectDir, [fail('feature', 'server unreachable')])
+    settleHookSyncOutcome(projectDir, [ok('main')])
+
+    const records = readSyncFailureRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]!.branches).toEqual(['feature'])
+    expect(records[0]!.cause).toContain('server unreachable')
+  })
+
+  it('clears only the branches THIS invocation covered, and drops the record when none remain', async () => {
+    const { settleHookSyncOutcome, readSyncFailureRecords, syncFailureRecordPath } =
+      await import('../src/lib/sync-failure-record.js')
+
+    settleHookSyncOutcome(projectDir, [fail('one', 'boom'), fail('two', 'boom')])
+    expect(readSyncFailureRecords()[0]!.branches).toEqual(['one', 'two'])
+
+    // A later push fixes `one` only — `two` is still broken and still unseen.
+    settleHookSyncOutcome(projectDir, [ok('one')])
+    expect(readSyncFailureRecords()[0]!.branches).toEqual(['two'])
+
+    // …and once the last outstanding branch succeeds the record goes entirely,
+    // rather than lingering as an empty husk that reports nothing.
+    settleHookSyncOutcome(projectDir, [ok('two')])
+    expect(readSyncFailureRecords()).toEqual([])
+    expect(fs.existsSync(syncFailureRecordPath())).toBe(false)
+  })
+
+  it('a partial run clears its successes and records its failures in one pass', async () => {
+    const { settleHookSyncOutcome, readSyncFailureRecords } =
+      await import('../src/lib/sync-failure-record.js')
+
+    settleHookSyncOutcome(projectDir, [fail('one', 'old cause'), fail('two', 'old cause')])
+    settleHookSyncOutcome(projectDir, [ok('one'), fail('two', 'new cause')])
+
+    const records = readSyncFailureRecords()
+    expect(records).toHaveLength(1)
+    expect(records[0]!.branches).toEqual(['two'])
+    expect(records[0]!.cause).toContain('new cause')
+  })
+
   it('leaves an unseen record alone when nothing was attempted at all', async () => {
     // A tags-only push, a branch deletion, a hook that could not resolve a
     // commit: `handleHookSync` returns []. That is not a successful sync, and
@@ -332,6 +383,8 @@ interface StubOpts {
   contentMode?: string
   /** Fail every request with this status instead of answering. */
   status?: number
+  /** 401 any request that arrives without an Authorization header. */
+  requireAuth?: boolean
 }
 
 /**
@@ -352,6 +405,17 @@ import http from 'node:http'
 import fs from 'node:fs'
 const opts = ${JSON.stringify(opts)}
 const server = http.createServer((req, res) => {
+  if (opts.requireAuth) {
+    // An EMPTY bearer, not just a missing header: with no key configured the
+    // client still sends \`Authorization: Bearer \`, and a real server rejects
+    // that exactly as it rejects no header at all.
+    const token = String(req.headers['authorization'] ?? '').replace(/^Bearer\\s*/i, '').trim()
+    if (!token) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'missing credentials' } }))
+      return
+    }
+  }
   if (opts.status) {
     res.writeHead(opts.status, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ error: { code: 'BOOM', message: 'stub failure' } }))
@@ -463,6 +527,62 @@ describe('end to end — the CI channel is the exit code and the log', () => {
   }, 60_000)
 })
 
+// ─── Concurrency: two repositories failing at the same moment ────────────────
+//
+// The per-branch lock in `push.ts` keys on (dir, branch), so it does not
+// serialize these AT ALL: two different repositories mid-`git push` are two
+// unrelated background processes writing one shared file. `recordSyncFailure`
+// is a read-modify-write, so the loser of every interleaving is a record that
+// was written and then silently overwritten by a writer holding a stale read.
+//
+// Real processes, because that is the only place the race exists: one event
+// loop cannot interleave a synchronous read-modify-write with itself.
+
+describe('recordSyncFailure — concurrent hook processes', () => {
+  it('keeps every record when several repositories fail at once', async () => {
+    const N = 6
+    const dirs = Array.from({ length: N }, (_, i) => path.join(projectDir, `repo-${i}`))
+    for (const d of dirs) fs.mkdirSync(d, { recursive: true })
+
+    const script = path.join(dataDir, 'writer.mjs')
+    fs.writeFileSync(script, `
+import { pathToFileURL } from 'node:url'
+const mod = await import(pathToFileURL(process.argv[2]).href)
+const dir = process.argv[3]
+const startAt = Number(process.argv[4])
+// A barrier, so the writers genuinely overlap instead of queueing behind each
+// other's process startup — the interleaving IS the test.
+while (Date.now() < startAt) {}
+mod.recordSyncFailure({
+  dir, branches: ['main'], cause: 'cause for ' + dir, at: new Date().toISOString(),
+})
+`)
+
+    const modulePath = path.join(ROOT, 'src', 'lib', 'sync-failure-record.ts')
+    const startAt = Date.now() + 1500
+    const children = dirs.map((dir) => new Promise<number>((resolve) => {
+      const c = spawn(
+        process.execPath,
+        [
+          path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+          script, modulePath, dir, String(startAt),
+        ],
+        {
+          stdio: 'ignore',
+          env: { ...process.env, MARGINS_DATA_DIR: dataDir },
+        },
+      )
+      c.on('exit', (code) => resolve(code ?? 1))
+    }))
+
+    expect(await Promise.all(children)).toEqual(Array(N).fill(0))
+
+    const { readSyncFailureRecords } = await import('../src/lib/sync-failure-record.js')
+    const got = readSyncFailureRecords().map((r) => r.dir).sort()
+    expect(got).toEqual(dirs.map((d) => path.resolve(d)).sort())
+  }, 60_000)
+})
+
 describe('end to end — a human push keeps its exit code', () => {
   it('still exits non-zero with the same message on a server-sync workspace', async () => {
     // The server-sync refusal became a thrown error so a hook can record it per
@@ -485,6 +605,56 @@ describe('end to end — a human push keeps its exit code', () => {
     expect(r.stderr).toContain(
       'This workspace uses server-managed sync. Use `margins workspace sync` instead.',
     )
+  }, 60_000)
+})
+
+describe('end to end — a hook with no usable credentials', () => {
+  it('records the auth failure instead of dying before the record is written', async () => {
+    // The one cause the findability feature structurally could not see.
+    //
+    // `hook-sync` runs under the root `workspace` command, which is not in
+    // `NO_AUTH_COMMANDS`, so the `preAction` auth gate called `process.exit(1)`
+    // BEFORE `handleHookSync` — and therefore before `settleHookSyncOutcome` —
+    // ever ran. `install-hook` IS exempt from that gate, so a hook can be
+    // installed before credentials exist; and a rotated API key drops a working
+    // install straight into this state. Either way git exits 0, nothing is
+    // recorded, and every push after it is silently not syncing.
+    const stub = await stubServer({ requireAuth: true })
+    try {
+      fs.writeFileSync(
+        path.join(projectDir, '.margins.json'),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+      )
+      fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
+      const before = tree(projectDir)
+
+      const hook = cli(
+        ['workspace', 'hook-sync', '--event', 'pre-push',
+          '--refs', `refs/heads/main ${'a'.repeat(40)} refs/heads/main ${'0'.repeat(40)}`],
+        {
+          MARGINS_SERVER_URL: stub.url,
+          CI: '',
+          // No credentials at all — an empty config dir and no env key.
+          MARGINS_CONFIG_DIR: path.join(dataDir, 'empty-config'),
+          MARGINS_API_KEY: '',
+        },
+      )
+
+      // Still non-blocking: a hook must not fail the developer's git command.
+      expect(hook.status).toBe(0)
+      // …and the failure is findable rather than silent.
+      expect(fs.existsSync(recordFile())).toBe(true)
+      const text = fs.readFileSync(recordFile(), 'utf-8')
+      expect(text).toContain('main')
+      // Nothing landed in the project.
+      expect(tree(projectDir)).toEqual(before)
+
+      // The next foreground command surfaces it.
+      const next = cli(['config', 'show'], { CI: '' })
+      expect(next.stderr).toContain('main')
+    } finally {
+      stub.close()
+    }
   }, 60_000)
 })
 

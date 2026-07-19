@@ -139,11 +139,3 @@ export function buildIgnoreFilter(ignoreText: string | null): (filePath: string)
     return !ignored
   }
 }
-
-/**
- * Load ignore rules from `.marginsignore` on disk (if present) combined with
- * built-in defaults. Thin wrapper over {@link buildIgnoreFilter}.
- */
-export function loadIgnoreFilter(repoRoot: string): (filePath: string) => boolean {
-  return buildIgnoreFilter(readIgnoreFileText(repoRoot))
-}

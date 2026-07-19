@@ -16,12 +16,18 @@ vi.mock('../src/lib/api-client.js', () => ({
     get: vi.fn(async () => ({ files: {}, headSha: null })),
   }),
 }))
-// gitBranch() shells out to `git rev-parse --abbrev-ref HEAD`; stub it so the
-// fallback assertion is deterministic (not "whatever branch the repo happens to
-// be on") and actually proves the detected value flows to casSync.
+// `currentGitBranch` shells out to `git rev-parse --abbrev-ref HEAD`; stub it so
+// the fallback assertion is deterministic (not "whatever branch the repo happens
+// to be on") and actually proves the detected value flows to casSync.
+//
+// `execFileSync` is the one that answers, and `execSync` throws: the helper used
+// to shell out through `execSync` with a single command STRING, and the two
+// copies of it that existed have since been consolidated onto the argv form. A
+// regression back to the string form would resurrect the duplicate rather than
+// silently passing here.
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(() => 'detected/branch\n'),
-  execFileSync: vi.fn(() => { throw new Error('not a git repo') }),
+  execFileSync: vi.fn(() => 'detected/branch\n'),
+  execSync: vi.fn(() => { throw new Error('execSync is not the branch-detection path') }),
 }))
 
 function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {

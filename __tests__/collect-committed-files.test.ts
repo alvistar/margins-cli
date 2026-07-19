@@ -49,6 +49,11 @@ function initRepo(cwd = repo): void {
   git(['config', 'user.name', 'Margins Test'], cwd)
   // See the file header: neutralise whatever the ambient global gitconfig says.
   git(['config', 'core.autocrlf', 'false'], cwd)
+  // Same reasoning: a developer (or a CI runner) with `commit.gpgsign=true`
+  // globally would have every fixture commit here block on a signing key that
+  // does not exist in a temp repo. The fixture must not depend on whose machine
+  // ran it.
+  git(['config', 'commit.gpgsign', 'false'], cwd)
 }
 
 function write(rel: string, content: string | Buffer, cwd = repo): void {
@@ -388,6 +393,56 @@ describe('collectCommittedFiles — refusals (KTD6)', () => {
     // agreement, not divergence.
     expect(collectCommittedFiles(repo).mdCount).toBe(1)
   })
+
+  /**
+   * The EOL guard passes every collectable path to `git ls-files` as ARGV.
+   *
+   * Past the kernel's ARG_MAX that spawn fails outright with `E2BIG`, `runGit`
+   * throws, and EVERY committed sync in the repository fails permanently with a
+   * message naming neither the cause nor a workaround. The ceiling is not
+   * theoretical at this unit's stated scale: measured on macOS (ARG_MAX
+   * 1048576), 5,000 files at realistic nested path lengths overflow it — and
+   * 5,000 files is the scale this module documents as its target.
+   *
+   * The sibling `check-attr` call one block above already avoids this with
+   * `--stdin`. `git ls-files` has no `--stdin` (verified on git 2.50.1: "error:
+   * unknown option `stdin'"), so the guard is run once per slice instead — and
+   * the refusal has to keep working across the seam, which is what the diverging
+   * file's position in a LATER slice is here to pin.
+   */
+  it('still catches a divergence past ARG_MAX, in a file beyond the first slice', () => {
+    initRepo()
+    git(['config', 'core.autocrlf', 'input'])
+
+    // Long, deeply nested, entirely ordinary documentation paths — the argv
+    // cost is the path LENGTH as much as the file count.
+    const deep = 'design-documentation-archive'.padEnd(180, '-x')
+    const rel = (i: number): string =>
+      `docs/area-${i % 17}/${deep}/subsystem-${i % 29}/chapter-${String(i).padStart(6, '0')}-document-title.md`
+
+    const N = 5000
+    for (let i = 0; i < N; i++) write(rel(i), '# clean\n')
+
+    // The diverging file sits deep in the set, so a fix that only guarded the
+    // FIRST slice would sail past it and sync bytes nobody asked for.
+    const diverging = rel(N - 42)
+    write(diverging, '# crlf\r\nsecond line\r\n')
+    commitAll()
+
+    // Pre-chunking this throws the raw spawn failure ("Could not run git … (E2BIG)")
+    // instead — the wrong error, for every file in the repository, forever.
+    let caught: unknown
+    try {
+      collectCommittedFiles(repo)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).not.toMatch(/E2BIG/)
+    expect((caught as Error).message).toMatch(/line endings/)
+    // Named, so the refusal is actionable — the whole point of the guard.
+    expect((caught as Error).message).toContain(diverging)
+  }, 120_000)
 
   it('refuses a repository with git-LFS tracking a collectable path rather than sending pointer stubs', () => {
     initRepo()

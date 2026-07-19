@@ -34,7 +34,6 @@
  */
 import * as p from '@clack/prompts'
 import { existsSync, readFileSync } from 'node:fs'
-import { execFileSync, type StdioOptions } from 'node:child_process'
 import { join } from 'node:path'
 import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient, type ApiClient } from '../../lib/api-client.js'
@@ -42,8 +41,7 @@ import { formatJson } from '../../lib/output.js'
 import { ConflictError, ForbiddenError, ServerError, ValidationError } from '../../lib/errors.js'
 import { fetchSyncPreflight, isContentMode, type ContentMode } from '../../lib/cas-sync.js'
 import { collectForMode, isInsideGitRepo } from '../../lib/collect-sync-files.js'
-
-const GIT_STDIO: StdioOptions = ['ignore', 'pipe', 'ignore']
+import { currentGitBranch } from '../../lib/git-branch.js'
 
 export interface ContentModeOpts {
   /** The target mode. Omitted → report the current mode and change nothing. */
@@ -55,16 +53,6 @@ export interface ContentModeOpts {
   /** Accept the preview without prompting — required in a non-interactive run. */
   yes?: boolean
   json?: boolean
-}
-
-function gitBranch(cwd: string): string {
-  try {
-    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd, encoding: 'utf-8', stdio: GIT_STDIO,
-    }).trim() || 'main'
-  } catch {
-    return 'main'
-  }
 }
 
 /**
@@ -203,7 +191,7 @@ export async function handleContentMode(
   }
 
   const client = createApiClient(cfg)
-  const branch = opts.branch ?? (hasGitRepo ? gitBranch(dir) : 'main')
+  const branch = opts.branch ?? (hasGitRepo ? currentGitBranch(dir) : 'main')
 
   // ─── Read 1 of 2: the preflight the client already makes ───────────────────
   const preflight = await fetchSyncPreflight(client, workspaceId, branch)
