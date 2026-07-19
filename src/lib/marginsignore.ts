@@ -88,12 +88,25 @@ function compilePattern(raw: string): CompiledPattern | null {
   return { regex: new RegExp(regexStr), negated }
 }
 
+/** Read `.marginsignore` from a directory on disk. `null` when there is none. */
+export function readIgnoreFileText(repoRoot: string): string | null {
+  const ignorePath = join(repoRoot, '.marginsignore')
+  if (!existsSync(ignorePath)) return null
+  return readFileSync(ignorePath, 'utf-8')
+}
+
 /**
- * Load ignore rules from `.marginsignore` (if present) combined with
- * built-in defaults. Returns a predicate that returns `true` for files
- * that should be INCLUDED (i.e. not ignored).
+ * Build the ignore predicate from already-read `.marginsignore` text (`null`
+ * when the source has none), combined with the built-in defaults. Returns a
+ * predicate that returns `true` for files that should be INCLUDED (i.e. not
+ * ignored).
+ *
+ * Taking TEXT rather than a directory is what lets committed-mode collection
+ * filter a commit by the `.marginsignore` stored IN that commit instead of by
+ * whatever happens to be checked out — while both sources still share one
+ * pattern compiler, so the defaults cannot diverge between them (KTD6).
  */
-export function loadIgnoreFilter(repoRoot: string): (filePath: string) => boolean {
+export function buildIgnoreFilter(ignoreText: string | null): (filePath: string) => boolean {
   const patterns: CompiledPattern[] = []
 
   // Compile default patterns
@@ -102,11 +115,8 @@ export function loadIgnoreFilter(repoRoot: string): (filePath: string) => boolea
     if (compiled) patterns.push(compiled)
   }
 
-  // Load .marginsignore if it exists
-  const ignorePath = join(repoRoot, '.marginsignore')
-  if (existsSync(ignorePath)) {
-    const lines = readFileSync(ignorePath, 'utf-8').split('\n')
-    for (const line of lines) {
+  if (ignoreText !== null) {
+    for (const line of ignoreText.split('\n')) {
       const compiled = compilePattern(line)
       if (compiled) patterns.push(compiled)
     }
@@ -128,4 +138,12 @@ export function loadIgnoreFilter(repoRoot: string): (filePath: string) => boolea
 
     return !ignored
   }
+}
+
+/**
+ * Load ignore rules from `.marginsignore` on disk (if present) combined with
+ * built-in defaults. Thin wrapper over {@link buildIgnoreFilter}.
+ */
+export function loadIgnoreFilter(repoRoot: string): (filePath: string) => boolean {
+  return buildIgnoreFilter(readIgnoreFileText(repoRoot))
 }

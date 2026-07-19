@@ -136,7 +136,14 @@ export async function handlePush(
     workspaceId,
     branch,
     syncFiles,
-    { preflight, contentMode, confirmFullDelete: opts.confirmFullDelete },
+    {
+      preflight,
+      contentMode,
+      confirmFullDelete: opts.confirmFullDelete,
+      // Committed mode only — the collector resolved the commit, so it is the
+      // only thing that knows the sha and the repository's object format (R10).
+      gitProvenance: collected.gitProvenance,
+    },
   )
 
   if (cfg.json) {

@@ -273,7 +273,13 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     workspaceId,
     pushBranch,
     syncFiles,
-    { preflight, contentMode, confirmFullDelete: opts.confirmFullDelete },
+    {
+      preflight,
+      contentMode,
+      confirmFullDelete: opts.confirmFullDelete,
+      // Committed mode only — see the note at `workspace push`'s call site.
+      gitProvenance: collected.gitProvenance,
+    },
   )
 
   pushResult.added = casResult.added

@@ -6,6 +6,7 @@ import {
   type SyncConflictEntry,
 } from './errors.js'
 import { poolMap } from './pool.js'
+import type { GitProvenance } from './collect-sync-files.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -299,6 +300,16 @@ export interface CasSyncOptions {
    * matching guard (`SYNC_FULL_DELETE_NOT_CONFIRMED`) is a backstop.
    */
   confirmFullDelete?: boolean
+  /**
+   * Which git commit this push was collected from — committed mode only; a
+   * working-tree push omits it and records nothing (wire contract §6).
+   *
+   * It rides BESIDE `commitSha`/`parentSha` and never replaces them. Overloading
+   * those would break two things that depend on sha-means-content: the
+   * idempotent-retry check would treat a genuinely different tree as already
+   * applied, and divergence detection compares against the branch head.
+   */
+  gitProvenance?: GitProvenance
 }
 
 export async function casSync(
@@ -389,6 +400,9 @@ export async function casSync(
       parentSha: preflight.headSha,
       files: localFiles,
       ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
+      // Both fields together or neither — the server 400s a length/format
+      // contradiction, and omitting both is what a working-tree push does.
+      ...(opts.gitProvenance ?? {}),
     }, declaration)
   } catch (err) {
     // A server-side merge conflict: name the conflicting files + next step and

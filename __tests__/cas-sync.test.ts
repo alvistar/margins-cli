@@ -383,6 +383,66 @@ describe('casSync', () => {
   })
 })
 
+// ─── Git provenance on the manifest POST (wire contract §6) ──────────────────
+
+describe('casSync — git provenance', () => {
+  const postBody = (calls: RecordedCall[]): Record<string, unknown> =>
+    JSON.parse(calls.find((c) => c.method === 'POST' && c.url.endsWith('/manifest'))!.body!)
+
+  it('sends gitCommitSha + gitObjectFormat when the collection carried provenance', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'committed' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    const gitCommitSha = 'a'.repeat(40)
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles(), {
+      contentMode: 'committed',
+      gitProvenance: { gitCommitSha, gitObjectFormat: 'sha1' },
+    })
+
+    const body = postBody(calls)
+    expect(body.gitCommitSha).toBe(gitCommitSha)
+    expect(body.gitObjectFormat).toBe('sha1')
+    // Provenance rides BESIDE the content shas; it never becomes one of them.
+    expect(body.commitSha).toBe(syntheticCommitSha({
+      'readme.md': createHash('sha256').update(Buffer.from('y')).digest('hex'),
+      'docs/nested.md': createHash('sha256').update(Buffer.from('x')).digest('hex'),
+    }))
+    expect(body.commitSha).not.toBe(gitCommitSha)
+    expect(body.parentSha).toBeNull()
+  })
+
+  it('carries a 64-hex sha with format sha256, rather than assuming SHA-1 (KTD9)', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'committed' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles(), {
+      contentMode: 'committed',
+      gitProvenance: { gitCommitSha: 'b'.repeat(64), gitObjectFormat: 'sha256' },
+    })
+
+    const body = postBody(calls)
+    expect(body.gitObjectFormat).toBe('sha256')
+    expect(String(body.gitCommitSha)).toHaveLength(64)
+  })
+
+  it('omits BOTH fields for a working-tree push (the both-or-neither rule)', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'working-tree' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles())
+
+    const body = postBody(calls)
+    expect(body).not.toHaveProperty('gitCommitSha')
+    expect(body).not.toHaveProperty('gitObjectFormat')
+  })
+})
+
 /** sha256 of 'y' — the hash the server reports for readme.md in partial-delete. */
 function sha256y(): string {
   return createHash('sha256').update(Buffer.from('y')).digest('hex')
