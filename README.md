@@ -506,6 +506,27 @@ content mode, settled at each push. The hook does not decide it and does not car
 > content the remote never took. The hook mirrors what you intended locally; it cannot
 > speak for the remote.
 
+**When a background sync fails, it is not silent.** The hook exits 0 so `git push`
+is never blocked, which means a refusal — an expired key, an unreachable server,
+a workspace someone switched to `committed` mode — has no exit code and no output
+anyone sees. So the failure is recorded in the CLI's own data directory (beside
+`repos.json`, honouring `MARGINS_DATA_DIR`; **never** inside your repository, where
+it would show up in `git status`), and the next `margins` command you run reports
+it once and clears it:
+
+```
+margins: an earlier background sync did not reach Margins.
+  /Users/you/project — main — <why it failed> (2026-07-19T12:00:00.000Z)
+  Git was not blocked at the time, so nothing said so. Fix the cause and push again.
+```
+
+Only the latest failure per project is kept — it is replaced, not appended.
+
+In CI there is no next command and no surviving filesystem, so no record is
+written: `margins workspace hook-sync` **exits non-zero** and names the cause in
+the job log instead. A CI runner is detected from `CI` / `GITHUB_ACTIONS` /
+`GITLAB_CI` / `BUILDKITE` / `CIRCLECI` / `TF_BUILD` (`CI=false` counts as *not* CI).
+
 Hooks are installed via `git rev-parse --git-path hooks`, so linked worktrees
 (`git worktree add`) and submodules — where `.git` is a *file*, not a directory —
 install into the shared hooks directory rather than failing.

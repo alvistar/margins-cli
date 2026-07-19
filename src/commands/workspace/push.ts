@@ -108,19 +108,34 @@ export async function handlePush(
     throw new ValidationError('Specify --workspace <id> or --project <name> to create a new workspace')
   }
 
-  // Gate: refuse to push to server-sync workspaces (they sync via webhook)
+  // Gate: refuse to push to server-sync workspaces (they sync via webhook).
+  //
+  // This THROWS; it used to `console.error` + `process.exit(1)`. Exiting is
+  // correct for a human at a terminal and wrong for every other caller: reached
+  // from `handleHookSync`, it killed the whole background process, so the
+  // branches queued behind this one never synced and no failure was recorded
+  // for any of them — bypassing R17, which requires one failing branch not to
+  // stop the others. The top-level CLI handler turns the throw back into the
+  // same message on stderr and the same non-zero exit.
+  //
+  // The resolution runs inside the try (a malformed `.margins.json`, or an
+  // unreachable server, must not be mistaken for a refusal) but the refusal
+  // itself is raised OUTSIDE it — a throw from within would be swallowed by the
+  // very catch that exists to tolerate those two cases.
   const localCfgForSync = join(cwd, '.margins.json')
+  let resolvedSyncMode: 'server' | 'client' | undefined
   if (existsSync(localCfgForSync)) {
     try {
       const localCfg = JSON.parse(readFileSync(localCfgForSync, 'utf-8')) as LocalConfig
-      const syncMode = await resolveSyncMode(localCfg, client, cwd)
-      if (syncMode === 'server') {
-        console.error('This workspace uses server-managed sync. Use `margins workspace sync` instead.')
-        process.exit(1)
-      }
+      resolvedSyncMode = await resolveSyncMode(localCfg, client, cwd)
     } catch {
       // Malformed .margins.json or server unreachable — resolveSyncMode handles exit
     }
+  }
+  if (resolvedSyncMode === 'server') {
+    throw new ValidationError(
+      'This workspace uses server-managed sync. Use `margins workspace sync` instead.',
+    )
   }
 
   // Cheap local probe: a wrong directory fails here, before any network call.

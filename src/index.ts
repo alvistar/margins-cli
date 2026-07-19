@@ -4,6 +4,7 @@ import { AuthMissing } from './lib/errors.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
+import { reportPendingSyncFailures } from './lib/sync-failure-record.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
 
@@ -37,6 +38,13 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   let cmd = actionCommand
   while (cmd.parent && cmd.parent.parent) cmd = cmd.parent
   const rootName = cmd.name()
+
+  // A background sync that failed left a record (R16, U7). Report it FIRST, on
+  // any foreground command — including the ones that need no auth, since a
+  // stale key is a common cause and `margins auth login` must be able to carry
+  // the news. `hook-sync` is excluded: it IS the background path, and consuming
+  // the record there would clear it into a terminal nobody is watching.
+  if (actionCommand.name() !== 'hook-sync') reportPendingSyncFailures()
 
   if (NO_AUTH_COMMANDS.has(rootName)) return
   if (NO_AUTH_SUBCOMMANDS.has(actionCommand.name())) return
@@ -306,7 +314,13 @@ wsCmd
   .action(async (opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleHookSync } = await import('./commands/workspace/push.js')
-    await handleHookSync(cfg, opts)
+    const results = await handleHookSync(cfg, opts)
+    // Nothing is watching this process: the hook backgrounded it and exited 0.
+    // Settle the outcome into the channel this environment actually has — a
+    // record the next foreground command reports (local), or a non-zero exit
+    // and a named cause in the job log (CI, where no next command exists).
+    const { settleHookSyncOutcome } = await import('./lib/sync-failure-record.js')
+    settleHookSyncOutcome(opts.dir ?? process.cwd(), results)
   })
 
 wsCmd

@@ -598,23 +598,25 @@ describe('handlePush — failure paths', () => {
     expect(calls).toEqual(['POST /api/workspaces'])
   })
 
-  it('refuses a server-managed workspace with exit 1, before any upload', async () => {
+  it('refuses a server-managed workspace by throwing, before any upload', async () => {
+    // This used to `process.exit(1)` and the assertion used to demand it. That
+    // is right for a human at a terminal and wrong for every other caller:
+    // `handleHookSync` runs handlePush once per branch, and an exit there killed
+    // the branches queued behind it instead of recording one failure (R17). The
+    // refusal is now a thrown ValidationError; the top-level CLI handler still
+    // prints the same sentence and still exits non-zero — asserted end to end in
+    // `sync-failure-record.test.ts`, since only a real process has an exit code.
     write('README.md', '# Hi\n')
     write('.margins.json', JSON.stringify({ workspace_id: 'ws-srv', syncMode: 'server' }))
 
-    let uploadsAtExit = -1
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): never => {
-      uploadsAtExit = mockPutRaw.mock.calls.length
-      return undefined as never
-    }) as never)
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 
-    await handlePush(makeConfig(), { dir: tmpDir, branch: 'main' })
+    await expect(
+      handlePush(makeConfig(), { dir: tmpDir, branch: 'main' }),
+    ).rejects.toThrow(/server-managed sync\. Use `margins workspace sync` instead/)
 
-    expect(exitSpy).toHaveBeenCalledWith(1)
-    expect(uploadsAtExit).toBe(0)
-    expect(String(errSpy.mock.calls[0]![0])).toMatch(
-      /server-managed sync\. Use `margins workspace sync` instead/,
-    )
+    expect(exitSpy).not.toHaveBeenCalled()
+    expect(mockPutRaw).not.toHaveBeenCalled()
   })
 })
 

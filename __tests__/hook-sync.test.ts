@@ -28,6 +28,13 @@ vi.mock('../src/lib/api-client.js', () => ({
   }),
 }))
 
+// Sync-mode resolution is stubbed so a test can make ONE branch look like a
+// server-sync workspace. It answers 'client' for every other test, which is what
+// the real one returns for the fixture's `.margins.json`.
+vi.mock('../src/lib/resolve-sync-mode.js', () => ({
+  resolveSyncMode: vi.fn(async () => 'client' as const),
+}))
+
 // The collector is stubbed so a test can (a) count tree reads and (b) attach the
 // rev as provenance, which is the only thing that survives into casSync's
 // arguments and so the only way to tell WHICH commit a branch write carried.
@@ -74,8 +81,11 @@ let dataDir: string
 let workDir: string
 let prevDataDir: string | undefined
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.restoreAllMocks()
+  const { resolveSyncMode } = await import('../src/lib/resolve-sync-mode.js')
+  vi.mocked(resolveSyncMode).mockReset()
+  vi.mocked(resolveSyncMode).mockResolvedValue('client')
   mockCasSync.mockReset()
   mockCasSync.mockResolvedValue({ added: 0, changed: 0, deleted: 0, uploaded: 0, skipped: 0 })
   mockCollectForMode.mockReset()
@@ -176,6 +186,50 @@ describe('handleHookSync', () => {
       { branch: 'two', rev: SHA_B, ok: false, error: 'branch two exploded' },
       { branch: 'three', rev: SHA_C, ok: true },
     ])
+  })
+
+  it('records a server-sync refusal per branch instead of killing the run (R17)', async () => {
+    // The refusal used to be `console.error` + `process.exit(1)` inside
+    // handlePush. Reached from a hook, that does not refuse ONE branch — it
+    // terminates the whole background process, so the branches after it never
+    // sync and nothing is recorded for any of them. R17 says one failing branch
+    // must not stop the others, so the refusal is a thrown error the
+    // orchestrator catches per branch.
+    const { handleHookSync } = await import('../src/commands/workspace/push.js')
+    const { resolveSyncMode } = await import('../src/lib/resolve-sync-mode.js')
+
+    let call = 0
+    vi.mocked(resolveSyncMode).mockImplementation(async () => {
+      call += 1
+      return call === 2 ? 'server' : 'client'
+    })
+
+    // If anything still calls process.exit, the branch loop is over — mimic the
+    // termination it really causes rather than letting a no-op spy hide it.
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): never => {
+      throw new Error('process.exit called — the background process would have died here')
+    }) as never)
+
+    const results = await handleHookSync(makeConfig(), {
+      event: 'pre-push',
+      dir: workDir,
+      refs: [
+        refLine('one', SHA_A, 'refs/heads/one'),
+        refLine('two', SHA_B, 'refs/heads/two'),
+        refLine('three', SHA_C, 'refs/heads/three'),
+      ].join('\n'),
+    })
+
+    expect(exitSpy).not.toHaveBeenCalled()
+    // Branches 1 and 3 still synced…
+    expect(writes().map((w) => w.branch)).toEqual(['one', 'three'])
+    // …and branch 2's refusal is recorded, with the wording a human sees.
+    expect(results.map((r) => ({ branch: r.branch, ok: r.ok }))).toEqual([
+      { branch: 'one', ok: true },
+      { branch: 'two', ok: false },
+      { branch: 'three', ok: true },
+    ])
+    expect(results[1]!.error).toMatch(/server-managed sync\. Use `margins workspace sync` instead/)
   })
 
   it('reports a cause shared by every branch once', async () => {
