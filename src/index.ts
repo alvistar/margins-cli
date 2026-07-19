@@ -323,6 +323,30 @@ wsCmd
     settleHookSyncOutcome(opts.dir ?? process.cwd(), results)
   })
 
+// The mode is a WORKSPACE setting, never cached locally, so this is the only
+// place it changes. The preview it prints first is branch-scoped by necessity
+// (KTD16) — it names the branch it inspected and lists the rest as uninspected.
+wsCmd
+  .command('content-mode [mode]')
+  .description("Show or change what a sync sends: working-tree | committed (previews the cost first)")
+  .option('--workspace <id>', 'Workspace ID (default: from .margins.json)')
+  .option('--dir <path>', 'Repository directory (default: cwd)')
+  .option('--branch <branch>', 'Branch to inspect for the preview (default: current git branch)')
+  .option('--yes', 'Accept the preview without prompting (required when not interactive)')
+  .action(async (mode, opts, cmd) => {
+    // `getConfig` is annotated `Command` (= `Command<[], {}, {}>`), so every
+    // command with a POSITIONAL argument fails to assign to it — the
+    // `processedArgs` tuple is invariant. That is the whole of this file's
+    // pre-existing tsc baseline, and the helper's narrow annotation is the
+    // single root cause (it only ever reads `getOptionValue`/`parent`, both
+    // through `any`). Widening it is a fix for all of those at once and is not
+    // this unit's to make, so the variance is absorbed here instead of adding
+    // a fifteenth instance of a fourteen-error baseline.
+    const cfg = getConfig(cmd as unknown as Command)
+    const { handleContentMode } = await import('./commands/workspace/content-mode.js')
+    await handleContentMode(cfg, { mode, ...opts })
+  })
+
 wsCmd
   .command('archive-branch')
   .description('Archive a workspace branch (hides it from the active list; retained and revived on next push)')
