@@ -553,3 +553,38 @@ describe('collectCommittedFiles — legitimately empty', () => {
     expect(committed.gitProvenance!.gitCommitSha).toMatch(/^[0-9a-f]{40}$/)
   })
 })
+
+// ─── KTD6 refusals from a SUBDIRECTORY ───────────────────────────────────────
+
+/**
+ * Regression: both KTD6 refusals ran against the repository ROOT while being
+ * handed SYNC-DIR-RELATIVE paths (`listing.listed` strips `ctx.prefix`). git
+ * resolves pathspecs and check-attr stdin paths against the cwd, so for any
+ * subdirectory sync the guards matched nothing and silently refused nothing —
+ * a gate that always passes. Every other refusal test runs at the repo root,
+ * where the prefix is '' and the two conventions coincide, so none of them
+ * could see it.
+ */
+describe('collectCommittedFiles — refusals from a subdirectory (KTD6)', () => {
+  it('refuses a genuinely diverging file under a subdirectory sync', () => {
+    initRepo()
+    git(['config', 'core.autocrlf', 'input'])
+    write('docs/crlf.md', '# crlf\r\nsecond\r\n')
+    write('docs/clean.md', '# clean\n')
+    commitAll()
+
+    expect(() => collectCommittedFiles(path.join(repo, 'docs')))
+      .toThrow(/line ending|end-of-line|EOL/i)
+  })
+
+  it('refuses git-LFS tracking under a subdirectory sync', () => {
+    initRepo()
+    write('docs/a.md', '![i](i.png)\n')
+    write('docs/i.png', PNG)
+    write('.gitattributes', 'docs/*.png filter=lfs diff=lfs merge=lfs -text\n')
+    commitAll()
+
+    expect(() => collectCommittedFiles(path.join(repo, 'docs')))
+      .toThrow(/LFS|filter/i)
+  })
+})

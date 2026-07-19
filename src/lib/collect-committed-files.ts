@@ -532,11 +532,16 @@ export function collectCommittedFiles(
   const collectable = [...listing.listed].filter(
     (relPath) => relPath.endsWith('.md') || mimeFromPath(relPath) !== null,
   )
-  // Run from the repository ROOT, because `listed` holds root-relative paths
-  // (--full-tree) while `dir` may be a subdirectory. git resolves both pathspecs
-  // and check-attr's stdin paths against the cwd, so passing root-relative paths
-  // from a nested cwd would silently match nothing and check nothing.
-  refuseDivergentFilters(repoRootOf(dir, ctx.prefix), collectable)
+  // Both halves of this call must agree on ONE convention, and `listed` is NOT
+  // it: `listTree` strips `ctx.prefix` so its paths are sync-dir-relative,
+  // matching the manifest. git resolves pathspecs and check-attr's stdin paths
+  // against the cwd, so running from the repository root means re-prefixing
+  // them back to root-relative first. Getting this wrong does not error — it
+  // matches nothing, and both refusals below become gates that always pass.
+  refuseDivergentFilters(
+    repoRootOf(dir, ctx.prefix),
+    collectable.map((relPath) => ctx.prefix + relPath),
+  )
 
   const collected = collectFromSource(committedSource(dir, ctx, listing), opts)
 
