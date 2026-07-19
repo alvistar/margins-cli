@@ -6,8 +6,11 @@ import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { ValidationError } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
-import { casSync, type CasSyncResult } from '../../lib/cas-sync.js'
-import { collectSyncFiles, skipOversized } from '../../lib/collect-sync-files.js'
+import {
+  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
+  resolveContentMode, type CasSyncResult,
+} from '../../lib/cas-sync.js'
+import { collectForMode, probeSyncSource, skipOversized } from '../../lib/collect-sync-files.js'
 
 // Re-exported for backwards compatibility — implementation moved to lib.
 export { globMarkdown } from '../../lib/collect-sync-files.js'
@@ -31,10 +34,20 @@ function gitBranch(cwd: string): string {
 
 export async function handlePush(
   cfg: ResolvedConfig,
-  opts: { workspace?: string; project?: string; dir?: string; branch?: string; confirmFullDelete?: boolean }
+  opts: {
+    workspace?: string
+    project?: string
+    dir?: string
+    branch?: string
+    confirmFullDelete?: boolean
+    contentMode?: string
+  }
 ): Promise<void> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
+
+  // Parsed first: an unusable flag value is a local mistake and costs no network.
+  const requestedMode = parseContentModeFlag(opts.contentMode)
 
   // Resolve workspace ID: --workspace flag → .margins.json → --project (create)
   let workspaceId = opts.workspace
@@ -86,16 +99,8 @@ export async function handlePush(
     }
   }
 
-  // Collect markdown files + referenced images (.marginsignore applied)
-  const collected = collectSyncFiles(cwd)
-  const { mdCount, oversized } = collected
-  if (mdCount === 0) {
-    throw new ValidationError(`No .md files found in ${cwd}`)
-  }
-
-  // Oversized blobs are skipped (excluded from upload AND manifest) — one
-  // >2 MB file must not 413-abort the whole push. Reported on stderr.
-  const syncFiles = skipOversized(collected)
+  // Cheap local probe: a wrong directory fails here, before any network call.
+  probeSyncSource(cwd)
 
   // Resolve the branch: an explicit --branch wins (CI often checks out a detached
   // HEAD, where git rev-parse yields "HEAD", and the delete-event path has no
@@ -103,13 +108,35 @@ export async function handlePush(
   // inside casSync — synthetic manifest hash + server headSha, never git SHAs.)
   const branch = opts.branch ?? gitBranch(cwd)
 
+  // Settle the content mode BEFORE collecting anything (KTD3): the workspace
+  // decides, a contradicting flag is refused here, and a server that reports no
+  // mode refuses a committed push rather than letting it apply unenforced.
+  const preflight = await fetchSyncPreflight(client, workspaceId, branch)
+  const contentMode = resolveContentMode(preflight, requestedMode)
+
+  // Collect markdown files + referenced images (.marginsignore applied)
+  const collected = collectForMode(cwd, contentMode)
+  const { mdCount, oversized } = collected
+
+  // R8: say why nothing is going out — and keep going. This used to throw, which
+  // meant the full-delete guard in casSync was unreachable from here: an empty
+  // push against a POPULATED branch has to reach that guard, because refusing
+  // the destructive case is its job, not this check's. Same wording as `sync`.
+  if (mdCount === 0) {
+    process.stderr.write(`${emptyCollectionMessage(cwd, contentMode)}\n`)
+  }
+
+  // Oversized blobs are skipped (excluded from upload AND manifest) — one
+  // >2 MB file must not 413-abort the whole push. Reported on stderr.
+  const syncFiles = skipOversized(collected)
+
   // Sync via CAS protocol
   const result: CasSyncResult = await casSync(
     client,
     workspaceId,
     branch,
     syncFiles,
-    { confirmFullDelete: opts.confirmFullDelete },
+    { preflight, contentMode, confirmFullDelete: opts.confirmFullDelete },
   )
 
   if (cfg.json) {

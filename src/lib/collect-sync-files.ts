@@ -9,9 +9,13 @@
  * MAX_BLOB_SIZE so callers can warn before uploads that would fail server-side.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { scanImagesInMarkdown, mimeFromPath } from './image-scanner.js'
 import { loadIgnoreFilter } from './marginsignore.js'
+import { collectCommittedFiles } from './collect-committed-files.js'
+import { ValidationError } from './errors.js'
+import type { ContentMode } from './cas-sync.js'
 
 /** Server-side per-blob size cap (margins MAX_BLOB_SIZE). */
 export const MAX_BLOB_SIZE = 2 * 1024 * 1024
@@ -97,6 +101,68 @@ export function collectSyncFiles(
     .map(f => ({ path: f.path, bytes: f.content.length }))
 
   return { files, mdCount: mdFiles.length, mdPaths: mdFiles, totalCount: files.length, oversized }
+}
+
+/**
+ * Collector dispatch: the single place a mode chooses a file source.
+ *
+ * Everything downstream of the returned {@link CollectedSyncFiles} is one path,
+ * by design (KTD6) — only the source differs. U5 replaces the committed arm's
+ * stub with a real implementation and this dispatch does not change.
+ */
+export function collectForMode(
+  dir: string,
+  mode: ContentMode,
+  opts: { maxBlobSize?: number; rev?: string } = {},
+): CollectedSyncFiles {
+  if (mode === 'committed') {
+    return collectCommittedFiles(dir, opts)
+  }
+  return collectSyncFiles(dir, opts)
+}
+
+/** True when `dir` sits inside a git working tree. */
+export function isInsideGitRepo(dir: string): boolean {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return out.trim() === 'true'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Cheap local probe, run BEFORE the network preflight so a wrong-directory run
+ * fails locally and instantly instead of surfacing as a network error. It
+ * replaces the empty-directory check that used to be the first thing a push
+ * could fail on.
+ *
+ * It deliberately does NOT count files inside a git repository. It necessarily
+ * runs before the mode is known, and in committed mode the filesystem is not the
+ * source of truth: a pre-push syncs a ref the user is not standing on, and a
+ * checkout whose markdown was removed without committing has the same shape on
+ * disk. A file-counting probe would wrongly refuse both — the genuinely-empty
+ * case is handled after the mode is settled, by the empty-collection contract
+ * and the full-delete guard.
+ *
+ * Outside a git repository the reasoning inverts: committed mode is impossible
+ * there (R15), so the filesystem IS the source of truth and a folder with no
+ * markdown at all can only be a wrong directory.
+ */
+export function probeSyncSource(dir: string): void {
+  if (!existsSync(dir)) {
+    throw new ValidationError(`Directory does not exist: ${dir}`)
+  }
+  if (isInsideGitRepo(dir)) return
+  if (globMarkdown(dir).length > 0) return
+  throw new ValidationError(
+    `No .md files found in ${dir}, and it is not inside a git repository — ` +
+    'nothing was sent. Check the directory.',
+  )
 }
 
 /**

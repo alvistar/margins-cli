@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { handlePush } from '../src/commands/workspace/push.js'
 import { syntheticCommitSha } from '../src/lib/cas-sync.js'
+import type { CollectedSyncFiles } from '../src/lib/collect-sync-files.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
 
 /**
@@ -44,15 +46,30 @@ vi.mock('../src/lib/api-client.js', () => ({
       calls.push(`GET ${p}`)
       return mockGet(p, q)
     },
-    post: (p: string, b?: unknown) => {
+    post: (p: string, b?: unknown, h?: unknown) => {
       calls.push(`POST ${p}`)
-      return mockPost(p, b)
+      return mockPost(p, b, h)
     },
-    putRaw: (p: string, d: Buffer, ct: string) => {
+    putRaw: (p: string, d: Buffer, ct: string, h?: unknown) => {
       calls.push(`PUT ${p}`)
-      return mockPutRaw(p, d, ct)
+      return mockPutRaw(p, d, ct, h)
     },
   }),
+}))
+
+/**
+ * The committed collector is U5's unit; U4 only owns the DISPATCH to it. Stub
+ * it per-test so "which collector was chosen" is assertable without depending
+ * on an implementation that does not exist yet. Left null, the real module's
+ * not-implemented refusal is what the dispatch surfaces.
+ */
+let committedStub: ((dir: string, opts?: unknown) => CollectedSyncFiles) | null = null
+
+vi.mock('../src/lib/collect-committed-files.js', () => ({
+  collectCommittedFiles: (dir: string, opts?: unknown): CollectedSyncFiles => {
+    if (!committedStub) throw new Error('committed collector called without a stub')
+    return committedStub(dir, opts)
+  },
 }))
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -96,8 +113,21 @@ let tmpDir: string
 let logSpy: ReturnType<typeof vi.spyOn>
 let errSpy: ReturnType<typeof vi.spyOn>
 
+/** Make `dir` an actual git repository — the local probe checks for one. */
+function gitInit(dir: string): void {
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' })
+}
+
+/** Headers passed alongside the manifest POST. */
+function manifestPostHeaders(): Record<string, string> | undefined {
+  const call = mockPost.mock.calls.find((c) => String(c[0]).includes('/sync/manifest'))
+  if (!call) throw new Error(`no manifest POST issued; calls were: ${JSON.stringify(calls)}`)
+  return call[2] as Record<string, string> | undefined
+}
+
 beforeEach(() => {
   calls = []
+  committedStub = null
   mockGet.mockReset()
   mockPost.mockReset()
   mockPutRaw.mockReset()
@@ -133,7 +163,7 @@ describe('handlePush — workspace resolution', () => {
 
     await handlePush(makeConfig(), { project: 'docs', dir: tmpDir, branch: 'main' })
 
-    expect(mockPost.mock.calls[0]).toEqual([
+    expect(mockPost.mock.calls[0]!.slice(0, 2)).toEqual([
       '/api/workspaces',
       { name: 'docs', source: 'local', projectName: 'docs' },
     ])
@@ -209,14 +239,194 @@ describe('handlePush — collection dispatch', () => {
     expect(mockPutRaw.mock.calls.map((c) => c[2]).sort()).toEqual(['image/png', 'text/markdown'])
   })
 
-  it('an empty collection refuses locally, before any network call', async () => {
-    // Current contract: `workspace push` throws on mdCount === 0 and never
-    // reaches casSync — so the full-delete guard is unreachable from here.
-    // (U4 changes this deliberately; this test is the tripwire.)
+  it('an empty NON-GIT directory refuses locally, before any network call', async () => {
+    // Contract as of U4. This used to be `mdCount === 0` throwing AFTER the
+    // manifest fetch, which left casSync's full-delete guard unreachable from
+    // here. It is now the local probe, and it fires only outside a git
+    // repository — where committed mode is impossible, so an absence of
+    // markdown on disk can only mean a wrong directory. Inside a repository the
+    // probe passes and the empty-collection contract takes over
+    // (__tests__/commands/empty-collection.test.ts).
     await expect(
       handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' }),
     ).rejects.toThrow(`No .md files found in ${tmpDir}`)
     expect(calls).toEqual([])
+  })
+
+  it('the committed arm of the dispatch refuses rather than falling back to the working tree', async () => {
+    // U5 implements the committed collector. Until it lands, the dispatch must
+    // NOT quietly collect the working tree — that is the unenforced push this
+    // whole feature exists to prevent. (Unmocked: the real module, not the stub.)
+    const { collectCommittedFiles } = await vi.importActual<
+      typeof import('../src/lib/collect-committed-files.js')
+    >('../src/lib/collect-committed-files.js')
+
+    expect(() => collectCommittedFiles(tmpDir)).toThrow(/committed content mode/i)
+  })
+})
+
+// ─── Content mode: settled at preflight, before collection ───────────────────
+
+describe('handlePush — content mode settles at preflight', () => {
+  it('refuses a flag that contradicts the workspace, before collecting anything (R5)', async () => {
+    write('README.md', '# Hi\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
+
+    await expect(handlePush(makeConfig(), {
+      workspace: 'ws-1', dir: tmpDir, branch: 'main', contentMode: 'committed',
+    })).rejects.toThrow(/contradicts this workspace/)
+
+    // Preflight happened (that is where the contradiction is discovered); nothing else did.
+    expect(callShapes()).toEqual(['GET manifest'])
+    expect(mockPutRaw).not.toHaveBeenCalled()
+  })
+
+  it('a preflight reporting committed dispatches the committed collector, with no local config (R4)', async () => {
+    write('README.md', '# working tree only\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'committed' })
+    const seen: string[] = []
+    committedStub = (dir) => {
+      seen.push(dir)
+      const content = Buffer.from('# committed\n')
+      return {
+        files: [{ path: 'README.md', content, contentType: 'text/markdown' }],
+        mdCount: 1,
+        mdPaths: ['README.md'],
+        totalCount: 1,
+        oversized: [],
+      }
+    }
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    // No .margins.json exists in tmpDir — the mode came from the wire alone.
+    expect(fs.existsSync(path.join(tmpDir, '.margins.json'))).toBe(false)
+    expect(seen).toEqual([tmpDir])
+    // The committed collector's content — not the working tree's — was sent.
+    expect(manifestPostBody().files).toEqual({ 'README.md': sha('# committed\n') })
+  })
+
+  it('refuses a committed request when the preflight reports no mode at all, uploading nothing (KTD2)', async () => {
+    write('README.md', '# Hi\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null }) // server predates content modes
+
+    await expect(handlePush(makeConfig(), {
+      workspace: 'ws-1', dir: tmpDir, branch: 'main', contentMode: 'committed',
+    })).rejects.toThrow(/server/i)
+
+    expect(mockPutRaw).not.toHaveBeenCalled()
+    expect(calls.filter((c) => c.startsWith('POST '))).toHaveLength(0)
+  })
+
+  it('a preflight with no mode field plus a working-tree push proceeds exactly as today', async () => {
+    write('README.md', '# Hi\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null })
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    expect(callShapes()).toEqual(['GET manifest', 'PUT blob', 'POST manifest'])
+    expect(manifestPostBody().files).toEqual({ 'README.md': sha('# Hi\n') })
+  })
+
+  it('refuses an unparseable --content-mode value without any network call', async () => {
+    write('README.md', '# Hi\n')
+
+    await expect(handlePush(makeConfig(), {
+      workspace: 'ws-1', dir: tmpDir, branch: 'main', contentMode: 'commited',
+    })).rejects.toThrow(/working-tree/)
+
+    expect(calls).toEqual([])
+  })
+
+  it('writes no content mode into .margins.json on any path', async () => {
+    write('README.md', '# Hi\n')
+    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'client' }))
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
+
+    await handlePush(makeConfig(), { dir: tmpDir, branch: 'main' })
+
+    const raw = fs.readFileSync(path.join(tmpDir, '.margins.json'), 'utf-8')
+    expect(raw).not.toMatch(/content/i)
+    expect(raw).not.toMatch(/working-tree|committed/)
+  })
+})
+
+// ─── The local probe ─────────────────────────────────────────────────────────
+
+describe('handlePush — local source probe', () => {
+  it('a directory outside any git repository with no markdown fails locally, with no preflight', async () => {
+    await expect(
+      handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' }),
+    ).rejects.toThrow(new RegExp(`No \\.md files found in ${tmpDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+
+    expect(calls).toEqual([])
+  })
+
+  it('a git checkout holding no markdown on disk still reaches the preflight (the probe does not count files)', async () => {
+    gitInit(tmpDir)
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'committed' })
+    committedStub = () => ({
+      files: [{ path: 'a.md', content: Buffer.from('# a\n'), contentType: 'text/markdown' }],
+      mdCount: 1, mdPaths: ['a.md'], totalCount: 1, oversized: [],
+    })
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    expect(calls).toContain('GET /api/workspaces/ws-1/sync/manifest')
+    expect(manifestPostBody().files).toEqual({ 'a.md': sha('# a\n') })
+  })
+
+  it('a non-git folder that does hold markdown is not refused', async () => {
+    write('README.md', '# Hi\n')
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    expect(calls).toContain('POST /api/workspaces/ws-1/sync/manifest')
+  })
+})
+
+// ─── The content-mode declaration header ─────────────────────────────────────
+
+describe('handlePush — content-mode declaration header', () => {
+  it('declares working-tree on the manifest POST and on every blob upload', async () => {
+    write('README.md', '# Hi\n')
+    write('docs/spec.md', '# Spec\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    expect(mockPutRaw).toHaveBeenCalledTimes(2)
+    for (const call of mockPutRaw.mock.calls) {
+      expect(call[3]).toEqual({ 'X-Margins-Content-Mode': 'working-tree' })
+    }
+    expect(manifestPostHeaders()).toEqual({ 'X-Margins-Content-Mode': 'working-tree' })
+  })
+
+  it('declares the mode actually collected under — committed, not a default', async () => {
+    write('README.md', '# working tree\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'committed' })
+    committedStub = () => ({
+      files: [{ path: 'README.md', content: Buffer.from('# committed\n'), contentType: 'text/markdown' }],
+      mdCount: 1, mdPaths: ['README.md'], totalCount: 1, oversized: [],
+    })
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    expect(mockPutRaw).toHaveBeenCalledTimes(1)
+    expect(mockPutRaw.mock.calls[0]![3]).toEqual({ 'X-Margins-Content-Mode': 'committed' })
+    expect(manifestPostHeaders()).toEqual({ 'X-Margins-Content-Mode': 'committed' })
+  })
+
+  it('does not declare a mode on the read-only preflight', async () => {
+    write('README.md', '# Hi\n')
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
+
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+
+    // GET takes (path, query) only — no header argument is threaded to it.
+    expect(mockGet.mock.calls[0]).toEqual([
+      '/api/workspaces/ws-1/sync/manifest', { branch: 'main' },
+    ])
   })
 })
 

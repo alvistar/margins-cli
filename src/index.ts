@@ -148,10 +148,16 @@ program
   .command('sync [dir]')
   .description('Set up a folder for continuous sync with Margins')
   .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
+  .option('--content-mode <mode>', 'Content mode for this workspace: working-tree | committed')
   .action(async (dir, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleSync } = await import('./commands/sync.js')
-    await handleSync(cfg, { dir, json: cfg.json, confirmFullDelete: opts.confirmFullDelete })
+    await handleSync(cfg, {
+      dir,
+      json: cfg.json,
+      confirmFullDelete: opts.confirmFullDelete,
+      contentMode: opts.contentMode,
+    })
   })
 
 // ─── stash (top-level) ────────────────────────────────────────────────────────
@@ -278,6 +284,7 @@ wsCmd
   .option('--dir <path>', 'Directory to scan for .md files (default: cwd)')
   .option('--branch <branch>', 'Branch to push to (default: current git branch; pass explicitly in CI where HEAD may be detached)')
   .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
+  .option('--content-mode <mode>', "Require this workspace's content mode: working-tree | committed")
   .action(async (opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handlePush } = await import('./commands/workspace/push.js')

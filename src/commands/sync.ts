@@ -13,12 +13,17 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient } from '../lib/api-client.js'
-import { ConflictError } from '../lib/errors.js'
+import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
-import { casSync } from '../lib/cas-sync.js'
-import { collectSyncFiles, skipOversized } from '../lib/collect-sync-files.js'
+import {
+  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
+  resolveContentMode, type ContentMode,
+} from '../lib/cas-sync.js'
+import {
+  collectForMode, isInsideGitRepo, probeSyncSource, skipOversized,
+} from '../lib/collect-sync-files.js'
 
 interface MarginsJson {
   workspace_slug: string
@@ -33,6 +38,40 @@ interface SyncOpts {
   dir?: string
   json?: boolean
   confirmFullDelete?: boolean
+  contentMode?: string
+}
+
+/**
+ * R2: the first sync of a git repository asks what a sync should send, and the
+ * answer goes to the SERVER — nothing is cached locally, so no copy can go
+ * stale after a migration. A non-interactive session has no way to ask, so it
+ * requires the choice to be stated rather than guessing one.
+ */
+async function chooseContentMode(dir: string, isJson: boolean): Promise<ContentMode> {
+  if (!process.stdin.isTTY || isJson) {
+    throw new ValidationError(
+      `${dir} is a git repository and this session is not interactive, so the content mode ` +
+      'cannot be chosen here — nothing was synced. Re-run with ' +
+      '`--content-mode committed` or `--content-mode working-tree`.',
+    )
+  }
+  const choice = await p.select({
+    message: 'What should a sync of this git repository send?',
+    options: [
+      {
+        value: 'working-tree' as const,
+        label: 'Working tree — every .md file on disk, committed or not',
+      },
+      {
+        value: 'committed' as const,
+        label: 'Committed — only files tracked at the last commit (git ignore rules apply)',
+      },
+    ],
+  })
+  if (p.isCancel(choice)) {
+    throw new ValidationError('Cancelled — nothing was synced.')
+  }
+  return choice
 }
 
 export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<void> {
@@ -47,6 +86,10 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     }
     process.exit(1)
   }
+
+  // Local, pre-network: a wrong directory fails here rather than as a network error.
+  const requestedMode = parseContentModeFlag(opts.contentMode)
+  probeSyncSource(dir)
 
   const client = createApiClient(cfg)
   const configPath = path.join(dir, '.margins.json')
@@ -102,6 +145,8 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   let branch = (marginsJson?.mode === 'overlay' || syncMode === 'server')
     ? '@local'
     : (marginsJson?.default_branch ?? 'main')
+
+  const isFirstSync = !workspaceId
 
   if (!workspaceId) {
     const remote = detectGitRemote(dir)
@@ -175,33 +220,66 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
   }
 
-  // Step 5-6: Collect and push .md files (+ referenced images) via CAS protocol
-  const collected = collectSyncFiles(dir)
+  // Step 5: Settle the content mode BEFORE collecting anything (KTD3).
+  const pushBranch = branch === '@local' ? 'main' : branch
+  const preflight = await fetchSyncPreflight(client, workspaceId, pushBranch)
+
+  let contentMode: ContentMode
+  if (isFirstSync && preflight.contentMode !== undefined && isInsideGitRepo(dir)) {
+    // R2: first sync of a git repository — ask, then tell the server. The
+    // preflight reporting a mode at all is what proves the server can store one.
+    contentMode = requestedMode ?? await chooseContentMode(dir, isJson === true)
+    if (contentMode !== preflight.contentMode) {
+      // PUT, and `hasGitRepo` — the server exports only PUT here, and it fails
+      // closed on committed mode unless `hasGitRepo === true`, so the wrong
+      // field name reports "no git repository" from inside a git repository.
+      await client.put(`/api/workspaces/${workspaceId}/content-mode`, {
+        mode: contentMode,
+        expectedMode: preflight.contentMode,
+        hasGitRepo: true,
+      })
+    }
+  } else {
+    contentMode = resolveContentMode(preflight, requestedMode)
+  }
+
+  // Step 6: Collect and push .md files (+ referenced images) via CAS protocol
+  const collected = collectForMode(dir, contentMode)
   const { mdCount, mdPaths: mdFiles, oversized } = collected
+
+  // R8: identical wording to `workspace push`, and identically non-fatal — an
+  // empty push against a populated branch must reach the full-delete guard
+  // rather than being reported as a silent success.
+  if (mdCount === 0) {
+    process.stderr.write(`${emptyCollectionMessage(dir, contentMode)}\n`)
+  }
+
   // Oversized blobs are skipped (excluded from upload AND manifest) — one
   // >2 MB file must not 413-abort the whole push. Reported on stderr.
   const syncFiles = skipOversized(collected)
 
   let pushResult = { added: 0, changed: 0, skipped: 0, merged: false }
 
-  if (mdCount > 0) {
-    if (!isJson) {
-      p.log.info(`Pushing ${mdCount} .md file(s) via CAS...`)
-    }
-
-    const casResult = await casSync(
-      client,
-      workspaceId,
-      branch === '@local' ? 'main' : branch,
-      syncFiles,
-      { confirmFullDelete: opts.confirmFullDelete },
-    )
-
-    pushResult.added = casResult.added
-    pushResult.changed = casResult.changed
-    pushResult.skipped = casResult.skipped
-    pushResult.merged = casResult.merged // surface auto-merge in --json (parity with `workspace push`)
+  // The push runs unconditionally. It used to be gated on `mdCount > 0`, which
+  // reported an empty collection as a silent success and kept casSync's
+  // full-delete guard unreachable from this caller — the same early exit
+  // `workspace push` carried, with the opposite (and equally wrong) outcome.
+  if (!isJson && mdCount > 0) {
+    p.log.info(`Pushing ${mdCount} .md file(s) via CAS...`)
   }
+
+  const casResult = await casSync(
+    client,
+    workspaceId,
+    pushBranch,
+    syncFiles,
+    { preflight, contentMode, confirmFullDelete: opts.confirmFullDelete },
+  )
+
+  pushResult.added = casResult.added
+  pushResult.changed = casResult.changed
+  pushResult.skipped = casResult.skipped
+  pushResult.merged = casResult.merged // surface auto-merge in --json (parity with `workspace push`)
 
   // Step 7: Write lastMtimes + add to repos.json
   const lastMtimes: Record<string, number> = {}
