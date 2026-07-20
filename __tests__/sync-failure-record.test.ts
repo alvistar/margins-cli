@@ -449,6 +449,51 @@ server.listen(0, '127.0.0.1', () => {
   }
 }
 
+/**
+ * A stub GitHub Actions OIDC token endpoint, in its own process (same reason as
+ * `stubServer`).
+ *
+ * This exists to simulate a real Actions runner, where `permissions: id-token:
+ * write` makes GitHub inject ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN into the job.
+ * Without a *working* mint endpoint the api-client's re-mint throws and the
+ * behaviour under test never changes — so a regression test for ambient-OIDC
+ * leakage has to serve a real token, not just set the variables.
+ */
+async function oidcMintStub(): Promise<{ url: string; close: () => void }> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-failrec-oidc-'))
+  const portFile = path.join(dir, 'port')
+  const script = path.join(dir, 'oidc.mjs')
+  fs.writeFileSync(script, `
+import http from 'node:http'
+import fs from 'node:fs'
+// The api-client appends &audience=... and sends Authorization: Bearer <request token>.
+// Shape per GitHub's OIDC contract: { value: <jwt> }.
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ value: 'stub-actions-oidc-token' }))
+})
+server.listen(0, '127.0.0.1', () => {
+  fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port))
+})
+`)
+  const child = spawn(process.execPath, [script], { stdio: 'ignore' })
+
+  const deadline = Date.now() + 10_000
+  while (!fs.existsSync(portFile)) {
+    if (Date.now() > deadline) throw new Error('oidc stub did not start')
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  const port = fs.readFileSync(portFile, 'utf-8').trim()
+
+  return {
+    url: `http://127.0.0.1:${port}/token?foo=bar`,
+    close: () => {
+      child.kill()
+      fs.rmSync(dir, { recursive: true, force: true })
+    },
+  }
+}
+
 function cli(args: string[], env: NodeJS.ProcessEnv, cwd = projectDir) {
   // tsx is resolved by ABSOLUTE path: `--import tsx/esm` is resolved relative to
   // the child's cwd, which here is a temp project directory with no node_modules.
@@ -466,6 +511,18 @@ function cli(args: string[], env: NodeJS.ProcessEnv, cwd = projectDir) {
         MARGINS_CONFIG_DIR: path.join(dataDir, 'config'),
         MARGINS_DATA_DIR: dataDir,
         MARGINS_API_KEY: 'mrgn_test',
+        // …and never the RUNNER's identity. GitHub injects these into any job
+        // holding `permissions: id-token: write` — which our release workflow
+        // needs for npm Trusted Publishing — and `...process.env` above would
+        // hand them to the child. The api-client treats them as credentials
+        // (auth-env.ts hasOidcAuth; api-client.ts canRemintOidc re-mints on a
+        // 401), so a test that means "no usable credentials" silently gets
+        // usable ones on Actions and asserts the wrong branch. Scrubbed here
+        // rather than in beforeEach so it holds no matter what the ambient
+        // process picked up, and listed to match hasOidcAuth exactly.
+        MARGINS_OIDC_TOKEN: '',
+        ACTIONS_ID_TOKEN_REQUEST_URL: '',
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: '',
         ...env,
       },
     },
@@ -653,6 +710,63 @@ describe('end to end — a hook with no usable credentials', () => {
       const next = cli(['config', 'show'], { CI: '' })
       expect(next.stderr).toContain('main')
     } finally {
+      stub.close()
+    }
+  }, 60_000)
+
+  // REGRESSION (2026-07-20). The suite above scrubs six CI flags so the local
+  // channel is what gets asserted — but it did NOT scrub the ambient credential
+  // GitHub hands a job that has `permissions: id-token: write`. Our own release
+  // workflow needs exactly that permission for npm Trusted Publishing, so on the
+  // runner ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN were present, `cli()` passed them
+  // through with `...process.env`, and the api-client re-minted a real token on
+  // the 401 (api-client.ts canRemintOidc). The stub accepts any NON-EMPTY
+  // bearer, so the retry got a 200: the "no usable credentials" push quietly
+  // SUCCEEDED, there was no failure to record, and the assertion that a record
+  // exists failed. `expect(hook.status).toBe(0)` passed throughout — for the
+  // wrong reason, since exit 0 cannot tell "recorded a failure" from "succeeded".
+  //
+  // This reproduces that on ANY machine by supplying the ambient pair plus a
+  // working mint endpoint. Delete the scrubbing in `cli()` and this test fails
+  // locally, not only on Actions.
+  it('ignores ambient GitHub Actions OIDC credentials rather than silently authenticating with them', async () => {
+    const stub = await stubServer({ requireAuth: true })
+    const oidc = await oidcMintStub()
+    const prevUrl = process.env['ACTIONS_ID_TOKEN_REQUEST_URL']
+    const prevToken = process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
+    // Stand the process up as a runner with OIDC available, exactly as Actions does.
+    process.env['ACTIONS_ID_TOKEN_REQUEST_URL'] = oidc.url
+    process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'] = 'stub-request-token'
+    try {
+      fs.writeFileSync(
+        path.join(projectDir, '.margins.json'),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+      )
+      fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
+
+      const hook = cli(
+        ['workspace', 'hook-sync', '--event', 'pre-push',
+          '--refs', `refs/heads/main ${'a'.repeat(40)} refs/heads/main ${'0'.repeat(40)}`],
+        {
+          MARGINS_SERVER_URL: stub.url,
+          CI: '',
+          MARGINS_CONFIG_DIR: path.join(dataDir, 'empty-config'),
+          MARGINS_API_KEY: '',
+        },
+      )
+
+      expect(hook.status).toBe(0)
+      // The point of the test: with no credentials of its own, the CLI must not
+      // reach for the runner's identity. If it does, this push succeeds and the
+      // record never appears — which is how the bug presented.
+      expect(fs.existsSync(recordFile())).toBe(true)
+      expect(fs.readFileSync(recordFile(), 'utf-8')).toContain('main')
+    } finally {
+      if (prevUrl === undefined) delete process.env['ACTIONS_ID_TOKEN_REQUEST_URL']
+      else process.env['ACTIONS_ID_TOKEN_REQUEST_URL'] = prevUrl
+      if (prevToken === undefined) delete process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
+      else process.env['ACTIONS_ID_TOKEN_REQUEST_TOKEN'] = prevToken
+      oidc.close()
       stub.close()
     }
   }, 60_000)
