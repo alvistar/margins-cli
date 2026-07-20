@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
-import { casSync, syntheticCommitSha } from '../src/lib/cas-sync.js'
+import { casSync, fetchSyncPreflight, syntheticCommitSha } from '../src/lib/cas-sync.js'
+import type { ApiClient } from '../src/lib/api-client.js'
+import type { CasSyncOptions } from '../src/lib/cas-sync.js'
 import { ConflictError, MergeConflictError, FullDeleteNotConfirmedError } from '../src/lib/errors.js'
 
 // Shared test vector — must stay byte-identical to the desktop implementation
@@ -61,6 +63,27 @@ function stubFetch(
   return calls
 }
 
+/**
+ * The preflight is the CALLER's since U4 — `casSync` no longer fetches it. This
+ * helper reproduces what `workspace push` / `sync` do: fetch, then push under
+ * the mode the preflight settled. The GET still goes through the same stubbed
+ * fetch, so per-method call counts below are unchanged.
+ */
+async function preflightAndSync(
+  client: ApiClient,
+  workspaceId: string,
+  branch: string,
+  files: Parameters<typeof casSync>[3],
+  opts: Partial<CasSyncOptions> = {},
+) {
+  const preflight = await fetchSyncPreflight(client, workspaceId, branch)
+  return casSync(client, workspaceId, branch, files, {
+    preflight,
+    contentMode: 'working-tree',
+    ...opts,
+  })
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -105,7 +128,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    await casSync(client, 'ws-1', 'main', syncFiles())
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles())
 
     const post = calls.find((c) => c.method === 'POST')
     expect(post).toBeDefined()
@@ -130,7 +153,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    await casSync(client, 'ws-1', 'main', syncFiles())
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles())
 
     const body = JSON.parse(calls.find((c) => c.method === 'POST')!.body!) as { parentSha: string | null }
     expect(body.parentSha).toBeNull()
@@ -148,7 +171,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
 
     expect(caught).toBeInstanceOf(ConflictError)
     expect(caught).not.toBeInstanceOf(MergeConflictError)
@@ -177,7 +200,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
 
     expect(caught).toBeInstanceOf(MergeConflictError)
     expect((caught as MergeConflictError).exitCode).toBe(1) // non-zero exit
@@ -198,7 +221,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
 
     const msg = (caught as MergeConflictError).userMessage
     expect(msg).toContain('readme.md')
@@ -224,7 +247,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     // casSync never touches the filesystem (push-only) — nothing to write.
-    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+    const result = await preflightAndSync(client, 'ws-1', 'main', syncFiles())
 
     expect(result.merged).toBe(true)
     expect(result).toMatchObject({ added: 5, changed: 2, deleted: 1 }) // server counts, not local
@@ -244,7 +267,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    const result = await casSync(client, 'ws-1', 'main', syncFiles())
+    const result = await preflightAndSync(client, 'ws-1', 'main', syncFiles())
 
     expect(result.merged).toBe(false)
     // Local diff: server empty, 2 local files → 2 added.
@@ -265,7 +288,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    await expect(casSync(client, 'ws-1', 'main', syncFiles()))
+    await expect(preflightAndSync(client, 'ws-1', 'main', syncFiles()))
       .rejects.toThrow(/does not support client push sync/)
   })
 
@@ -281,7 +304,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', []).catch((e) => { caught = e })
+    await preflightAndSync(client, 'ws-1', 'main', []).catch((e) => { caught = e })
 
     expect(caught).toBeInstanceOf(FullDeleteNotConfirmedError)
     expect((caught as FullDeleteNotConfirmedError).userMessage).toMatch(/--confirm-full-delete/)
@@ -297,7 +320,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    const result = await casSync(client, 'ws-1', 'main', [], { confirmFullDelete: true })
+    const result = await preflightAndSync(client, 'ws-1', 'main', [], { confirmFullDelete: true })
 
     const post = calls.find((c) => c.method === 'POST')
     expect(post).toBeDefined()
@@ -323,7 +346,7 @@ describe('casSync', () => {
     })
 
     const client = createApiClient(baseConfig())
-    const result = await casSync(
+    const result = await preflightAndSync(
       client,
       'ws-1',
       'main',
@@ -352,11 +375,71 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     let caught: unknown
-    await casSync(client, 'ws-1', 'main', [
+    await preflightAndSync(client, 'ws-1', 'main', [
       { path: 'readme.md', content: Buffer.from('y'), contentType: 'text/markdown' },
     ]).catch((e) => { caught = e })
 
     expect(caught).toBeInstanceOf(FullDeleteNotConfirmedError)
+  })
+})
+
+// ─── Git provenance on the manifest POST (wire contract §6) ──────────────────
+
+describe('casSync — git provenance', () => {
+  const postBody = (calls: RecordedCall[]): Record<string, unknown> =>
+    JSON.parse(calls.find((c) => c.method === 'POST' && c.url.endsWith('/manifest'))!.body!)
+
+  it('sends gitCommitSha + gitObjectFormat when the collection carried provenance', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'committed' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    const gitCommitSha = 'a'.repeat(40)
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles(), {
+      contentMode: 'committed',
+      gitProvenance: { gitCommitSha, gitObjectFormat: 'sha1' },
+    })
+
+    const body = postBody(calls)
+    expect(body.gitCommitSha).toBe(gitCommitSha)
+    expect(body.gitObjectFormat).toBe('sha1')
+    // Provenance rides BESIDE the content shas; it never becomes one of them.
+    expect(body.commitSha).toBe(syntheticCommitSha({
+      'readme.md': createHash('sha256').update(Buffer.from('y')).digest('hex'),
+      'docs/nested.md': createHash('sha256').update(Buffer.from('x')).digest('hex'),
+    }))
+    expect(body.commitSha).not.toBe(gitCommitSha)
+    expect(body.parentSha).toBeNull()
+  })
+
+  it('carries a 64-hex sha with format sha256, rather than assuming SHA-1 (KTD9)', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'committed' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles(), {
+      contentMode: 'committed',
+      gitProvenance: { gitCommitSha: 'b'.repeat(64), gitObjectFormat: 'sha256' },
+    })
+
+    const body = postBody(calls)
+    expect(body.gitObjectFormat).toBe('sha256')
+    expect(String(body.gitCommitSha)).toHaveLength(64)
+  })
+
+  it('omits BOTH fields for a working-tree push (the both-or-neither rule)', async () => {
+    const calls = stubFetch((method) =>
+      method === 'GET'
+        ? apiOk({ files: {}, headSha: null, contentMode: 'working-tree' })
+        : apiOk({ added: 2, changed: 0, deleted: 0 }))
+
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', syncFiles())
+
+    const body = postBody(calls)
+    expect(body).not.toHaveProperty('gitCommitSha')
+    expect(body).not.toHaveProperty('gitObjectFormat')
   })
 })
 

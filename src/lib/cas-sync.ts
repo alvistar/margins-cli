@@ -6,6 +6,7 @@ import {
   type SyncConflictEntry,
 } from './errors.js'
 import { poolMap } from './pool.js'
+import type { GitProvenance } from './collect-sync-files.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,9 +19,39 @@ export interface CasSyncResult {
   merged: boolean    // server 3-way-merged this push with a concurrent edit
 }
 
-interface ManifestResponse {
+/**
+ * What a sync sends: the working tree as it sits on disk, or the content of a
+ * git commit. A per-workspace setting, never cached locally — it is delivered by
+ * the preflight on every push (KTD1).
+ */
+export type ContentMode = 'working-tree' | 'committed'
+
+/**
+ * The header both write routes read to learn what the client actually collected
+ * under. Mirrors the `X-Margins-Client` convention. Sent on the manifest POST
+ * and on every blob PUT; never on the read-only preflight.
+ */
+export const CONTENT_MODE_HEADER = 'X-Margins-Content-Mode'
+
+export function isContentMode(value: unknown): value is ContentMode {
+  return value === 'working-tree' || value === 'committed'
+}
+
+/**
+ * The sync preflight: the server's current manifest for a branch, plus the
+ * workspace's content mode.
+ *
+ * `contentMode` ABSENT is the capability signal (KTD2), and the only one there
+ * is: a server that has deployed content modes reports the mode unconditionally
+ * — a workspace with none stored reports `"working-tree"` explicitly. So a
+ * missing field means the server predates the feature, and since a plain zod
+ * object silently strips unknown keys, a mode declared to such a server would be
+ * dropped and the push would apply unenforced.
+ */
+export interface SyncPreflight {
   files: Record<string, string>  // path → sha256 hash
   headSha: string | null
+  contentMode?: ContentMode
 }
 
 interface SyncFile {
@@ -57,7 +88,14 @@ export function syntheticCommitSha(manifest: Record<string, string>): string {
   return sha256(Buffer.from(buf, 'utf-8'))
 }
 
-/** Map a 422 PUSH_SYNC_NOT_SUPPORTED server error to an actionable message. */
+/**
+ * Map a 422 PUSH_SYNC_NOT_SUPPORTED server error to an actionable message.
+ *
+ * ONE owner: both the preflight GET ({@link fetchSyncPreflight}) and the
+ * manifest POST inside {@link casSync} route their failures through here. The
+ * GET moved out of `casSync` in U4, and the mapping deliberately did not get
+ * copied along with it — two homes for one message is how they drift apart.
+ */
 function mapSyncError(err: unknown): never {
   if (err instanceof ServerError && err.code === 'PUSH_SYNC_NOT_SUPPORTED') {
     throw new ValidationError(
@@ -67,6 +105,118 @@ function mapSyncError(err: unknown): never {
     )
   }
   throw err
+}
+
+// ─── Preflight: settle the mode before anything is collected (KTD3) ──────────
+
+export function syncBasePath(workspaceId: string): string {
+  return `/api/workspaces/${workspaceId}/sync`
+}
+
+/**
+ * Fetch the sync preflight for a branch. Lifted OUT of {@link casSync} in U4 so
+ * the workspace's content mode is known BEFORE collection: the client uploads
+ * blobs before it posts the manifest, so enforcing at the manifest post would
+ * mean a stale client uploads gitignored bytes and is refused afterwards — the
+ * private-file leak this feature exists to close, reproduced inside the fix.
+ *
+ * A present-but-unrecognised mode is a hard failure, never a silent
+ * working-tree default: the column carries no database CHECK constraint, so an
+ * out-of-range value is reachable, and guessing at it is exactly the fail-open
+ * this design refuses.
+ */
+export async function fetchSyncPreflight(
+  client: ApiClient,
+  workspaceId: string,
+  branch: string,
+): Promise<SyncPreflight> {
+  const resp = await client.get(
+    `${syncBasePath(workspaceId)}/manifest`,
+    { branch },
+  ).catch(mapSyncError) as {
+    files?: Record<string, string>
+    headSha?: string | null
+    contentMode?: unknown
+  } | null
+
+  const raw = resp?.contentMode
+  if (raw !== undefined && raw !== null && !isContentMode(raw)) {
+    throw new ValidationError(
+      `The server reported an unrecognised content mode (${JSON.stringify(raw)}) for this ` +
+      'workspace, so nothing was sent. Upgrade the Margins CLI, or ask an admin to check ' +
+      'the workspace.',
+    )
+  }
+
+  return {
+    files: resp?.files ?? {},
+    headSha: resp?.headSha ?? null,
+    ...(isContentMode(raw) ? { contentMode: raw } : {}),
+  }
+}
+
+/**
+ * Settle the mode this push will collect under, before collecting (R4, R5, KTD2).
+ *
+ * - The server reports a mode → that mode wins. A flag requesting a different
+ *   one is refused: content mode is a workspace setting, and alternating modes
+ *   against one workspace deletes whatever the other mode legitimately sent.
+ * - The server reports NO mode → it predates the feature. Working-tree pushes
+ *   proceed exactly as they do today; a committed push is refused, and the
+ *   message names the SERVER, because the user's flags are not the problem.
+ */
+export function resolveContentMode(
+  preflight: SyncPreflight,
+  requested: ContentMode | undefined,
+): ContentMode {
+  const workspaceMode = preflight.contentMode
+
+  if (workspaceMode === undefined) {
+    if (requested === 'committed') {
+      throw new ValidationError(
+        'This Margins server does not support committed content mode — it reports no ' +
+        'content mode for this workspace. A committed push could not be enforced there, ' +
+        'so nothing was sent. Upgrade the server, then retry.',
+      )
+    }
+    return 'working-tree'
+  }
+
+  if (requested !== undefined && requested !== workspaceMode) {
+    throw new ValidationError(
+      `--content-mode ${requested} contradicts this workspace, which is in ${workspaceMode} ` +
+      'mode — nothing was collected or sent. Content mode is a workspace setting, not a ' +
+      'per-push choice: change it with `margins workspace content-mode`.',
+    )
+  }
+
+  return workspaceMode
+}
+
+/** Parse the `--content-mode` flag, refusing an unknown value locally. */
+export function parseContentModeFlag(raw: string | undefined): ContentMode | undefined {
+  if (raw === undefined) return undefined
+  if (isContentMode(raw)) return raw
+  throw new ValidationError(
+    `Unknown --content-mode "${raw}". Use "working-tree" or "committed".`,
+  )
+}
+
+/**
+ * The single wording for a collection that produced no markdown (R8).
+ *
+ * Both `workspace push` and `sync` emit THIS string, byte for byte, so a user
+ * who moves between them is told the same thing. Neither of them exits early on
+ * it any more: an empty push against a populated branch has to reach the
+ * full-delete guard, which is the thing that actually refuses the destructive
+ * case.
+ */
+export function emptyCollectionMessage(dir: string, mode: ContentMode): string {
+  return mode === 'committed'
+    ? `Nothing to send: the commit being synced holds no .md files (${dir}). ` +
+      'In committed mode only files tracked by git are sent, so untracked and ' +
+      'gitignored markdown is never included.'
+    : `Nothing to send: no .md files found in ${dir}.`
 }
 
 /** Server counts from a clean auto-merge (`200 { merged: true, ... }`). */
@@ -112,13 +262,21 @@ const UPLOAD_CONCURRENCY = 5
 /**
  * Content-addressable sync protocol.
  *
- * 1. Fetch the server manifest for the branch
- * 2. Compute SHA-256 of each local file, diff against manifest
- * 3. Upload new/changed blobs (up to 5 concurrent)
+ * The preflight (step 0) is the CALLER's — {@link fetchSyncPreflight} runs
+ * before collection so the content mode is settled first (KTD3), and its result
+ * is handed in here. That is why `parentSha` below is not a local lookup: it is
+ * the `headSha` the caller already fetched, so the CAS swap is against the state
+ * the caller made its collection decision on.
+ *
+ * 1. Compute SHA-256 of each collected file, diff against the preflight manifest
+ * 2. Refuse a push that would empty a populated branch, unless confirmed
+ * 3. Upload new/changed blobs (up to 5 concurrent), each declaring the content
+ *    mode it was collected under
  * 4. Commit the new manifest with a synthetic commitSha (derived from the
  *    local manifest, see {@link syntheticCommitSha}) and parentSha = the
- *    server's headSha from step 1. SHAs are computed here — callers never
- *    supply them (git SHAs are the wrong shape AND the wrong semantics).
+ *    preflight's headSha, declaring the same content mode. SHAs are computed
+ *    here — callers never supply them (git SHAs are the wrong shape AND the
+ *    wrong semantics).
  *
  * On ANY 409 the push surfaces-and-stops — it is NEVER re-pushed. Post-PR2 the
  * server 3-way-merges a divergent push, so a 409 is always a real content
@@ -128,12 +286,30 @@ const UPLOAD_CONCURRENCY = 5
  * so the user's working copy is preserved.
  */
 export interface CasSyncOptions {
+  /** The caller's preflight for this branch (see {@link fetchSyncPreflight}). */
+  preflight: SyncPreflight
+  /**
+   * The mode `files` were ACTUALLY collected under — never a default. Declared
+   * on the manifest POST and on every blob upload, so a workspace in committed
+   * mode can refuse a client that collected the working tree.
+   */
+  contentMode: ContentMode
   /**
    * Allow a push that would delete every file on the branch. Without it, such a
    * push is refused locally (nothing destructive is sent) and the server's
    * matching guard (`SYNC_FULL_DELETE_NOT_CONFIRMED`) is a backstop.
    */
   confirmFullDelete?: boolean
+  /**
+   * Which git commit this push was collected from — committed mode only; a
+   * working-tree push omits it and records nothing (wire contract §6).
+   *
+   * It rides BESIDE `commitSha`/`parentSha` and never replaces them. Overloading
+   * those would break two things that depend on sha-means-content: the
+   * idempotent-retry check would treat a genuinely different tree as already
+   * applied, and divergence detection compares against the branch head.
+   */
+  gitProvenance?: GitProvenance
 }
 
 export async function casSync(
@@ -141,19 +317,17 @@ export async function casSync(
   workspaceId: string,
   branch: string,
   files: SyncFile[],
-  opts: CasSyncOptions = {},
+  opts: CasSyncOptions,
 ): Promise<CasSyncResult> {
-  const basePath = `/api/workspaces/${workspaceId}/sync`
+  const basePath = syncBasePath(workspaceId)
+  const { preflight, contentMode } = opts
 
-  // Step 1: Fetch current server manifest
-  const manifest = await client.get(
-    `${basePath}/manifest`,
-    { branch },
-  ).catch(mapSyncError) as ManifestResponse
+  // Every write declares the mode this push collected under (KTD13).
+  const declaration = { [CONTENT_MODE_HEADER]: contentMode }
 
-  const serverFiles = manifest.files ?? {}
+  const serverFiles = preflight.files ?? {}
 
-  // Step 2: Compute local hashes and diff
+  // Step 1: Compute local hashes and diff
   const localFiles: Record<string, string> = {}
   const localByHash = new Map<string, SyncFile>()
 
@@ -198,7 +372,7 @@ export async function casSync(
     }
   }
 
-  // Step 3: Upload blobs concurrently
+  // Step 3: Upload blobs concurrently, each declaring the collected mode
   const toUpload = [...hashesToUpload]
 
   await poolMap(toUpload, UPLOAD_CONCURRENCY, async (hash) => {
@@ -207,6 +381,7 @@ export async function casSync(
       `${basePath}/objects/${hash}`,
       file.content,
       file.contentType,
+      declaration,
     )
   })
 
@@ -222,10 +397,13 @@ export async function casSync(
     postResp = await client.post(`${basePath}/manifest`, {
       branch,
       commitSha,
-      parentSha: manifest.headSha,
+      parentSha: preflight.headSha,
       files: localFiles,
       ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
-    })
+      // Both fields together or neither — the server 400s a length/format
+      // contradiction, and omitting both is what a working-tree push does.
+      ...(opts.gitProvenance ?? {}),
+    }, declaration)
   } catch (err) {
     // A server-side merge conflict: name the conflicting files + next step and
     // STOP. (R1/R2/R3, KTD2)

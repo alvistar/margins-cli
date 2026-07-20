@@ -4,6 +4,7 @@ import { AuthMissing } from './lib/errors.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
+import { reportPendingSyncFailures } from './lib/sync-failure-record.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
 
@@ -26,8 +27,21 @@ export const program = new Command()
 // 'open' is exempt: `margins open ./folder` (Margins Light, local) needs no Margins-server auth;
 // the hosted `open <slug>` path surfaces a 401 from the API if credentials are absent.
 const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit', 'open', 'runtime'])
-// Subcommands that are local-only and don't need server auth
-const NO_AUTH_SUBCOMMANDS = new Set(['unsync'])
+// Subcommands the root-level auth gate must not stop.
+//
+// 'unsync' is local-only and needs no server auth at all.
+//
+// 'hook-sync' is a different case: it DOES need credentials, and is exempted
+// precisely so that missing ones fail where they can be RECORDED. It runs under
+// the root `workspace` command, so the gate below used to `process.exit(1)`
+// before `handleHookSync` — and therefore before `settleHookSyncOutcome` — ever
+// ran, making a credential failure the one cause the findability feature (R16,
+// U7) structurally could not see. That is not a rare state: `install-hook` is
+// itself exempt, so a hook can be installed before credentials exist, and a
+// rotated API key puts a working install straight into it. Skipping the gate
+// lets the failure surface through the normal per-branch results path, where it
+// becomes a record the next foreground command reports.
+const NO_AUTH_SUBCOMMANDS = new Set(['unsync', 'hook-sync'])
 
 
 program.hook('preAction', (_thisCommand, actionCommand) => {
@@ -37,6 +51,13 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   let cmd = actionCommand
   while (cmd.parent && cmd.parent.parent) cmd = cmd.parent
   const rootName = cmd.name()
+
+  // A background sync that failed left a record (R16, U7). Report it FIRST, on
+  // any foreground command — including the ones that need no auth, since a
+  // stale key is a common cause and `margins auth login` must be able to carry
+  // the news. `hook-sync` is excluded: it IS the background path, and consuming
+  // the record there would clear it into a terminal nobody is watching.
+  if (actionCommand.name() !== 'hook-sync') reportPendingSyncFailures()
 
   if (NO_AUTH_COMMANDS.has(rootName)) return
   if (NO_AUTH_SUBCOMMANDS.has(actionCommand.name())) return
@@ -148,10 +169,16 @@ program
   .command('sync [dir]')
   .description('Set up a folder for continuous sync with Margins')
   .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
+  .option('--content-mode <mode>', 'Content mode for this workspace: working-tree | committed')
   .action(async (dir, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleSync } = await import('./commands/sync.js')
-    await handleSync(cfg, { dir, json: cfg.json, confirmFullDelete: opts.confirmFullDelete })
+    await handleSync(cfg, {
+      dir,
+      json: cfg.json,
+      confirmFullDelete: opts.confirmFullDelete,
+      contentMode: opts.contentMode,
+    })
   })
 
 // ─── stash (top-level) ────────────────────────────────────────────────────────
@@ -278,10 +305,59 @@ wsCmd
   .option('--dir <path>', 'Directory to scan for .md files (default: cwd)')
   .option('--branch <branch>', 'Branch to push to (default: current git branch; pass explicitly in CI where HEAD may be detached)')
   .option('--confirm-full-delete', 'Allow a push that would delete every file on the branch')
+  .option('--content-mode <mode>', "Require this workspace's content mode: working-tree | committed")
   .action(async (opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handlePush } = await import('./commands/workspace/push.js')
     await handlePush(cfg, opts)
+  })
+
+// Invoked by the installed git hooks, not typed by hand. The hook script has
+// already captured the state that stops being available when it returns — the
+// pre-push ref lines from stdin, or the object id `HEAD` resolved to — and
+// passes it here so the background sync targets exactly what git named.
+wsCmd
+  .command('hook-sync', { hidden: true })
+  .description('Sync the commits a git hook named (internal: invoked by installed hooks)')
+  .option('--event <event>', 'Which hook fired: pre-push or post-commit')
+  .option('--refs <lines>', "pre-push: git's ref lines, read from the hook's stdin")
+  .option('--rev <sha>', 'post-commit: the object id the hook resolved')
+  .option('--branch <branch>', 'post-commit: the branch the commit was made on')
+  .option('--dir <path>', 'Repository directory (default: cwd)')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleHookSync } = await import('./commands/workspace/push.js')
+    const results = await handleHookSync(cfg, opts)
+    // Nothing is watching this process: the hook backgrounded it and exited 0.
+    // Settle the outcome into the channel this environment actually has — a
+    // record the next foreground command reports (local), or a non-zero exit
+    // and a named cause in the job log (CI, where no next command exists).
+    const { settleHookSyncOutcome } = await import('./lib/sync-failure-record.js')
+    settleHookSyncOutcome(opts.dir ?? process.cwd(), results)
+  })
+
+// The mode is a WORKSPACE setting, never cached locally, so this is the only
+// place it changes. The preview it prints first is branch-scoped by necessity
+// (KTD16) — it names the branch it inspected and lists the rest as uninspected.
+wsCmd
+  .command('content-mode [mode]')
+  .description("Show or change what a sync sends: working-tree | committed (previews the cost first)")
+  .option('--workspace <id>', 'Workspace ID (default: from .margins.json)')
+  .option('--dir <path>', 'Repository directory (default: cwd)')
+  .option('--branch <branch>', 'Branch to inspect for the preview (default: current git branch)')
+  .option('--yes', 'Accept the preview without prompting (required when not interactive)')
+  .action(async (mode, opts, cmd) => {
+    // `getConfig` is annotated `Command` (= `Command<[], {}, {}>`), so every
+    // command with a POSITIONAL argument fails to assign to it — the
+    // `processedArgs` tuple is invariant. That is the whole of this file's
+    // pre-existing tsc baseline, and the helper's narrow annotation is the
+    // single root cause (it only ever reads `getOptionValue`/`parent`, both
+    // through `any`). Widening it is a fix for all of those at once and is not
+    // this unit's to make, so the variance is absorbed here instead of adding
+    // a fifteenth instance of a fourteen-error baseline.
+    const cfg = getConfig(cmd as unknown as Command)
+    const { handleContentMode } = await import('./commands/workspace/content-mode.js')
+    await handleContentMode(cfg, { mode, ...opts })
   })
 
 wsCmd

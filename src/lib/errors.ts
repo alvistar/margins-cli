@@ -50,6 +50,16 @@ export class ServerError extends MarginsError {
     public readonly status: number,
     /** Server error code from the `{ error: { code } }` body, when present. */
     public readonly code?: string,
+    /**
+     * The server's own `message`, when the body carried one.
+     *
+     * Deliberately NOT folded into `userMessage`: a generic 5xx must keep
+     * saying "Server error (500). Try again later." rather than leaking an
+     * internal string. Callers that KNOW the route words its refusals for a
+     * human — the content-mode migration's 422 is the case this exists for —
+     * opt in by reading this field. The CLI cannot reconstruct that advice.
+     */
+    public readonly serverMessage?: string,
   ) {
     super(`Server error ${status}`, `Server error (${status}). Try again later.`, 1)
   }
@@ -63,6 +73,15 @@ export class ForbiddenError extends MarginsError {
      * recreating a fresh stash is safe) vs INSUFFICIENT_ROLE (comment-only access
      * to a shared doc — recreating would silently fork it). */
     public readonly code?: string,
+    /**
+     * The server's own `message`, when the body carried one. Opt-in for the
+     * same reason as {@link ServerError.serverMessage}: the content-mode
+     * route's `WORKSPACE_ACTION_MANAGED` 403 names the bound repo, the actor
+     * who can unblock it, and the exact override call — none of which the
+     * client knows, so replacing it with "Access denied" destroys the only
+     * actionable thing in the response.
+     */
+    public readonly serverMessage?: string,
   ) {
     super(`Access denied to ${resource}`, `Access denied to ${resource}.`, 1)
   }

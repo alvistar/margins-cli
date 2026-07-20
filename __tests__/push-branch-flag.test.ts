@@ -4,17 +4,30 @@ import type { ResolvedConfig } from '../src/lib/config.js'
 // Unlike the legacy (skipped) handlePush tests, mock casSync directly so we can
 // assert the branch argument it receives — that is the whole surface of U6.
 const mockCasSync = vi.fn()
-vi.mock('../src/lib/cas-sync.js', () => ({
+// Partial mock: only casSync is replaced. The rest of the module (the preflight
+// fetch, the mode resolution) must run for real — since U4 the branch is
+// resolved BEFORE the preflight, so a fully-stubbed module would hide that.
+vi.mock('../src/lib/cas-sync.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/cas-sync.js')>()),
   casSync: mockCasSync,
 }))
 vi.mock('../src/lib/api-client.js', () => ({
-  createApiClient: () => ({}),
+  createApiClient: () => ({
+    get: vi.fn(async () => ({ files: {}, headSha: null })),
+  }),
 }))
-// gitBranch() shells out to `git rev-parse --abbrev-ref HEAD`; stub it so the
-// fallback assertion is deterministic (not "whatever branch the repo happens to
-// be on") and actually proves the detected value flows to casSync.
+// `currentGitBranch` shells out to `git rev-parse --abbrev-ref HEAD`; stub it so
+// the fallback assertion is deterministic (not "whatever branch the repo happens
+// to be on") and actually proves the detected value flows to casSync.
+//
+// `execFileSync` is the one that answers, and `execSync` throws: the helper used
+// to shell out through `execSync` with a single command STRING, and the two
+// copies of it that existed have since been consolidated onto the argv form. A
+// regression back to the string form would resurrect the duplicate rather than
+// silently passing here.
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(() => 'detected/branch\n'),
+  execFileSync: vi.fn(() => 'detected/branch\n'),
+  execSync: vi.fn(() => { throw new Error('execSync is not the branch-detection path') }),
 }))
 
 function makeConfig(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {

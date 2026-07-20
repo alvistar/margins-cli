@@ -284,6 +284,7 @@ margins workspace push --workspace <github-workspace-id> --dir ./docs
 | `--workspace <id>` | one of | Push to an existing workspace by UUID. Use this for re-pushes and for pushing into GitHub workspaces. |
 | `--dir <path>` | no | Directory to recursively scan for `.md` files. Defaults to the current directory. Hidden files, `node_modules/`, and symlinks are skipped. |
 | `--branch <branch>` | no | Branch to push to. Defaults to the current git branch (`git rev-parse --abbrev-ref HEAD`). Pass it explicitly in CI, where `actions/checkout` may leave a detached HEAD. |
+| `--content-mode <mode>` | no | Assert the workspace's content mode (`working-tree` or `committed`) before pushing. The push is refused if the workspace disagrees, rather than sending content collected under the wrong assumption. See [`workspace content-mode`](#workspace-content-mode). |
 
 **Behavior:**
 - Recursively scans `--dir` for `.md` files (max 50 per push, max 1 MB per file, max 10 MB total)
@@ -305,6 +306,50 @@ margins workspace open                         # opens browser, switch to @local
 git commit -am "Refine spec"                  # then commit for real
 margins workspace sync                         # pull the committed version into main
 ```
+
+#### `workspace content-mode`
+
+Shows or changes **what a sync sends**: the working tree as it sits on disk, or the
+tree of the last git commit.
+
+```sh
+margins workspace content-mode                 # show the current mode
+margins workspace content-mode committed       # switch, after previewing the cost
+margins workspace content-mode working-tree --yes
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--workspace <id>` | no | Workspace ID. Defaults to `workspace_id` from `.margins.json`. |
+| `--dir <path>` | no | Repository directory. Defaults to the current directory. |
+| `--branch <branch>` | no | Branch to inspect when building the preview. Defaults to the current git branch. |
+| `--yes` | no | Accept the preview without prompting. **Required when not interactive** (CI, scripts) — without it, a non-TTY run refuses rather than assuming yes. |
+
+**The two modes.**
+
+- **`working-tree`** (default) sends the files as they are on disk. This is what every
+  sync did before this setting existed, and it stays the default.
+- **`committed`** sends the tree of the last git commit. Uncommitted edits stay on your
+  machine until you commit them — which matters most when a git hook is firing syncs
+  for you, because a half-finished paragraph would otherwise reach reviewers the moment
+  anything triggered a push.
+
+**Switching shows the cost first.** Changing mode changes what reviewers see, so the
+command previews the difference between the two views — how many files would be added,
+removed, or differ — and asks before writing. The write itself is a compare-and-swap
+against the stored value, so if someone else changes the mode while you are looking at
+the preview, your change is refused rather than silently overwriting theirs.
+
+**The server decides on every push.** The mode lives on the workspace, not in local
+config, and travels on the sync preflight. It is never cached locally, so a change takes
+effect on the next push rather than whenever a client happens to refresh.
+
+**Committed mode refuses rather than mislead.** It declines to run where the result
+would be quietly wrong: a repository with no commits, files that exist only in the
+working tree, and a checkout whose line endings genuinely differ from the index.
+
+> Requires a Margins server on **0.52.0 or later**. Against an older server the preflight
+> carries no content mode and the CLI behaves as it always did.
 
 #### `workspace archive-branch`
 
@@ -330,6 +375,36 @@ margins workspace archive-branch --workspace <id> --branch feat/my-feature
 - **GitHub OIDC only.** The server's archive endpoint accepts only a GitHub Actions
   OIDC principal — this command is meant for the sync Action's `delete`-event path,
   not manual/local use. A stored API key is rejected with a 403.
+
+---
+
+### `sync`
+
+Sets a folder up for continuous sync with Margins, in one step: creates the
+workspace (a GitHub overlay, or a local one if the folder has no remote), pushes
+its markdown, and writes `.margins.json` plus a registry entry so the tray app
+picks the folder up within a few seconds.
+
+```sh
+margins sync                                   # the current directory
+margins sync ./docs
+margins sync ./docs --content-mode committed   # non-interactive: state the mode
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--content-mode <mode>` | conditionally | What a sync of this workspace should send: `working-tree` or `committed`. See [`workspace content-mode`](#workspace-content-mode). |
+| `--confirm-full-delete` | no | Allow a push that would delete every file on the branch. Without it, a push that would empty the branch is refused. |
+
+> **Not the same command as `margins workspace sync`.** This one *sets a folder up*;
+> `workspace sync` triggers a server-side git sync on a workspace that already exists.
+
+**When `--content-mode` is required.** The first sync of a **git repository** has to
+settle what a sync sends, and the answer is stored on the server rather than locally —
+so no local copy can go stale after someone migrates the workspace. Interactively the
+command asks. With no TTY or under `--json` there is nobody to ask, so it refuses rather
+than guessing, and the flag is how you state the choice. A non-git folder has no working
+tree/commit distinction to settle, and never needs it.
 
 ---
 
@@ -471,7 +546,7 @@ After reloading your shell, press `Tab` after `margins workspace sync ` to get l
 
 ### `install-hook`
 
-Installs a git hook that triggers `margins workspace push` on every push (or commit).
+Installs a git hook that syncs to Margins on every push (or commit).
 The hook is **non-blocking**: sync runs in the background and `git push` always succeeds
 regardless of sync outcome. CLI logs a warning on failure.
 
@@ -486,9 +561,53 @@ margins install-hook --force      # overwrite an existing hook without prompting
 | `--on <trigger>` | no | `push` (default) or `commit`. `push` runs the sync when you `git push`; `commit` runs it on every commit. |
 | `--force` | no | Overwrite an existing hook file without prompting. |
 
-**Prerequisite — workspace identification.** The hook script calls `margins workspace push`
-with no arguments, which reads `workspace_id` from `.margins.json` in the repo root. Before
-installing the hook, register the workspace once:
+**The two triggers do different things.**
+
+- `--on push` syncs **what you pushed**. Git tells the hook, on stdin, exactly which
+  commits are going to which remote branches; the hook syncs those. Push a branch you
+  are not standing on, or push `local-name:remote-name`, and the sync follows git —
+  it lands on `remote-name`, not on your current checkout. A multi-branch push syncs
+  each branch independently: one branch failing does not stop the rest. Tag pushes and
+  branch deletions sync nothing.
+- `--on commit` syncs **the commit you just made**, resolved to an immutable object id
+  before the background sync starts — so committing again straight away cannot make the
+  first sync send the second commit.
+
+Whether a sync sends the commit's tree or the working tree is the **workspace's**
+content mode, settled at each push. The hook does not decide it and does not carry it.
+
+> **A pre-push hook runs before the remote accepts the push.** If the remote rejects it
+> (non-fast-forward, a hook on the server, a protected branch), Margins is left holding
+> content the remote never took. The hook mirrors what you intended locally; it cannot
+> speak for the remote.
+
+**When a background sync fails, it is not silent.** The hook exits 0 so `git push`
+is never blocked, which means a refusal — an expired key, an unreachable server,
+a workspace someone switched to `committed` mode — has no exit code and no output
+anyone sees. So the failure is recorded in the CLI's own data directory (beside
+`repos.json`, honouring `MARGINS_DATA_DIR`; **never** inside your repository, where
+it would show up in `git status`), and the next `margins` command you run reports
+it once and clears it:
+
+```
+margins: an earlier background sync did not reach Margins.
+  /Users/you/project — main — <why it failed> (2026-07-19T12:00:00.000Z)
+  Git was not blocked at the time, so nothing said so. Fix the cause and push again.
+```
+
+Only the latest failure per project is kept — it is replaced, not appended.
+
+In CI there is no next command and no surviving filesystem, so no record is
+written: `margins workspace hook-sync` **exits non-zero** and names the cause in
+the job log instead. A CI runner is detected from `CI` / `GITHUB_ACTIONS` /
+`GITLAB_CI` / `BUILDKITE` / `CIRCLECI` / `TF_BUILD` (`CI=false` counts as *not* CI).
+
+Hooks are installed via `git rev-parse --git-path hooks`, so linked worktrees
+(`git worktree add`) and submodules — where `.git` is a *file*, not a directory —
+install into the shared hooks directory rather than failing.
+
+**Prerequisite — workspace identification.** The hook reads `workspace_id` from
+`.margins.json` in the repo root. Before installing the hook, register the workspace once:
 
 ```sh
 margins workspace push --workspace <workspace-id>
@@ -506,9 +625,18 @@ fail silently on every push until you create it.
 #!/bin/sh
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
-margins workspace push &
+refs=$(cat)
+margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 ```
+
+`refs=$(cat)` runs *before* the `&` deliberately: git closes the hook's stdin the
+moment the hook exits, so a reader started in the background would find an empty pipe.
+The post-commit hook resolves `git rev-parse HEAD` in the same position and for the
+same reason.
+
+`margins workspace hook-sync` is an internal command invoked by the installed hooks.
+It is not part of the CLI's user-facing surface — use `margins workspace push` by hand.
 
 **Removing the hook:** delete `.git/hooks/pre-push` (or `post-commit`) by hand. There is
 no `uninstall-hook` command yet.

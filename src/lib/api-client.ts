@@ -20,14 +20,26 @@ const REFRESH_BUFFER_MS = 30_000
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * Extra request headers a caller may attach to a single write. Used for the
+ * sync content-mode declaration (`X-Margins-Content-Mode`), which the server
+ * reads on BOTH write routes — the manifest POST and every blob PUT. It travels
+ * as a header rather than a body field because the blob PUT sends raw bytes with
+ * no JSON envelope, and because two sources of the same truth would drift.
+ *
+ * These are merged BEFORE the client's own headers, so a caller can never
+ * clobber Authorization / Content-Type / X-Margins-Client.
+ */
+export type ExtraHeaders = Record<string, string>
+
 export interface ApiClient {
   get(path: string, query?: Record<string, string>): Promise<unknown>
-  post(path: string, body?: unknown): Promise<unknown>
+  post(path: string, body?: unknown, headers?: ExtraHeaders): Promise<unknown>
   put(path: string, body?: unknown): Promise<unknown>
   patch(path: string, body?: unknown): Promise<unknown>
   delete(path: string): Promise<unknown>
   /** Upload raw binary data (for CAS blob uploads). Returns parsed JSON response. */
-  putRaw(path: string, data: Buffer, contentType: string): Promise<unknown>
+  putRaw(path: string, data: Buffer, contentType: string, headers?: ExtraHeaders): Promise<unknown>
 }
 
 // ─── Token refresh ────────────────────────────────────────────────────────────
@@ -223,23 +235,36 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     return { code, message, conflicts, head }
   }
 
-  /** Extract the server error code from an error response body, if any. */
-  async function readErrorCode(response: Response): Promise<string | undefined> {
-    return (await parseErrorBody(response))?.code
+  /**
+   * Extract the server error code AND message from an error response body.
+   *
+   * The body can only be read once, so code and message must come out of the
+   * SAME parse — reading the code and discarding the message is how the
+   * content-mode route's `WORKSPACE_ACTION_MANAGED` advice (the bound repo, the
+   * override call) used to be thrown away before any caller could see it.
+   */
+  async function readError(
+    response: Response,
+  ): Promise<{ code?: string; message?: string }> {
+    const body = await parseErrorBody(response)
+    return { code: body?.code, message: body?.message }
   }
   /** Map an error response status to the matching typed error. */
   async function throwForStatus(response: Response, path: string): Promise<void> {
     if (response.status === 403) {
       // Capture the error code (when the body carries one) — mirrors the 404
       // branch below. The stash update flow branches on NOT_A_MEMBER vs
-      // INSUFFICIENT_ROLE to decide recreate-vs-error.
-      throw new ForbiddenError(path, await readErrorCode(response))
+      // INSUFFICIENT_ROLE to decide recreate-vs-error. The message rides along
+      // for routes that word their refusal for a human (content-mode's
+      // WORKSPACE_ACTION_MANAGED); `userMessage` is unchanged.
+      const body = await readError(response)
+      throw new ForbiddenError(path, body.code, body.message)
     }
     if (response.status === 404) {
       // Capture the error code (if the 404 carries a JSON body) so callers can
       // tell a real "resource not found" from a route that doesn't exist on an
       // older server (no JSON body → no code → feature-detect upgrade needed).
-      throw new NotFoundError(path, await readErrorCode(response))
+      throw new NotFoundError(path, (await readError(response)).code)
     }
     if (response.status === 409) {
       // Read the body to tell a server-side merge conflict (SYNC_MERGE_CONFLICT,
@@ -258,7 +283,10 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
       // from the stash update path) so callers can show an actionable line.
       throw new ConflictError(body?.message ?? `Conflict while calling ${path}`, body?.code)
     }
-    if (response.status >= 400) throw new ServerError(response.status, await readErrorCode(response))
+    if (response.status >= 400) {
+      const body = await readError(response)
+      throw new ServerError(response.status, body.code, body.message)
+    }
   }
 
   /**
@@ -329,6 +357,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     path: string,
     query?: Record<string, string>,
     body?: unknown,
+    extraHeaders?: ExtraHeaders,
     attempt = 1,
   ): Promise<unknown> {
     const url = buildUrl(path, query)
@@ -342,6 +371,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
         const sent = await fetchWithTimeout(url, {
           method,
           headers: {
+            ...(extraHeaders ?? {}),
             Authorization: `Bearer ${bearer}`,
             Accept: 'application/json',
             'X-Margins-Client': CLIENT_HEADER,
@@ -358,7 +388,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
         const isIdempotent = method === 'GET' || method === 'DELETE'
         if (isIdempotent && attempt < 2) {
           log('Timeout — retrying once...')
-          return doFetch(method, path, query, body, attempt + 1)
+          return doFetch(method, path, query, body, extraHeaders, attempt + 1)
         }
       }
       throw err
@@ -378,6 +408,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     path: string,
     data: Buffer,
     contentType: string,
+    extraHeaders?: ExtraHeaders,
   ): Promise<unknown> {
     const url = buildUrl(path)
 
@@ -387,6 +418,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
       const sent = await fetchWithTimeout(url, {
         method,
         headers: {
+          ...(extraHeaders ?? {}),
           Authorization: `Bearer ${bearer}`,
           Accept: 'application/json',
           'X-Margins-Client': CLIENT_HEADER,
@@ -404,10 +436,11 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
 
   return {
     get: (path, query) => doFetch('GET', path, query),
-    post: (path, body) => doFetch('POST', path, undefined, body),
+    post: (path, body, headers) => doFetch('POST', path, undefined, body, headers),
     put: (path, body) => doFetch('PUT', path, undefined, body),
     patch: (path, body) => doFetch('PATCH', path, undefined, body),
     delete: (path) => doFetch('DELETE', path),
-    putRaw: (path, data, contentType) => doFetchRaw('PUT', path, data, contentType),
+    putRaw: (path, data, contentType, headers) =>
+      doFetchRaw('PUT', path, data, contentType, headers),
   }
 }
