@@ -16,10 +16,14 @@ preflight carries no content mode, and the CLI behaves exactly as 0.16.0 did.
     shows what the switch will change *before* changing anything: how many files
     would be added, removed, or differ between the two views. The write is a
     compare-and-swap, so two people racing cannot both believe they won.
-  - **`--content-mode` on `sync` and `workspace push`** — declare which mode a push
-    collected under. The server refuses a push that declares nothing rather than
-    guessing, so an old CLI can never silently send a working tree to a workspace
-    that asked for commits.
+  - **`--content-mode` on `margins sync`** — settles the mode when a git repository is
+    first set up for sync. Interactively the command asks; with no TTY or under
+    `--json` it refuses rather than guessing, and the flag is how a script states the
+    choice. (Distinct from `margins workspace sync`, which does not take the flag.)
+  - **`--content-mode` on `workspace push`** — asserts the mode a push was collected
+    under, and the push is refused if the workspace disagrees. The server likewise
+    refuses a push that declares nothing rather than guessing, so an old CLI can never
+    silently send a working tree to a workspace that asked for commits.
   - **Mode comes from the server on every push.** It is read from the sync preflight
     and never cached locally, so flipping a workspace takes effect on your next push
     instead of whenever your client happens to refresh.
