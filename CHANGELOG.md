@@ -2,6 +2,58 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.17.0] - 2026-07-20
+
+Requires a Margins server running 0.52.0 or later. Against an older server the
+preflight carries no content mode, and the CLI behaves exactly as 0.16.0 did.
+
+### Added
+- **Committed content mode — sync the last commit instead of the working tree.**
+  A workspace can now be set so a sync sends the tree of its last git commit rather
+  than whatever is on disk. The file you are mid-sentence in stays yours until you
+  commit it, which matters most for the background sync a post-commit hook fires.
+  - **`margins workspace content-mode`** — read or change a workspace's mode. It
+    shows what the switch will change *before* changing anything: how many files
+    would be added, removed, or differ between the two views. The write is a
+    compare-and-swap, so two people racing cannot both believe they won.
+  - **`--content-mode` on `sync` and `workspace push`** — declare which mode a push
+    collected under. The server refuses a push that declares nothing rather than
+    guessing, so an old CLI can never silently send a working tree to a workspace
+    that asked for commits.
+  - **Mode comes from the server on every push.** It is read from the sync preflight
+    and never cached locally, so flipping a workspace takes effect on your next push
+    instead of whenever your client happens to refresh.
+- **Git provenance travels with a committed-mode push** — the git commit the tree was
+  collected from is recorded alongside the content hash, as provenance only. Content
+  hashes and git hashes stay in separate spaces.
+- **A failed background sync is findable.** A sync fired by a git hook writes a
+  failure record instead of dying silently, and the next foreground command surfaces
+  it. Records are per-process and survive concurrent writers.
+
+### Changed
+- **Post-commit hook syncs the commit git actually named**, not whatever the working
+  tree happens to be at the moment the hook runs. Previously a fast follow-up commit
+  could race the hook and sync the wrong tree.
+
+### Fixed
+- **Committed mode refuses where it would quietly mislead** rather than sending a
+  misleading tree: a repo with no commits, files that exist only in the working tree,
+  and a checkout whose line endings genuinely differ from the index. That last check
+  measures real divergence via `git ls-files --eol`; an earlier version keyed on
+  `core.autocrlf`, which is a global setting on many machines and would have refused
+  committed mode on every repo while proving nothing about the files.
+- **Refusals apply correctly when syncing a subdirectory.** The line-ending and
+  git-LFS checks ran from the repository root against sync-directory-relative paths,
+  so they matched nothing and passed unconditionally — including on a real LFS
+  pointer stub, which was collected as content.
+- **A folder with a GitHub remote requests client sync**, so a credentialless CAS push
+  is used instead of a server-side clone.
+- **Server error messages survive a 403.** The CLI discarded the server's explanation
+  and printed a generic "Access denied", hiding guidance that names the bound repo and
+  how to proceed.
+- **Large file lists no longer overflow the argument limit.** Path lists passed to git
+  are chunked, so a sync of a big tree cannot fail with `E2BIG`.
+
 ## [0.16.0] - 2026-07-10
 
 ### Added
