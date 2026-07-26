@@ -32,7 +32,20 @@ export async function handleCreate(cfg: ResolvedConfig, repoUrl: string): Promis
     workspace = 'workspace' in result ? result.workspace : result
   } catch (err) {
     if (err instanceof ConflictError) {
-      throw new ConflictError(`Workspace already exists for ${repoUrl}`)
+      // Keep the server's own message and its code.
+      //
+      // This used to rethrow a bare `Workspace already exists for <url>`, which
+      // dropped both. Two costs. The 409 is now two different causes —
+      // SLUG_CONFLICT ("a workspace exists and you are not a member; ask an
+      // editor for an invite link") and SYNC_MODE_CONFLICT ("it exists and uses
+      // a different sync mode") — and a generic string collapses them into one
+      // indistinguishable failure with two different fixes. And SLUG_CONFLICT's
+      // message is written by the server for exactly this reader; replacing it
+      // throws away the only thing that tells them what to do next.
+      //
+      // The repo URL is still useful context in a multi-repo session, so it is
+      // added AROUND the server's text rather than instead of it.
+      throw new ConflictError(`${err.userMessage} (${repoUrl})`, err.code)
     }
     throw err
   }
