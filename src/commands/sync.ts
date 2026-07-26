@@ -176,8 +176,29 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         branch = '@local'
         syncMode = 'client'
       } catch (err) {
+        // A REFUSAL, not a "you already have this". Margins 0.60.0 removed
+        // auto-join: a caller who is not a member of the workspace holding this
+        // repo's slug is refused rather than silently granted `comment` on it.
+        //
+        // Stop here. The lookup below is backed by the membership-scoped
+        // workspace listing, so a non-member matches nothing by construction and
+        // control used to fall through to `createLocalWorkspace` — pushing this
+        // repo's markdown into a private workspace nobody asked for and pointing
+        // `.margins.json` at it. Under `--json` even the warning was suppressed,
+        // so CI saw a successful sync into the wrong place.
+        //
+        // The server words this refusal for a human (it names the invite link),
+        // so surface it verbatim — same opt-in as `mapSetModeError` in
+        // workspace/content-mode.ts. Throwing is also what makes it visible in
+        // JSON mode: the top-level handler in index.ts renders any thrown error
+        // through `formatError(err, json)` and exits non-zero.
+        if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
+          throw new ValidationError(err.userMessage)
+        }
         if (err instanceof ConflictError) {
-          // 409: workspace exists, find it
+          // Any OTHER 409 — including a codeless one from an older server, where
+          // assuming a refusal would send the user to ask for an invite they do
+          // not need. Unchanged: the workspace probably does exist for them.
           const found = await findExistingWorkspace(client, folderName)
           if (found) {
             workspaceId = found.id
