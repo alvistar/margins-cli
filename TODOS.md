@@ -4,6 +4,46 @@ Deferred work for `margins-cli`, newest first. Same convention as the server
 repo's `TODOS.md`: each entry says what the gap is, why it was not fixed at the
 time, and what the real fix looks like.
 
+## The publish gate is the only test lane, and it runs a suite with a known flake (0.18.0, 2026-07-26)
+
+**Priority:** P2
+
+There is no PR test workflow in this repo. `release.yaml` is the only workflow,
+it fires on a push to `main` that touches `package.json`, and the suite runs
+inside it via `prepublishOnly`. So the first time the tests run on a machine
+that is not a developer's laptop is *during the release*, and a failure there
+does not fail a check — it blocks the publish.
+
+That has already happened once. The 0.17.0 release failed on
+`__tests__/sync-failure-record.test.ts:646` on 2026-07-20 and succeeded on a
+re-run 29 minutes later, with no code change in between.
+
+**A second one was observed while shipping 0.18.0.** In five full-suite runs,
+`__tests__/install-hook.test.ts` failed once at the tag-push case (~line 300),
+and passed 5/5 when that file was run alone. The shape of the test explains it:
+it waits for the call *count* to increase (`fake.waitFor(afterBranchPush + 1)`)
+and then asserts on `calls[calls.length - 1]`, so if the branch push's hook
+invocation is still in flight the last call is the branch's, not the tag's.
+Nothing pins the assertion to the call it means. The same "wait for N, take the
+last" pattern appears in the neighbouring branch-deletion and multi-ref tests.
+
+**Why it was not fixed in 0.18.0.** That PR is about 409 refusal handling and
+touches none of these files. Rewriting the synchronisation of a test file the
+PR does not otherwise change would put unreviewed work in front of a reviewer
+who signed up for something else, and the flake predates it.
+
+**The fix, in two parts:**
+1. Make the waits content-addressed — wait for a call whose `--refs` contains
+   the ref under test, instead of waiting for a count and taking the last call.
+2. Add a PR test workflow, so the suite runs on a fresh Linux runner before
+   merge rather than during publish. Both known flakes were found by a
+   non-laptop environment; neither had a chance to be found earlier, because
+   no such environment ran until the release did.
+
+Until part 2 exists, treat a red release run as "re-run it once and read the
+failure" rather than as a broken build — and do not assume a green local suite
+predicts a green publish.
+
 ## `margins-sync-action` pins the CLI version, so 0.18.0 reaches no workflow until the pin moves (0.18.0, 2026-07-26)
 
 **Priority:** P1
