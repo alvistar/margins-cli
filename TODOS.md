@@ -20,12 +20,29 @@ re-run 29 minutes later, with no code change in between.
 
 **A second one was observed while shipping 0.18.0.** In five full-suite runs,
 `__tests__/install-hook.test.ts` failed once at the tag-push case (~line 300),
-and passed 5/5 when that file was run alone. The shape of the test explains it:
-it waits for the call *count* to increase (`fake.waitFor(afterBranchPush + 1)`)
-and then asserts on `calls[calls.length - 1]`, so if the branch push's hook
-invocation is still in flight the last call is the branch's, not the tag's.
-Nothing pins the assertion to the call it means. The same "wait for N, take the
-last" pattern appears in the neighbouring branch-deletion and multi-ref tests.
+and passed 5/5 when that file was run alone.
+
+The cause is not a race — it is an ordering bug in the harness. `useFakeMargins`
+records each fake CLI invocation as a file named
+`` `${process.pid}-${Date.now()}-${random}.json` `` (line 116) and reads them back
+with `fs.readdirSync(logDir).sort()` (line 127). That sort is **lexicographic,
+with the pid first**, and each hook invocation is a separate process — so the
+ordering of `calls()` has no reliable relationship to the order the calls were
+made. A pid that crosses a power of ten (`9999` then `10001`) or a lower pid
+allocated later (`50210` then `4312`) silently inverts it:
+
+```
+chronological 9999 → 10001   sorted last = 9999   ← the FIRST call
+chronological 50210 → 4312   sorted last = 50210  ← the FIRST call
+```
+
+The tests then wait for the call *count* to increase
+(`fake.waitFor(afterBranchPush + 1)`, which returns as soon as `c.length >= n`,
+line 134) and assert on `calls[calls.length - 1]` as though it meant "the newest
+call". It means "the filename that sorted last". So the tag-push case can read
+the *branch* push's call and fail. The same "wait for N, take the last" pattern
+appears in the neighbouring branch-deletion and multi-ref tests, so the defect is
+not confined to the case that happened to fail.
 
 **Why it was not fixed in 0.18.0.** That PR is about 409 refusal handling and
 touches none of these files. Rewriting the synchronisation of a test file the
@@ -35,6 +52,9 @@ who signed up for something else, and the flake predates it.
 **The fix, in two parts:**
 1. Make the waits content-addressed — wait for a call whose `--refs` contains
    the ref under test, instead of waiting for a count and taking the last call.
+   Sorting the log filenames correctly (timestamp first, zero-padded) would make
+   the flake rarer without fixing it: "the newest call" is still the wrong thing
+   to assert on when the test means "the call for this ref".
 2. Add a PR test workflow, so the suite runs on a fresh Linux runner before
    merge rather than during publish. Both known flakes were found by a
    non-laptop environment; neither had a chance to be found earlier, because
