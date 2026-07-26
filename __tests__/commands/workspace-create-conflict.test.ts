@@ -97,6 +97,19 @@ describe('margins workspace create — 409 handling', () => {
     expect(modeText).toMatch(/sync mode/i)
   })
 
+  it('a coded 409 with NO message keeps our own wording, not the transport placeholder', async () => {
+    // The reason `serverMessage` exists. `userMessage` falls back to
+    // `Conflict while calling <path>`, so reading it here printed an internal
+    // route string where the guidance belongs — strictly worse than the generic
+    // line it replaced. Guarded at only one of three call sites until now.
+    stub({ error: 'SLUG_CONFLICT' })
+    const err = await createAndCatch()
+    const text = (err as { userMessage?: string }).userMessage ?? ''
+
+    expect(text, 'never surface the transport placeholder').not.toMatch(/Conflict while calling/)
+    expect(text).toContain(REPO_URL)
+  })
+
   it('a codeless 409 still fails, with no code to claim', async () => {
     stub({ message: 'already exists' })
     const err = await createAndCatch()

@@ -36,7 +36,17 @@ export function formatError(err: unknown, json: boolean): string {
     const code = err instanceof MarginsError
       ? err.constructor.name
       : 'UnknownError'
-    return JSON.stringify({ error: message, code })
+    // `code` is the CLI's error CLASS, which several unrelated failures share —
+    // a refusal and a cancelled run are both `ValidationError`. Machine callers
+    // need the server's structural code to tell "you need an invite" from "bad
+    // flag", so surface it as an ADDITIONAL field rather than changing `code`,
+    // which existing consumers already key on.
+    const serverCode = err instanceof MarginsError
+      ? (err as { code?: string }).code
+      : undefined
+    return JSON.stringify(serverCode
+      ? { error: message, code, serverCode }
+      : { error: message, code })
   }
 
   if (err instanceof MarginsError) return `Error: ${err.userMessage}`

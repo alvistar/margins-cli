@@ -226,3 +226,17 @@ describe('margins install — the SLUG_CONFLICT narrowing is load-bearing', () =
   })
 })
 
+describe('margins install — the serverMessage fallback', () => {
+  it('a coded 409 with NO message uses our wording, not the transport placeholder', async () => {
+    stubTransport(() => new Response(JSON.stringify({ error: 'SLUG_CONFLICT' }), { status: 409 }))
+    const lines = captureStdout()
+    const { handleInstall } = await import('../../src/commands/install.js')
+
+    await handleInstall(installCfg(), 'acme/one', { yes: true })
+
+    const out = lines.join('\n')
+    expect(out, 'never surface the transport placeholder').not.toMatch(/Conflict while calling/)
+    expect(out).toMatch(/invite link/i)
+  })
+})
+

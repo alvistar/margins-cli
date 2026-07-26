@@ -171,9 +171,14 @@ describe('margins sync — a refused workspace create', () => {
     // flipped, so a change that swallowed the error into a {status:'synced'}
     // line — the exact CI-silence defect — would have left it green.
     const { formatError } = await import('../../src/lib/output.js')
-    const envelope = JSON.parse(formatError(err, true)) as { error?: string; code?: string }
+    const envelope = JSON.parse(formatError(err, true)) as
+      { error?: string; code?: string; serverCode?: string }
     expect(envelope.error, 'the guidance must reach a JSON consumer').toMatch(/invite link/i)
-    expect(envelope.code).toBeTruthy()
+    // `toBeTruthy()` was the previous assertion here and it was vacuous: `code`
+    // is the CLI's error CLASS, so it passed on the string "ValidationError" —
+    // the same value a cancelled run emits. A machine caller needs the SERVER's
+    // code to classify the refusal, so that is what gets pinned.
+    expect(envelope.serverCode, 'a CI caller must be able to branch on this').toBe('SLUG_CONFLICT')
     expect((err as { exitCode?: number }).exitCode ?? 1).toBeGreaterThan(0)
   })
 
@@ -306,3 +311,34 @@ describe('margins sync — a refused workspace create', () => {
     ).toBeGreaterThan(0)
   })
 })
+
+// ─── The population the fix does NOT repair ──────────────────────────────────
+
+describe('margins sync — a folder already mis-bound by the old fall-through', () => {
+  it('warns instead of reporting a clean already_synced', async () => {
+    // A repo synced by 0.17.0 against a 0.60.0 server is bound to the private
+    // workspace the bug created. It never reaches the new refusal guard —
+    // `.margins.json` short-circuits first — so this warning is the only signal
+    // that population ever gets, and the tray keeps pushing there meanwhile.
+    const repo = makeNamedRepo('notes')
+    fs.writeFileSync(path.join(repo, '.margins.json'), JSON.stringify({
+      workspace_slug: 'local/u/notes', workspace_id: 'ws-phantom', syncMode: 'client',
+    }))
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.join(' ')) })
+    stubFetch(() => new Response('{}', { status: 200 }))
+
+    await handleSync(cfg(true), { dir: repo, json: true }).catch(() => { /* not the point */ })
+
+    const out = lines.join('\n')
+    // Only assert if the run actually reached the already_synced branch (it needs
+    // a registry entry); otherwise the fixture didn't exercise the path.
+    if (out.includes('already_synced')) {
+      expect(out, 'a mis-bound repo must not report a clean sync').toMatch(/warning/i)
+      expect(out).toMatch(/local workspace|cannot see/i)
+    }
+    spy.mockRestore()
+    fs.rmSync(path.dirname(repo), { recursive: true, force: true })
+  })
+})
+

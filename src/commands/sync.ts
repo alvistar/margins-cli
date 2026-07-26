@@ -114,14 +114,32 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     if (existing) {
       // Fully synced — print status and exit
       const url = `${cfg.serverUrl.replace(/\/$/, '')}/w/${marginsJson.workspace_slug}`
+
+      // A folder with a GitHub remote bound to a repo-less `local/` workspace is
+      // the fingerprint of the pre-0.18.0 fall-through: the server refused the
+      // create, the CLI quietly made a private workspace instead, and the tray
+      // has been pushing there ever since. Nothing below re-runs the create, so
+      // this is the only place that population ever gets told. Warn in BOTH
+      // modes — CI is exactly where it went unnoticed.
+      const misbound = detectGitRemote(dir).type === 'github'
+        && marginsJson.workspace_slug?.startsWith('local/')
+      const warning = misbound
+        ? `This folder has a GitHub remote but is bound to ${marginsJson.workspace_slug}, a local `
+          + 'workspace. That is what a pre-0.18.0 sync did when the server refused access to the '
+          + 'repo\'s workspace — your notes are going somewhere your team cannot see. Get an invite '
+          + 'link to the repo workspace, then delete .margins.json and re-run.'
+        : undefined
+
       if (isJson) {
         console.log(formatJson({
           status: 'already_synced',
           workspaceId: marginsJson.workspace_id,
           slug: marginsJson.workspace_slug,
           url,
+          ...(warning ? { warning } : {}),
         }))
       } else {
+        if (warning) p.log.warn(warning)
         p.log.info(`Already synced: ${marginsJson.workspace_slug}`)
         p.log.info(url)
       }
@@ -196,10 +214,16 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
           // `serverMessage` so a SLUG_CONFLICT whose body carried no message
           // produces our own sentence rather than the transport placeholder.
-          throw new ValidationError(
+          // ConflictError, not ValidationError: rethrowing as a validation
+          // error discards `code`, and `formatError` then labels the refusal
+          // `ValidationError` — the same envelope a cancelled run produces. A CI
+          // caller could only tell them apart by regexing prose the SERVER owns.
+          throw new ConflictError(
             err.serverMessage
               ?? 'A workspace already exists for this repository and you are not a member of it. '
                  + 'Ask an editor to send you an invite link.',
+            err.code,
+            err.serverMessage,
           )
         }
         if (err instanceof ConflictError) {
@@ -207,6 +231,17 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
           // assuming a refusal would send the user to ask for an invite they do
           // not need. Unchanged: the workspace probably does exist for them.
           const found = await findWorkspaceForRepo(client, `${remote.owner}/${remote.repo}`)
+          if (found && found.syncMode && found.syncMode !== 'client') {
+            // `margins install` applies this guard at the other call site of the
+            // same helper; moving to the shared lookup without it meant a MEMBER
+            // of a server-sync workspace had `syncMode: 'client'` forced into
+            // their .margins.json, and the CAS push then failed 422
+            // PUSH_SYNC_NOT_SUPPORTED with nothing explaining why.
+            throw new ValidationError(
+              `Workspace ${found.slug} uses syncMode "${found.syncMode}" — `
+              + 'migrate it to client sync before syncing this folder.',
+            )
+          }
           if (found) {
             workspaceId = found.id
             slug = found.slug
@@ -404,7 +439,7 @@ async function createLocalWorkspace(
 async function findWorkspaceForRepo(
   client: ReturnType<typeof createApiClient>,
   fullName: string,
-): Promise<{ id: string; slug: string } | null> {
+): Promise<WorkspaceListItem | null> {
   const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
   return findWorkspaceByRepoUrl(workspaces, fullName) ?? null
 }
