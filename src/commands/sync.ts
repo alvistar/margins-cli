@@ -16,6 +16,7 @@ import { createApiClient } from '../lib/api-client.js'
 import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
+import { findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import {
   casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
@@ -199,7 +200,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
           // Any OTHER 409 — including a codeless one from an older server, where
           // assuming a refusal would send the user to ask for an invite they do
           // not need. Unchanged: the workspace probably does exist for them.
-          const found = await findExistingWorkspace(client, folderName)
+          const found = await findWorkspaceForRepo(client, `${remote.owner}/${remote.repo}`)
           if (found) {
             workspaceId = found.id
             slug = found.slug
@@ -374,7 +375,7 @@ async function createLocalWorkspace(
     return result.workspace
   } catch (err) {
     if (err instanceof ConflictError) {
-      const found = await findExistingWorkspace(client, projectName)
+      const found = await findLocalWorkspaceByName(client, projectName)
       if (found) return found
       throw new Error(`Workspace '${projectName}' already exists but could not find it in your list.`)
     }
@@ -382,12 +383,41 @@ async function createLocalWorkspace(
   }
 }
 
-async function findExistingWorkspace(
+/**
+ * Find the workspace for a GitHub repo, by repo identity.
+ *
+ * This used to match the *folder* basename against the tail of every slug
+ * (`slug.endsWith(name)`), so a repo checked out into `docs/` bound to
+ * `gh/someone/internal-docs` — a different owner, a different repo — and pushed
+ * to it. The folder name was only ever a proxy for the repo, and a bad one: the
+ * caller already knows `owner/repo`.
+ *
+ * `findWorkspaceByRepoUrl` in lib/audit-checks.ts already does this correctly for
+ * `margins install`; reuse it rather than keeping a second, weaker rule here.
+ */
+async function findWorkspaceForRepo(
   client: ReturnType<typeof createApiClient>,
-  name: string,
+  fullName: string,
+): Promise<{ id: string; slug: string } | null> {
+  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  return findWorkspaceByRepoUrl(workspaces, fullName) ?? null
+}
+
+/**
+ * Find a LOCAL workspace by its project name. A local workspace has no repo to
+ * match on, so the slug is all there is — but compare its final segment
+ * **exactly** rather than by suffix, so `myproject` cannot match
+ * `local/u/other-myproject`.
+ */
+async function findLocalWorkspaceByName(
+  client: ReturnType<typeof createApiClient>,
+  projectName: string,
 ): Promise<{ id: string; slug: string } | null> {
   const workspaces = await client.get('/api/workspaces') as Array<{ id: string; slug: string }>
-  const nameLower = name.toLowerCase()
-  const match = workspaces.find(w => w.slug.toLowerCase().endsWith(nameLower))
+  const want = projectName.toLowerCase()
+  const match = workspaces.find((w) => {
+    const segments = w.slug.toLowerCase().split('/')
+    return segments[segments.length - 1] === want
+  })
   return match ?? null
 }
