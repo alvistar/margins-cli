@@ -45,7 +45,14 @@ export async function handleCreate(cfg: ResolvedConfig, repoUrl: string): Promis
       //
       // The repo URL is still useful context in a multi-repo session, so it is
       // added AROUND the server's text rather than instead of it.
-      throw new ConflictError(`${err.userMessage} (${repoUrl})`, err.code)
+      // `serverMessage`, not `userMessage`: the latter is a transport placeholder
+      // (`Conflict while calling <path>`) when the body carried no message, and
+      // wrapping that would be strictly worse than the generic line it replaced.
+      throw new ConflictError(
+        err.serverMessage ? `${err.serverMessage} (${repoUrl})` : `Workspace already exists for ${repoUrl}`,
+        err.code,
+        err.serverMessage,
+      )
     }
     throw err
   }

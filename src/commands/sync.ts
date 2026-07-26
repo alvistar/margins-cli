@@ -194,7 +194,13 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         // JSON mode: the top-level handler in index.ts renders any thrown error
         // through `formatError(err, json)` and exits non-zero.
         if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
-          throw new ValidationError(err.userMessage)
+          // `serverMessage` so a SLUG_CONFLICT whose body carried no message
+          // produces our own sentence rather than the transport placeholder.
+          throw new ValidationError(
+            err.serverMessage
+              ?? 'A workspace already exists for this repository and you are not a member of it. '
+                 + 'Ask an editor to send you an invite link.',
+          )
         }
         if (err instanceof ConflictError) {
           // Any OTHER 409 — including a codeless one from an older server, where
@@ -413,11 +419,18 @@ async function findLocalWorkspaceByName(
   client: ReturnType<typeof createApiClient>,
   projectName: string,
 ): Promise<{ id: string; slug: string } | null> {
-  const workspaces = await client.get('/api/workspaces') as Array<{ id: string; slug: string }>
+  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
   const want = projectName.toLowerCase()
   const match = workspaces.find((w) => {
+    // `repoUrl === null` is the discriminator, not the slug prefix: a local
+    // workspace is exactly one with no repo behind it. Without this, a folder
+    // named `docs` whose local create 409s would match `gh/acme/docs` — whichever
+    // the server happened to list first — and push into the team's GitHub
+    // workspace. That is the same "content lands somewhere nobody intended"
+    // harm this change exists to remove, so the narrowing has to cover it too.
+    if (w.repoUrl) return false
     const segments = w.slug.toLowerCase().split('/')
     return segments[segments.length - 1] === want
   })
-  return match ?? null
+  return match ? { id: match.id, slug: match.slug } : null
 }

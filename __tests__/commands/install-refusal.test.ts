@@ -175,3 +175,54 @@ describe('margins install — refusal outcome (drives the real pipeline)', () =>
     expect(out, 'a refusal is not an install failure').not.toMatch(/"status"\s*:\s*"failed"/)
   })
 })
+
+// ─── The narrowing itself, and the exit code ─────────────────────────────────
+
+describe('margins install — the SLUG_CONFLICT narrowing is load-bearing', () => {
+  it('a DIFFERENT 409 on the create is not swallowed as skipped', async () => {
+    // Without this, widening the catch to a bare `err instanceof ConflictError`
+    // leaves the whole suite green while any create-time 409 — a binding
+    // conflict, a codeless one — is reported as a per-repo skip with exit 0.
+    // CI would then go green having installed nothing.
+    stubTransport(() => new Response(JSON.stringify(BINDING_CONFLICT_BODY), { status: 409 }))
+    captureStdout()
+    const { handleInstall } = await import('../../src/commands/install.js')
+
+    // Single-repo mode has no per-repo continuation, so a non-SLUG_CONFLICT
+    // error must reach the caller rather than becoming a skip.
+    await expect(handleInstall(installCfg(), 'acme/one', { yes: true })).rejects.toThrow()
+  })
+
+  it('a codeless 409 on the create is not swallowed either', async () => {
+    stubTransport(() => new Response(JSON.stringify({ message: 'already exists' }), { status: 409 }))
+    captureStdout()
+    const { handleInstall } = await import('../../src/commands/install.js')
+
+    await expect(handleInstall(installCfg(), 'acme/one', { yes: true })).rejects.toThrow()
+  })
+
+  it('a refusal leaves the exit code clean — a skip is not a failure', async () => {
+    // Pinned deliberately. Turning the refusal from an uncaught error into a
+    // `skipped` also flipped the process exit code from 1 to 0, which is
+    // consistent with every other skip this command already emits (over-cap,
+    // PR-creation blocked) but was not an explicit decision until now. The
+    // assertion exists so a later change to either side is a conscious one.
+    const prior = process.exitCode
+    process.exitCode = undefined
+    try {
+      stubTransport(() => new Response(JSON.stringify(SLUG_CONFLICT_BODY), { status: 409 }))
+      captureStdout()
+      const { handleInstall } = await import('../../src/commands/install.js')
+
+      await handleInstall(installCfg(), 'acme/one', { yes: true })
+
+      expect(
+        process.exitCode === 0 || process.exitCode === undefined,
+        'a refusal is a skip, not an install failure',
+      ).toBe(true)
+    } finally {
+      process.exitCode = prior
+    }
+  })
+})
+

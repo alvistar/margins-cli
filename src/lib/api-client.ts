@@ -281,7 +281,14 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
       }
       // Carry the server's message + code when present (e.g. REVERT_UNSUPPORTED
       // from the stash update path) so callers can show an actionable line.
-      throw new ConflictError(body?.message ?? `Conflict while calling ${path}`, body?.code)
+      // `serverMessage` gets the raw value, NOT the `??` fallback: a caller that
+      // wants to surface the server's own wording must be able to tell "the
+      // server said nothing" from "the server said `Conflict while calling …`".
+      throw new ConflictError(
+        body?.message ?? `Conflict while calling ${path}`,
+        body?.code,
+        body?.message,
+      )
     }
     if (response.status >= 400) {
       const body = await readError(response)

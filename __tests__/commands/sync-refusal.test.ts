@@ -46,6 +46,18 @@ const SLUG_CONFLICT_BODY = {
 let dir: string
 let dataDir: string
 
+/** Folder basename is `notes` while the remote is acme/private-docs, so the
+ *  repo lookup and the local lookup key on different strings. */
+function makeNamedRepo(folder: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sync-refusal-'))
+  const d = path.join(root, folder)
+  fs.mkdirSync(d)
+  execFileSync('git', ['init', '-q'], { cwd: d })
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/private-docs.git'], { cwd: d })
+  fs.writeFileSync(path.join(d, 'README.md'), '# hello\n')
+  return d
+}
+
 function makeRepo(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sync-refusal-'))
   execFileSync('git', ['init', '-q'], { cwd: d })
@@ -151,8 +163,100 @@ describe('margins sync — a refused workspace create', () => {
       return new Response('{}', { status: 200 })
     })
 
-    await expect(handleSync(cfg(true), { dir, json: true })).rejects.toThrow()
+    const err = await handleSync(cfg(true), { dir, json: true }).catch((e: Error) => e)
     expect(localCreates(bodies)).toEqual([])
+
+    // Assert the JSON CONTRACT, not just "it threw". The previous version of
+    // this test made the same two assertions as the non-JSON one with the flags
+    // flipped, so a change that swallowed the error into a {status:'synced'}
+    // line — the exact CI-silence defect — would have left it green.
+    const { formatError } = await import('../../src/lib/output.js')
+    const envelope = JSON.parse(formatError(err, true)) as { error?: string; code?: string }
+    expect(envelope.error, 'the guidance must reach a JSON consumer').toMatch(/invite link/i)
+    expect(envelope.code).toBeTruthy()
+    expect((err as { exitCode?: number }).exitCode ?? 1).toBeGreaterThan(0)
+  })
+
+  it('falls back to our own wording when the server sends a code but no message', async () => {
+    // The transport substitutes `Conflict while calling <path>` for a body with
+    // no message. Passing that through would print an internal route string at
+    // the user in place of the guidance this whole change exists to surface.
+    stubFetch((url, init) => {
+      if (init?.method === 'POST' && url.endsWith('/api/workspaces')) {
+        return new Response(JSON.stringify({ error: 'SLUG_CONFLICT' }), { status: 409 })
+      }
+      if (url.includes('/api/workspaces')) return new Response('[]', { status: 200 })
+      return new Response('{}', { status: 200 })
+    })
+
+    const err = await handleSync(cfg(false), { dir }).catch((e: Error) => e)
+    const text = (err as { userMessage?: string }).userMessage ?? (err as Error).message
+    expect(text).toMatch(/invite link/i)
+    expect(text, 'never surface the transport placeholder').not.toMatch(/Conflict while calling/)
+  })
+
+  // ─── The LOCAL matcher — previously unreachable in any test ───────────────
+
+  it('a local create collision does NOT bind a GitHub workspace with the same name', async () => {
+    // Reaching findLocalWorkspaceByName needs the REPO lookup to miss first, so the
+    // decoy matches the FOLDER name (`notes`) while its repoUrl points elsewhere.
+    // Before the repoUrl guard, that decoy satisfied the local lookup and the folder
+    // was bound to a stranger's GitHub workspace, decided by server list order.
+    const local = makeNamedRepo('notes')
+    stubFetch((url, init) => {
+      if (init?.method === 'POST' && url.endsWith('/api/workspaces')) {
+        return new Response(JSON.stringify({ message: 'already exists' }), { status: 409 })
+      }
+      if (url.includes('/api/workspaces')) {
+        return new Response(JSON.stringify([
+          { id: 'ws-github-decoy', slug: 'gh/other/notes', name: 'notes',
+            repoUrl: 'https://github.com/other/notes', syncMode: 'client' },
+        ]), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    await handleSync(cfg(false), { dir: local }).catch(() => { /* nothing legitimate to bind */ })
+
+    const cfgPath = path.join(local, '.margins.json')
+    const written = fs.existsSync(cfgPath)
+      ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+      : null
+    expect(
+      written?.['workspace_id'] ?? null,
+      'a repo-backed workspace must never satisfy the LOCAL lookup',
+    ).not.toBe('ws-github-decoy')
+    fs.rmSync(path.dirname(local), { recursive: true, force: true })
+  })
+
+  it('still finds a genuine local workspace (over-refusal control)', async () => {
+    const local = makeNamedRepo('notes')
+    stubFetch((url, init) => {
+      if (init?.method === 'POST' && url.endsWith('/api/workspaces')) {
+        return new Response(JSON.stringify({ message: 'already exists' }), { status: 409 })
+      }
+      if (url.includes('/api/workspaces')) {
+        return new Response(JSON.stringify([
+          { id: 'ws-github-decoy', slug: 'gh/other/notes', name: 'notes',
+            repoUrl: 'https://github.com/other/notes', syncMode: 'client' },
+          { id: 'ws-local-real', slug: 'local/u/notes', name: 'notes',
+            repoUrl: null, syncMode: 'client' },
+        ]), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+
+    await handleSync(cfg(false), { dir: local }).catch(() => { /* later steps may fail */ })
+
+    const cfgPath = path.join(local, '.margins.json')
+    const written = fs.existsSync(cfgPath)
+      ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+      : null
+    expect(
+      written?.['workspace_id'],
+      'narrowing must not break the legitimate local resume',
+    ).toBe('ws-local-real')
+    fs.rmSync(path.dirname(local), { recursive: true, force: true })
   })
 
   // ─── Over-refusal controls ────────────────────────────────────────────────

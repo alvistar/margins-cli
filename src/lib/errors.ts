@@ -118,6 +118,23 @@ export class ConflictError extends MarginsError {
     message: string,
     /** Server error code from the 409 body, when present (e.g. REVERT_UNSUPPORTED). */
     public readonly code?: string,
+    /**
+     * The server's own `message`, when the body carried one — and **undefined
+     * when it did not**, which is the whole point.
+     *
+     * `message`/`userMessage` above cannot answer "did the server say this?":
+     * the transport substitutes a placeholder (`Conflict while calling <path>`)
+     * for a body with no message, or no JSON body at all. A caller that wants
+     * to *surface the server's wording* therefore cannot read `userMessage` —
+     * it would print an internal route string at the user and call it guidance.
+     *
+     * Same opt-in as {@link ServerError.serverMessage} and
+     * {@link ForbiddenError.serverMessage}. The concrete case here is
+     * `SLUG_CONFLICT`, whose message names the invite link the refused caller
+     * needs; when it is absent, callers fall back to their own wording rather
+     * than passing the placeholder through.
+     */
+    public readonly serverMessage?: string,
   ) {
     super(`Conflict: ${message}`, message, 1)
   }

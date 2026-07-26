@@ -9,8 +9,12 @@ now answers **409 `SLUG_CONFLICT`** when a workspace exists for the repo's slug 
 the caller is not a member of it. The CLI read any 409 as "already exists, go find
 it", and each command mishandled the refusal differently.
 
-**Against an older server nothing changes.** Every branch below keys on the server's
-structural error code, and a 409 without one keeps its previous behaviour exactly.
+**Against an older server the refusal branches never fire.** Every one keys on the
+server's structural error code, so a 409 without one still takes the old
+find-then-fallback path. That lookup itself is fixed (fourth bullet), so a codeless
+409 now resolves by repo identity rather than folder name — the one thing that does
+change without a code present. A 409 carrying a code but no message falls back to the
+CLI's own wording rather than surfacing an internal route string.
 
 ### Fixed
 - **`margins sync` no longer creates a private workspace nobody asked for.** On a
@@ -40,6 +44,13 @@ structural error code, and a 409 without one keeps its previous behaviour exactl
   owner and repo — and pushed to it. It now matches on repo identity, reusing the
   helper `margins install` already used correctly. The local-workspace lookup, which
   has no repo to match on, compares its slug's final segment exactly.
+
+### Changed
+- **A refused `margins install` exits 0, not 1.** The refusal is now a per-repo
+  `skipped`, consistent with the command's other skips (over-cap, PR creation
+  blocked) — the repo is not installable *yet* and the operator has an action to
+  take. It is no longer an uncaught error, so a run that skips every repo succeeds
+  at the process level; check the per-repo results, not just the exit code.
 
 ### Known gaps
 - **`margins-sync-action` pins `MARGINS_CLI_VERSION`.** Publishing this release does

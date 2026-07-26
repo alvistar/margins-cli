@@ -152,7 +152,8 @@ async function processRepo(
       // conflict, keeps propagating to the outer handler untouched — including
       // the binding conflict raised further down, which has its own message.
       if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
-        return result('skipped', err.userMessage)
+        return result('skipped', err.serverMessage
+          ?? 'a workspace exists for this repo and you are not a member — ask an editor for an invite link')
       }
       throw err
     }
