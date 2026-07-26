@@ -2,6 +2,50 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.18.0] - 2026-07-26
+
+Responds to Margins server 0.60.0, which removed auto-join: `POST /api/workspaces`
+now answers **409 `SLUG_CONFLICT`** when a workspace exists for the repo's slug and
+the caller is not a member of it. The CLI read any 409 as "already exists, go find
+it", and each command mishandled the refusal differently.
+
+**Against an older server nothing changes.** Every branch below keys on the server's
+structural error code, and a 409 without one keeps its previous behaviour exactly.
+
+### Fixed
+- **`margins sync` no longer creates a private workspace nobody asked for.** On a
+  refusal it looked the workspace up through the membership-scoped listing, matched
+  nothing (by construction, for a non-member), and fell through to creating a *local*
+  workspace — pushing the repo's markdown somewhere nobody intended and pointing
+  `.margins.json` at it. The only signal was a warning suppressed under `--json`, so
+  in CI a refused sync looked like a successful one, and review comments could land
+  in a workspace the author believed was their team's while being invisible to
+  everyone. It now stops and shows the server's own message, which names the invite
+  link. Because the top-level handler renders any thrown error through the JSON
+  formatter, the refusal is visible under `--json` too, with a non-zero exit.
+- **`margins install` no longer aborts a run over one inaccessible workspace.** The
+  create had no handler at all: without `--org` the refusal reached the caller's
+  rethrow and stopped every remaining repo; with `--org` it was recorded as a generic
+  `failed`. It is now a per-repo `skipped` carrying the server's guidance — the same
+  status the pipeline already uses for a workspace on the wrong sync mode.
+- **`margins workspace create` no longer discards the server's guidance.** It rethrew
+  a bare `Workspace already exists for <url>`, losing both the message and the code —
+  so `SLUG_CONFLICT` ("ask an editor for an invite link") and `SYNC_MODE_CONFLICT`
+  ("it uses a different sync mode") arrived as the same sentence despite needing
+  different fixes. Both are preserved; the repo URL is added as context rather than
+  replacing the message.
+- **`margins sync` no longer binds a repo to a workspace that merely shares a name
+  ending.** The lookup matched the *folder* basename against the tail of every slug,
+  so a repo checked out into `docs/` matched `gh/someone/internal-docs` — a different
+  owner and repo — and pushed to it. It now matches on repo identity, reusing the
+  helper `margins install` already used correctly. The local-workspace lookup, which
+  has no repo to match on, compares its slug's final segment exactly.
+
+### Known gaps
+- **`margins-sync-action` pins `MARGINS_CLI_VERSION`.** Publishing this release does
+  not reach any workflow using the action until that pin is bumped, repo by repo.
+  Treat the pin bump as part of shipping this, not as a follow-up.
+
 ## [0.17.0] - 2026-07-20
 
 Requires a Margins server running 0.52.0 or later. Against an older server the
