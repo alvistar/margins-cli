@@ -44,6 +44,7 @@ const SLUG_CONFLICT_BODY = {
 }
 
 let dir: string
+let dataDir: string
 
 function makeRepo(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sync-refusal-'))
@@ -88,10 +89,19 @@ function localCreates(bodies: unknown[]) {
   return creates(bodies).filter((b) => b['source'] === 'local' || 'projectName' in b)
 }
 
-beforeEach(() => { dir = makeRepo() })
+beforeEach(() => {
+  dir = makeRepo()
+  // Isolate repos.json. Without this the sync writes into the REAL data dir
+  // (~/Library/Application Support/margins/repos.json) — the file margins-desktop's
+  // tray app reads — leaving dead /var/folders entries behind on every run.
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sync-refusal-data-'))
+  vi.stubEnv('MARGINS_DATA_DIR', dataDir)
+})
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   fs.rmSync(dir, { recursive: true, force: true })
+  if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
 describe('margins sync — a refused workspace create', () => {

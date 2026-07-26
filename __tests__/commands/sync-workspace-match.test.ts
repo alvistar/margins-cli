@@ -27,6 +27,7 @@ import type { ResolvedConfig } from '../../src/lib/config.js'
 
 let root: string
 let dir: string
+let dataDir: string
 
 /** A repo whose folder is literally `docs`, checked out from acme/docs. */
 function makeRepo(folder: string, remote: string): string {
@@ -83,11 +84,18 @@ function stubFetch() {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   if (root) fs.rmSync(root, { recursive: true, force: true })
+  if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true })
 })
 
 describe('sync workspace matching', () => {
-  beforeEach(() => { dir = makeRepo('docs', 'https://github.com/acme/docs.git') })
+  beforeEach(() => {
+    dir = makeRepo('docs', 'https://github.com/acme/docs.git')
+    // Isolate repos.json — see sync-refusal.test.ts for why this matters.
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-match-data-'))
+    vi.stubEnv('MARGINS_DATA_DIR', dataDir)
+  })
 
   it('does NOT bind a folder named "docs" to gh/someone/internal-docs', async () => {
     const { bodies } = stubFetch()
