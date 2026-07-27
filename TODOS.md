@@ -4,6 +4,49 @@ Deferred work for `margins-cli`, newest first. Same convention as the server
 repo's `TODOS.md`: each entry says what the gap is, why it was not fixed at the
 time, and what the real fix looks like.
 
+## Nothing here notices when `margins-sync-action`'s pin has drifted (0.18.0, 2026-07-27)
+
+**Priority:** P3
+
+`margins-sync-action` installs an exact `MARGINS_CLI_VERSION` — deliberately, so
+`npx` cannot resolve mutable code into a consumer's run. The cost is that a
+published CLI release and the action's pin can diverge indefinitely with both
+repositories green. Nothing in either one is wrong; the pin is simply older, and
+no check anywhere compares the two.
+
+**The fix:** a scheduled workflow comparing the action's pinned version against
+`npm view margins-cli version`, failing (or opening an issue) past some drift
+threshold. It belongs in `margins-sync-action`, which owns the pin — this entry
+is here because this is the repo whose releases create the drift.
+
+**Do not size this by the last incident.** See the correction below: 0.18.0's pin
+was bumped within minutes of the publish and the practical consequence would have
+been zero either way, because the action never calls the affected command. Drift
+matters when it strands a fix on a path the action actually uses, and a scheduled
+check cannot tell those apart — it can only see that two version strings differ.
+That argues for a low-noise signal (a monthly nudge) over a red build.
+
+### Correction: what the 0.18.0 version of this entry got wrong
+
+This entry previously claimed P1 urgency on the grounds that "every CI sync keeps
+running 0.17.0, which is the version that turns a server refusal into a private
+workspace," and that bumping the pin should "expect assertions to move." **Both
+halves were wrong**, and are recorded here rather than deleted because the
+mistake is more reusable than the entry was.
+
+`margins install` — the command that creates a workspace, and therefore the only
+one that can hit the `SLUG_CONFLICT` refusal — runs on the **operator's machine**.
+`margins-sync-action` runs `workspace push` and `workspace archive-branch`
+against a `workspace-id` that already exists, and `src/commands/workspace/push.ts`
+is untouched by 0.18.0. The action's CI runs never reach the bug. Its e2e asserts
+on `workspace push`, so no assertion moved either; the bump landed as
+`margins-sync-action@v1.2.1` with a passing suite and no consumer-visible change.
+
+The error was assuming a fix reaches everyone downstream because the fix is
+important. It was made three times in one session, each time corrected only by
+reading the actual call path. **Before claiming a release reaches a consumer,
+name the command that consumer runs and check the release touched it.**
+
 ## The publish gate is the only test lane, and it runs a suite with a known flake (0.18.0, 2026-07-26)
 
 **Priority:** P2
@@ -63,36 +106,6 @@ who signed up for something else, and the flake predates it.
 Until part 2 exists, treat a red release run as "re-run it once and read the
 failure" rather than as a broken build — and do not assume a green local suite
 predicts a green publish.
-
-## `margins-sync-action` pins the CLI version, so 0.18.0 reaches no workflow until the pin moves (0.18.0, 2026-07-26)
-
-**Priority:** P1
-
-`margins-sync-action` installs a pinned `MARGINS_CLI_VERSION`. Publishing 0.18.0
-to npm therefore changes nothing for any repository using the action: every CI
-sync keeps running 0.17.0, which is the version that turns a server refusal into
-a private workspace nobody asked for. The bug 0.18.0 exists to fix is *most*
-harmful in CI, because that is where the only warning about it is suppressed
-under `--json` — so the population still exposed after this release is exactly
-the population it was written for.
-
-**Why it is not in this PR.** The pin lives in a different repository, and the
-bump cannot be validated until 0.18.0 is actually published to npm — the action's
-e2e suite installs the pinned version and asserts against its runtime behavior,
-so a pin bumped ahead of the publish fails against a version the registry does
-not yet have.
-
-**The fix:** after `margins-cli@0.18.0` is on npm, bump `MARGINS_CLI_VERSION` in
-`margins-sync-action` and run its e2e suite. Expect assertions to move: this
-release changes `margins install`'s refused-repo exit code from 1 to 0 and adds a
-`serverCode` field to the `--json` error envelope, and that suite asserts on the
-pinned CLI's observable behavior rather than mocking it.
-
-**Worth considering alongside it:** nothing tells this repo when the pin has
-drifted. A published CLI release and the action's pin can diverge indefinitely
-with both repositories green, which is how a fix ships and does not arrive. A
-scheduled check comparing the action's pin against the latest npm version would
-turn that silence into a signal.
 
 ## README has no reference section for four top-level commands (document-release, 2026-07-20)
 
