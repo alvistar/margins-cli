@@ -109,6 +109,11 @@ function commit(cwd: string, msg: string): string {
 function useFakeMargins(): {
   calls: () => string[][]
   waitFor: (n: number) => Promise<string[][]>
+  /** Wait for the call this test is about, rather than for a count. */
+  waitForCall: (
+    predicate: (argv: string[]) => boolean,
+    description: string,
+  ) => Promise<string[]>
   /** The fake binary itself, so harness-invariant tests can drive it without git. */
   marginsBin: string
   /** The log directory, so a test can plant a decoy record in it. */
@@ -157,7 +162,35 @@ function useFakeMargins(): {
     }
   }
 
-  return { calls, waitFor, marginsBin: path.join(binDir, 'margins'), logDir }
+  /**
+   * Wait for a call satisfying `predicate`.
+   *
+   * Prefer this over `waitFor(n)` whenever the test is about one particular
+   * invocation. Waiting for a count and then reading `calls[calls.length - 1]`
+   * assumes the last-sorted record is the newest one, and it is not: records are
+   * named pid-first and each invocation is a separate process, so the ordering is
+   * unrelated to when the calls were made. Sorting the names by timestamp instead
+   * would make that assumption wrong less often rather than right.
+   */
+  const waitForCall = async (
+    predicate: (argv: string[]) => boolean,
+    description: string,
+  ): Promise<string[]> => {
+    const deadline = Date.now() + 10_000
+    for (;;) {
+      const match = calls().find(predicate)
+      if (match) return match
+      if (Date.now() > deadline) {
+        throw new Error(
+          `timed out waiting for a margins invocation matching ${description}; ` +
+          `saw ${calls().length} call(s): ${JSON.stringify(calls())}`,
+        )
+      }
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+
+  return { calls, waitFor, waitForCall, marginsBin: path.join(binDir, 'margins'), logDir }
 }
 
 // ─── Harness invariants ──────────────────────────────────────────────────────
@@ -198,6 +231,17 @@ describe('fake-margins recorder', () => {
     )
   })
 })
+
+/**
+ * Plant a completed record whose filename sorts after every real one.
+ *
+ * Real records are named `<pid>-<ms>-<rand>.json`, so ordering by filename is
+ * ordering by pid — unrelated to the order the calls were made. This makes that
+ * hazard deterministic instead of leaving it to whichever pids the OS hands out.
+ */
+function plantDecoy(fake: { logDir: string }, argv: string[]): void {
+  fs.writeFileSync(path.join(fake.logDir, 'zzzz-decoy-sorts-last.json'), JSON.stringify(argv))
+}
 
 /** Read `--flag`'s value out of a recorded argv. */
 function flag(argv: string[], name: string): string | undefined {
@@ -346,13 +390,22 @@ describe('pre-push hook, executed by real git', () => {
     write(tmpDir, 'a.md', '# one\n')
     commit(tmpDir, 'first')
     gitFire(['push', '-q', 'origin', 'main'], tmpDir)
-    const afterBranchPush = (await fake.waitFor(1)).length
+    await fake.waitFor(1)
+
+    // Each hook invocation is its own process, and records are named pid-first,
+    // so a later call can sort BEFORE an earlier one (pid 9999 then 10001; pid
+    // 50210 then 4312). Planting a branch-push record that sorts last is the
+    // deterministic form of that inversion — without it this reproduces about
+    // one run in five.
+    plantDecoy(fake, ['hook-sync', '--refs', 'refs/heads/main aaa refs/heads/main bbb'])
 
     git(['tag', 'v1'], tmpDir)
     gitFire(['push', '-q', 'origin', 'v1'], tmpDir)
 
-    const calls = await fake.waitFor(afterBranchPush + 1)
-    const tagCall = calls[calls.length - 1]!
+    const tagCall = await fake.waitForCall(
+      (argv) => (flag(argv, '--refs') ?? '').includes('refs/tags/v1'),
+      'the v1 tag push',
+    )
     const refs = flag(tagCall, '--refs')!
     expect(refs).toContain('refs/tags/v1')
     expect(parsePrePushRefs(refs)).toEqual([])
@@ -366,14 +419,28 @@ describe('pre-push hook, executed by real git', () => {
     commit(tmpDir, 'first')
     git(['branch', 'doomed'], tmpDir)
     gitFire(['push', '-q', 'origin', 'main', 'doomed'], tmpDir)
-    const before = (await fake.waitFor(1)).length
+    await fake.waitFor(1)
+
+    // Same inversion as the tag case — see the comment there.
+    plantDecoy(fake, ['hook-sync', '--refs', 'refs/heads/main aaa refs/heads/main bbb'])
 
     gitFire(['push', '-q', 'origin', ':doomed'], tmpDir)
 
-    const calls = await fake.waitFor(before + 1)
-    const refs = flag(calls[calls.length - 1]!, '--refs')!
-    expect(refs).toContain('refs/heads/doomed')
-    expect(refs).toMatch(/(^| )0{40,64}( |$)/m)
+    // A deletion is a ref line whose LOCAL sha (field 2) is all zeros — the same
+    // field parsePrePushRefs keys on. Position matters: the earlier push CREATED
+    // `doomed`, and a creation carries all-zeros too, in the remote-sha field.
+    // Matching zeros anywhere in the blob finds that push instead of this one.
+    const deleteCall = await fake.waitForCall(
+      (argv) =>
+        (flag(argv, '--refs') ?? '').split('\n').some((line) => {
+          const parts = line.trim().split(/\s+/)
+          return parts.length >= 3
+            && /^0{40,64}$/.test(parts[1] ?? '')
+            && parts[2] === 'refs/heads/doomed'
+        }),
+      'the doomed branch deletion (zero local sha)',
+    )
+    const refs = flag(deleteCall, '--refs')!
     expect(parsePrePushRefs(refs)).toEqual([])
   })
 
