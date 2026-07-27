@@ -81,11 +81,29 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   actionCommand.setOptionValue('_config', cfg)
 })
 
+/**
+ * The only surface `getConfig` needs: an option bag and a parent link.
+ *
+ * It is deliberately NOT `Command`. Under `@commander-js/extra-typings` a bare
+ * `Command` means `Command<[], {}, {}>` — the instantiation for a command that
+ * declares no arguments and no options — and every command that declares one is
+ * a *different* type that does not assign to it. Typing the parameter as
+ * `Command` therefore rejected all thirteen commands here that take an argument,
+ * which is every caller that matters.
+ *
+ * Describing the two members actually used accepts every instantiation without
+ * widening to `any`, and states the real contract: walk the parent chain looking
+ * for the `_config` the preAction hook stashed.
+ */
+interface ConfigCarrier {
+  getOptionValue?: (key: string) => unknown
+  parent?: ConfigCarrier | null
+}
+
 // Helper to extract resolved config from a command (set by preAction hook)
-function getConfig(cmd: Command): ResolvedConfig {
+function getConfig(cmd: ConfigCarrier): ResolvedConfig {
   // Walk up to find _config set by preAction
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let c: any = cmd
+  let c: ConfigCarrier | null | undefined = cmd
   while (c) {
     const cfg = c.getOptionValue?.('_config')
     if (cfg) return cfg as ResolvedConfig

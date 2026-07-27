@@ -37,41 +37,26 @@ entry exists to avoid repeating.
 recorded call on timeout, so the next occurrence yields a real failure to reason
 from. Capture that output before changing anything.
 
-## The typecheck baseline is 14 errors, so the PR lane cannot gate on types (2026-07-27)
+## The `test` check is required on `main`, and admins can still bypass it (2026-07-27)
 
-**Priority:** P3
+**Priority:** P4 — *reference, not work*
 
-`npx tsc --noEmit` reports 14 errors on `main`. There is no `typecheck` script in
-`package.json` and nothing in CI runs one, so the baseline has been free to grow.
+Recorded because it is repo settings, invisible in the tree, and easy to be
+surprised by. `main` requires the `test` status check. `strict` is off (no
+forced rebase before merge) and `enforce_admins` is off, so an admin can still
+merge over a red run.
 
-`tests.yaml` deliberately does **not** include a typecheck job. A lane that is red
-on its first run teaches everyone to ignore it, and an ignored lane is worse than
-an absent one — it looks like coverage while providing none.
+That bypass is deliberate. This repo has a known intermittent failure in
+`install-hook.test.ts` whose cause is unproven (see the entry below), and a hard
+gate would mean disabling branch protection to land a hotfix during a flake.
+The gate blocks anyone else; the owner keeps an escape hatch and the judgment
+about when to use it.
 
-**The fix:** clear the 14 errors, add a `typecheck` script, then add the job to
-`tests.yaml`. Doing it in that order matters; adding the job first just moves the
-red into everyone's PR.
+Unlike `ai-review` — a free private repo where required checks are unavailable
+at all — this one is public, so the mechanism genuinely exists here.
 
-**Worth knowing:** `npm run build` (tsdown) passes with those errors present, so
-the build is not a backstop for type correctness here — the same trap documented
-on the server side, where `next build` stayed green through 66 type errors.
-
-## The PR test lane is advisory; branch protection is available but unset (2026-07-27)
-
-**Priority:** P3
-
-`tests.yaml` runs on every pull request, but nothing requires it to be green
-before a merge. `gh pr merge` will happily merge over a red or still-pending run.
-
-Unlike `ai-review` — a free private repo where required status checks are simply
-unavailable — this repo is **public**, so branch protection can genuinely enforce
-the check. The switch is deliberately unset: making a check required changes the
-merge flow for every future PR, and that is a repo-owner decision rather than
-something a test-infrastructure PR should decide on its own.
-
-**The fix, if wanted:** a branch protection rule on `main` requiring the `test`
-job. No code change. Until then, "CI gates the PR" is discipline here, not a
-mechanism — wait for the lane yourself before merging.
+**If the flake is ever explained and fixed**, turning `enforce_admins` on is the
+one-line follow-up that makes the gate absolute.
 
 ## `margins-sync-action`'s pin can trail a release, and nothing in this repo notices (0.18.0, 2026-07-27)
 
