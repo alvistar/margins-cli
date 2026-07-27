@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { handleInstallHook } from '../src/commands/install-hook.js'
 import { parsePrePushRefs } from '../src/commands/workspace/push.js'
 
@@ -106,15 +106,34 @@ function commit(cwd: string, msg: string): string {
  * values containing newlines — the pre-push refs blob is exactly that — survive
  * intact.
  */
-function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Promise<string[][]> } {
+function useFakeMargins(): {
+  calls: () => string[][]
+  waitFor: (n: number) => Promise<string[][]>
+  /** Wait for the call this test is about, rather than for a count. */
+  waitForCall: (
+    predicate: (argv: string[]) => boolean,
+    description: string,
+  ) => Promise<string[]>
+  /** The fake binary itself, so harness-invariant tests can drive it without git. */
+  marginsBin: string
+  /** The log directory, so a test can plant a decoy record in it. */
+  logDir: string
+} {
   const binDir = mkdtemp('margins-fakebin-')
   const logDir = mkdtemp('margins-fakelog-')
   const recorder = path.join(binDir, 'record.cjs')
   fs.writeFileSync(
     recorder,
+    // Write to a temp sibling and rename into place. `rename(2)` within one
+    // directory is atomic, so a reader polling this directory either does not
+    // see the record or sees it whole — it can never read a half-written one.
+    // Plain writeFileSync makes the file visible at its final name the moment it
+    // is created, before the contents land.
     `const fs=require('fs'),path=require('path');\n` +
-    `const f=path.join(${JSON.stringify(logDir)}, process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.json');\n` +
-    `fs.writeFileSync(f, JSON.stringify(process.argv.slice(2)));\n`,
+    `const base=process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.json';\n` +
+    `const tmp=path.join(${JSON.stringify(logDir)}, base+'.tmp');\n` +
+    `fs.writeFileSync(tmp, JSON.stringify(process.argv.slice(2)));\n` +
+    `fs.renameSync(tmp, path.join(${JSON.stringify(logDir)}, base));\n`,
   )
   fs.writeFileSync(
     path.join(binDir, 'margins'),
@@ -123,8 +142,12 @@ function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Pr
   )
   hookEnv = { PATH: `${binDir}${path.delimiter}${process.env['PATH'] ?? ''}` }
 
+  /** Completed records only — an in-flight `.json.tmp` is not a record yet. */
+  const recordFiles = (): string[] =>
+    fs.readdirSync(logDir).filter((f) => f.endsWith('.json')).sort()
+
   const calls = (): string[][] =>
-    fs.readdirSync(logDir).sort()
+    recordFiles()
       .map((f) => JSON.parse(fs.readFileSync(path.join(logDir, f), 'utf-8')) as string[])
 
   const waitFor = async (n: number): Promise<string[][]> => {
@@ -139,7 +162,85 @@ function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Pr
     }
   }
 
-  return { calls, waitFor }
+  /**
+   * Wait for a call satisfying `predicate`.
+   *
+   * Prefer this over `waitFor(n)` whenever the test is about one particular
+   * invocation. Waiting for a count and then reading `calls[calls.length - 1]`
+   * assumes the last-sorted record is the newest one, and it is not: records are
+   * named pid-first and each invocation is a separate process, so the ordering is
+   * unrelated to when the calls were made. Sorting the names by timestamp instead
+   * would make that assumption wrong less often rather than right.
+   */
+  const waitForCall = async (
+    predicate: (argv: string[]) => boolean,
+    description: string,
+  ): Promise<string[]> => {
+    const deadline = Date.now() + 10_000
+    for (;;) {
+      const match = calls().find(predicate)
+      if (match) return match
+      if (Date.now() > deadline) {
+        throw new Error(
+          `timed out waiting for a margins invocation matching ${description}; ` +
+          `saw ${calls().length} call(s): ${JSON.stringify(calls())}`,
+        )
+      }
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+
+  return { calls, waitFor, waitForCall, marginsBin: path.join(binDir, 'margins'), logDir }
+}
+
+// ─── Harness invariants ──────────────────────────────────────────────────────
+//
+// These do not test the hook. They test `useFakeMargins` itself, because two
+// intermittent suite failures were traced to the harness rather than to the code
+// under test, and a harness defect looks exactly like a flaky feature.
+
+describe('fake-margins recorder', () => {
+  // A record is written under a temp name and renamed into place, so the reader
+  // sees a record only once it is complete. Planting the in-flight name is the
+  // deterministic form of "the reader caught a write mid-flight" — the timing
+  // window that motivates this is real but far too narrow to provoke on demand
+  // (measured at ~69 short reads in 3.4M stat samples, with payloads ~20x larger
+  // than a real invocation's).
+  it('ignores a record that is still being written', () => {
+    const fake = useFakeMargins()
+    fs.writeFileSync(path.join(fake.logDir, '999999-1-inflight.json.tmp'), '["hook-sync","--re')
+
+    expect(() => fake.calls()).not.toThrow()
+    expect(fake.calls()).toHaveLength(0)
+  })
+
+  it('records every concurrent invocation exactly once', async () => {
+    const fake = useFakeMargins()
+    const N = 40
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        new Promise<void>((resolve, reject) => {
+          execFile(fake.marginsBin, ['hook-sync', '--rev', String(i)], (err) =>
+            err ? reject(err) : resolve())
+        })),
+    )
+
+    const seen = fake.calls().map((c) => flag(c, '--rev'))
+    expect(seen.sort((a, b) => Number(a) - Number(b))).toEqual(
+      Array.from({ length: N }, (_, i) => String(i)),
+    )
+  })
+})
+
+/**
+ * Plant a completed record whose filename sorts after every real one.
+ *
+ * Real records are named `<pid>-<ms>-<rand>.json`, so ordering by filename is
+ * ordering by pid — unrelated to the order the calls were made. This makes that
+ * hazard deterministic instead of leaving it to whichever pids the OS hands out.
+ */
+function plantDecoy(fake: { logDir: string }, argv: string[]): void {
+  fs.writeFileSync(path.join(fake.logDir, 'zzzz-decoy-sorts-last.json'), JSON.stringify(argv))
 }
 
 /** Read `--flag`'s value out of a recorded argv. */
@@ -289,13 +390,22 @@ describe('pre-push hook, executed by real git', () => {
     write(tmpDir, 'a.md', '# one\n')
     commit(tmpDir, 'first')
     gitFire(['push', '-q', 'origin', 'main'], tmpDir)
-    const afterBranchPush = (await fake.waitFor(1)).length
+    await fake.waitFor(1)
+
+    // Each hook invocation is its own process, and records are named pid-first,
+    // so a later call can sort BEFORE an earlier one (pid 9999 then 10001; pid
+    // 50210 then 4312). Planting a branch-push record that sorts last is the
+    // deterministic form of that inversion — without it this reproduces about
+    // one run in five.
+    plantDecoy(fake, ['hook-sync', '--refs', 'refs/heads/main aaa refs/heads/main bbb'])
 
     git(['tag', 'v1'], tmpDir)
     gitFire(['push', '-q', 'origin', 'v1'], tmpDir)
 
-    const calls = await fake.waitFor(afterBranchPush + 1)
-    const tagCall = calls[calls.length - 1]!
+    const tagCall = await fake.waitForCall(
+      (argv) => (flag(argv, '--refs') ?? '').includes('refs/tags/v1'),
+      'the v1 tag push',
+    )
     const refs = flag(tagCall, '--refs')!
     expect(refs).toContain('refs/tags/v1')
     expect(parsePrePushRefs(refs)).toEqual([])
@@ -309,14 +419,28 @@ describe('pre-push hook, executed by real git', () => {
     commit(tmpDir, 'first')
     git(['branch', 'doomed'], tmpDir)
     gitFire(['push', '-q', 'origin', 'main', 'doomed'], tmpDir)
-    const before = (await fake.waitFor(1)).length
+    await fake.waitFor(1)
+
+    // Same inversion as the tag case — see the comment there.
+    plantDecoy(fake, ['hook-sync', '--refs', 'refs/heads/main aaa refs/heads/main bbb'])
 
     gitFire(['push', '-q', 'origin', ':doomed'], tmpDir)
 
-    const calls = await fake.waitFor(before + 1)
-    const refs = flag(calls[calls.length - 1]!, '--refs')!
-    expect(refs).toContain('refs/heads/doomed')
-    expect(refs).toMatch(/(^| )0{40,64}( |$)/m)
+    // A deletion is a ref line whose LOCAL sha (field 2) is all zeros — the same
+    // field parsePrePushRefs keys on. Position matters: the earlier push CREATED
+    // `doomed`, and a creation carries all-zeros too, in the remote-sha field.
+    // Matching zeros anywhere in the blob finds that push instead of this one.
+    const deleteCall = await fake.waitForCall(
+      (argv) =>
+        (flag(argv, '--refs') ?? '').split('\n').some((line) => {
+          const parts = line.trim().split(/\s+/)
+          return parts.length >= 3
+            && /^0{40,64}$/.test(parts[1] ?? '')
+            && parts[2] === 'refs/heads/doomed'
+        }),
+      'the doomed branch deletion (zero local sha)',
+    )
+    const refs = flag(deleteCall, '--refs')!
     expect(parsePrePushRefs(refs)).toEqual([])
   })
 

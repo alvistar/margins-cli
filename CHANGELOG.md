@@ -2,6 +2,44 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [Unreleased]
+
+No package-visible change — test harness and CI only, so there is no version
+bump. Bumping `package.json` would fire `release.yaml` and publish a release
+whose entire content is CI configuration.
+
+### Fixed
+- **Two defects in the `install-hook` test harness.** Records were read back with
+  a lexicographic sort over `<pid>-<ms>-<rand>.json` filenames, so ordering was by
+  pid — unrelated to the order the calls were made, since every hook invocation is
+  its own process. Two tests waited for the call count to rise and then read "the
+  last one", which meant "the record that sorted last" and could be the wrong
+  call; they now wait for a call matching the ref under test. Separately, records
+  were written with a plain `writeFileSync` to their final name, making a file
+  visible to a reader before its contents landed; they are now written to a temp
+  sibling and renamed into place. Each fix carries a regression test that fails
+  against the old harness.
+
+  **This is not claimed to fix the intermittent failure that prompted the work.**
+  That failure was reported as roughly one full-suite run in five, but its output
+  was never captured, and neither defect can produce that rate: pid inversion
+  measured 0 in 500 sequential spawns and under 1% even computed at a power-of-ten
+  boundary, and the partial-read window measured 69 occurrences in 3.4M samples —
+  and would throw a JSON parse error rather than fail the assertion that was
+  reported. Twelve full-suite runs on the unfixed harness reproduced nothing. A
+  second opinion from another model reached the same conclusion independently.
+  Both defects are real and worth removing on their own merits; the cause of the
+  observed failure remains unproven. The harness now reports every recorded call
+  on a timeout, so a recurrence will produce evidence instead of an anecdote.
+
+### Added
+- **A pull-request test lane** (`.github/workflows/tests.yaml`). Previously
+  `release.yaml` was the only workflow and the suite ran solely via
+  `prepublishOnly`, which made the publish the first non-laptop run of the tests —
+  so a failure blocked a release instead of failing a check. The lane is advisory;
+  it does not include a typecheck job, because that baseline is currently 14
+  errors. Both points are recorded in `TODOS.md`.
+
 ## [0.18.0] - 2026-07-26
 
 Responds to Margins server 0.60.0, which removed auto-join: `POST /api/workspaces`
