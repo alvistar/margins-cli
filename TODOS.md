@@ -37,22 +37,26 @@ entry exists to avoid repeating.
 recorded call on timeout, so the next occurrence yields a real failure to reason
 from. Capture that output before changing anything.
 
-## The PR test lane is advisory; branch protection is available but unset (2026-07-27)
+## The `test` check is required on `main`, and admins can still bypass it (2026-07-27)
 
-**Priority:** P3
+**Priority:** P4 — *reference, not work*
 
-`tests.yaml` runs on every pull request, but nothing requires it to be green
-before a merge. `gh pr merge` will happily merge over a red or still-pending run.
+Recorded because it is repo settings, invisible in the tree, and easy to be
+surprised by. `main` requires the `test` status check. `strict` is off (no
+forced rebase before merge) and `enforce_admins` is off, so an admin can still
+merge over a red run.
 
-Unlike `ai-review` — a free private repo where required status checks are simply
-unavailable — this repo is **public**, so branch protection can genuinely enforce
-the check. The switch is deliberately unset: making a check required changes the
-merge flow for every future PR, and that is a repo-owner decision rather than
-something a test-infrastructure PR should decide on its own.
+That bypass is deliberate. This repo has a known intermittent failure in
+`install-hook.test.ts` whose cause is unproven (see the entry below), and a hard
+gate would mean disabling branch protection to land a hotfix during a flake.
+The gate blocks anyone else; the owner keeps an escape hatch and the judgment
+about when to use it.
 
-**The fix, if wanted:** a branch protection rule on `main` requiring the `test`
-job. No code change. Until then, "CI gates the PR" is discipline here, not a
-mechanism — wait for the lane yourself before merging.
+Unlike `ai-review` — a free private repo where required checks are unavailable
+at all — this one is public, so the mechanism genuinely exists here.
+
+**If the flake is ever explained and fixed**, turning `enforce_admins` on is the
+one-line follow-up that makes the gate absolute.
 
 ## `margins-sync-action`'s pin can trail a release, and nothing in this repo notices (0.18.0, 2026-07-27)
 
