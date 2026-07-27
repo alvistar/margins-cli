@@ -2,6 +2,71 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.18.0] - 2026-07-26
+
+Responds to Margins server 0.60.0, which removed auto-join: `POST /api/workspaces`
+now answers **409 `SLUG_CONFLICT`** when a workspace exists for the repo's slug and
+the caller is not a member of it. The CLI read any 409 as "already exists, go find
+it", and each command mishandled the refusal differently.
+
+**Against an older server the refusal branches never fire.** Every one keys on the
+server's structural error code, so a 409 without one still takes the old
+find-then-fallback path. That lookup itself is fixed (fourth bullet), so a codeless
+409 now resolves by repo identity rather than folder name — the one thing that does
+change without a code present. A 409 carrying a code but no message falls back to the
+CLI's own wording rather than surfacing an internal route string.
+
+### Fixed
+- **`margins sync` no longer creates a private workspace nobody asked for.** On a
+  refusal it looked the workspace up through the membership-scoped listing, matched
+  nothing (by construction, for a non-member), and fell through to creating a *local*
+  workspace — pushing the repo's markdown somewhere nobody intended and pointing
+  `.margins.json` at it. The only signal was a warning suppressed under `--json`, so
+  in CI a refused sync looked like a successful one, and review comments could land
+  in a workspace the author believed was their team's while being invisible to
+  everyone. It now stops and shows the server's own message, which names the invite
+  link. Under `--json` the refusal carries a new `serverCode` field
+  (`SLUG_CONFLICT`) alongside the existing `code`, so a CI job can branch on the
+  cause instead of regex-matching prose the server owns; `code` is unchanged for
+  existing consumers, and the exit is non-zero.
+- **`margins install` no longer aborts a run over one inaccessible workspace.** The
+  create had no handler at all: without `--org` the refusal reached the caller's
+  rethrow and stopped every remaining repo; with `--org` it was recorded as a generic
+  `failed`. It is now a per-repo `skipped` carrying the server's guidance — the same
+  status the pipeline already uses for a workspace on the wrong sync mode.
+- **`margins workspace create` no longer discards the server's guidance.** It rethrew
+  a bare `Workspace already exists for <url>`, losing both the message and the code —
+  so `SLUG_CONFLICT` ("ask an editor for an invite link") and `SYNC_MODE_CONFLICT`
+  ("it uses a different sync mode") arrived as the same sentence despite needing
+  different fixes. Both are preserved; the repo URL is added as context rather than
+  replacing the message.
+- **`margins sync` no longer binds a repo to a workspace that merely shares a name
+  ending.** The lookup matched the *folder* basename against the tail of every slug,
+  so a repo checked out into `docs/` matched `gh/someone/internal-docs` — a different
+  owner and repo — and pushed to it. It now matches on repo identity, reusing the
+  helper `margins install` already used correctly. The local-workspace lookup, which
+  has no repo to match on, compares its slug's final segment exactly.
+
+### Changed
+- **A refused `margins install` exits 0, not 1.** The refusal is now a per-repo
+  `skipped`, consistent with the command's other skips (over-cap, PR creation
+  blocked) — the repo is not installable *yet* and the operator has an action to
+  take. It is no longer an uncaught error, so a run that skips every repo succeeds
+  at the process level; check the per-repo results, not just the exit code.
+
+### Known gaps
+- **Folders already bound by the old fall-through are not repaired.** A repo synced
+  by 0.17.0 against a 0.60.0 server is bound to the private workspace that bug
+  created, and `.margins.json` short-circuits before any refusal branch — so the
+  desktop tray keeps pushing there. 0.18.0 now *warns* on such a folder (a GitHub
+  remote bound to a `local/` slug), in human and `--json` output both, but does not
+  rebind it: get an invite link to the repo's workspace, delete `.margins.json`,
+  then re-run. Repair is deliberately manual — silently rebinding a folder to a
+  different workspace is the class of thing this release exists to stop.
+- **`margins-sync-action` pins `MARGINS_CLI_VERSION`.** Publishing this release does
+  not reach any workflow using the action until that pin is bumped, repo by repo.
+  Treat the pin bump as part of shipping this, not as a follow-up.
+
 ## [0.17.0] - 2026-07-20
 
 Requires a Margins server running 0.52.0 or later. Against an older server the

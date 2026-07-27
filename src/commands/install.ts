@@ -127,13 +127,36 @@ async function processRepo(
     workspaceId = '<new-workspace-id>'
   } else {
     const name = fullName.split('/')[1]!
-    const created = await client.post('/api/workspaces', {
-      name,
-      source: 'github',
-      repoUrl,
-      branch: repo.defaultBranch,
-      syncMode: 'client',
-    }) as { workspace: { id: string; slug: string } } | { id: string; slug: string }
+    let created: { workspace: { id: string; slug: string } } | { id: string; slug: string }
+    try {
+      created = await client.post('/api/workspaces', {
+        name,
+        source: 'github',
+        repoUrl,
+        branch: repo.defaultBranch,
+        syncMode: 'client',
+      }) as { workspace: { id: string; slug: string } } | { id: string; slug: string }
+    } catch (err) {
+      // A workspace exists for this repo and this caller is not a member of it
+      // (Margins 0.60.0 removed auto-join). That is a per-repo outcome with an
+      // action attached — ask an editor for an invite — not a broken install.
+      //
+      // It matters which of the two this becomes. `failed` conflates "you need
+      // an invite" with "the install broke", and without `--org` an uncaught
+      // error reaches `throw err` in the caller and **aborts every remaining
+      // repo** over one inaccessible workspace. `skipped` is the status this
+      // pipeline already uses for "correct, but not installable as-is", and it
+      // is what the CI docs describe.
+      //
+      // Only SLUG_CONFLICT. A codeless 409 from an older server, or any other
+      // conflict, keeps propagating to the outer handler untouched — including
+      // the binding conflict raised further down, which has its own message.
+      if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
+        return result('skipped', err.serverMessage
+          ?? 'a workspace exists for this repo and you are not a member — ask an editor for an invite link')
+      }
+      throw err
+    }
     const ws = 'workspace' in created ? created.workspace : created
     workspaceId = ws.id
     // Keep the per-run snapshot current so a later repo (or rerun logic)

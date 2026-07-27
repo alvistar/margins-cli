@@ -16,6 +16,7 @@ import { createApiClient } from '../lib/api-client.js'
 import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
+import { findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import {
   casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
@@ -113,14 +114,32 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     if (existing) {
       // Fully synced — print status and exit
       const url = `${cfg.serverUrl.replace(/\/$/, '')}/w/${marginsJson.workspace_slug}`
+
+      // A folder with a GitHub remote bound to a repo-less `local/` workspace is
+      // the fingerprint of the pre-0.18.0 fall-through: the server refused the
+      // create, the CLI quietly made a private workspace instead, and the tray
+      // has been pushing there ever since. Nothing below re-runs the create, so
+      // this is the only place that population ever gets told. Warn in BOTH
+      // modes — CI is exactly where it went unnoticed.
+      const misbound = detectGitRemote(dir).type === 'github'
+        && marginsJson.workspace_slug?.startsWith('local/')
+      const warning = misbound
+        ? `This folder has a GitHub remote but is bound to ${marginsJson.workspace_slug}, a local `
+          + 'workspace. That is what a pre-0.18.0 sync did when the server refused access to the '
+          + 'repo\'s workspace — your notes are going somewhere your team cannot see. Get an invite '
+          + 'link to the repo workspace, then delete .margins.json and re-run.'
+        : undefined
+
       if (isJson) {
         console.log(formatJson({
           status: 'already_synced',
           workspaceId: marginsJson.workspace_id,
           slug: marginsJson.workspace_slug,
           url,
+          ...(warning ? { warning } : {}),
         }))
       } else {
+        if (warning) p.log.warn(warning)
         p.log.info(`Already synced: ${marginsJson.workspace_slug}`)
         p.log.info(url)
       }
@@ -176,9 +195,53 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         branch = '@local'
         syncMode = 'client'
       } catch (err) {
+        // A REFUSAL, not a "you already have this". Margins 0.60.0 removed
+        // auto-join: a caller who is not a member of the workspace holding this
+        // repo's slug is refused rather than silently granted `comment` on it.
+        //
+        // Stop here. The lookup below is backed by the membership-scoped
+        // workspace listing, so a non-member matches nothing by construction and
+        // control used to fall through to `createLocalWorkspace` — pushing this
+        // repo's markdown into a private workspace nobody asked for and pointing
+        // `.margins.json` at it. Under `--json` even the warning was suppressed,
+        // so CI saw a successful sync into the wrong place.
+        //
+        // The server words this refusal for a human (it names the invite link),
+        // so surface it verbatim — same opt-in as `mapSetModeError` in
+        // workspace/content-mode.ts. Throwing is also what makes it visible in
+        // JSON mode: the top-level handler in index.ts renders any thrown error
+        // through `formatError(err, json)` and exits non-zero.
+        if (err instanceof ConflictError && err.code === 'SLUG_CONFLICT') {
+          // `serverMessage` so a SLUG_CONFLICT whose body carried no message
+          // produces our own sentence rather than the transport placeholder.
+          // ConflictError, not ValidationError: rethrowing as a validation
+          // error discards `code`, and `formatError` then labels the refusal
+          // `ValidationError` — the same envelope a cancelled run produces. A CI
+          // caller could only tell them apart by regexing prose the SERVER owns.
+          throw new ConflictError(
+            err.serverMessage
+              ?? 'A workspace already exists for this repository and you are not a member of it. '
+                 + 'Ask an editor to send you an invite link.',
+            err.code,
+            err.serverMessage,
+          )
+        }
         if (err instanceof ConflictError) {
-          // 409: workspace exists, find it
-          const found = await findExistingWorkspace(client, folderName)
+          // Any OTHER 409 — including a codeless one from an older server, where
+          // assuming a refusal would send the user to ask for an invite they do
+          // not need. Unchanged: the workspace probably does exist for them.
+          const found = await findWorkspaceForRepo(client, `${remote.owner}/${remote.repo}`)
+          if (found && found.syncMode && found.syncMode !== 'client') {
+            // `margins install` applies this guard at the other call site of the
+            // same helper; moving to the shared lookup without it meant a MEMBER
+            // of a server-sync workspace had `syncMode: 'client'` forced into
+            // their .margins.json, and the CAS push then failed 422
+            // PUSH_SYNC_NOT_SUPPORTED with nothing explaining why.
+            throw new ValidationError(
+              `Workspace ${found.slug} uses syncMode "${found.syncMode}" — `
+              + 'migrate it to client sync before syncing this folder.',
+            )
+          }
           if (found) {
             workspaceId = found.id
             slug = found.slug
@@ -353,7 +416,7 @@ async function createLocalWorkspace(
     return result.workspace
   } catch (err) {
     if (err instanceof ConflictError) {
-      const found = await findExistingWorkspace(client, projectName)
+      const found = await findLocalWorkspaceByName(client, projectName)
       if (found) return found
       throw new Error(`Workspace '${projectName}' already exists but could not find it in your list.`)
     }
@@ -361,12 +424,48 @@ async function createLocalWorkspace(
   }
 }
 
-async function findExistingWorkspace(
+/**
+ * Find the workspace for a GitHub repo, by repo identity.
+ *
+ * This used to match the *folder* basename against the tail of every slug
+ * (`slug.endsWith(name)`), so a repo checked out into `docs/` bound to
+ * `gh/someone/internal-docs` — a different owner, a different repo — and pushed
+ * to it. The folder name was only ever a proxy for the repo, and a bad one: the
+ * caller already knows `owner/repo`.
+ *
+ * `findWorkspaceByRepoUrl` in lib/audit-checks.ts already does this correctly for
+ * `margins install`; reuse it rather than keeping a second, weaker rule here.
+ */
+async function findWorkspaceForRepo(
   client: ReturnType<typeof createApiClient>,
-  name: string,
+  fullName: string,
+): Promise<WorkspaceListItem | null> {
+  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  return findWorkspaceByRepoUrl(workspaces, fullName) ?? null
+}
+
+/**
+ * Find a LOCAL workspace by its project name. A local workspace has no repo to
+ * match on, so the slug is all there is — but compare its final segment
+ * **exactly** rather than by suffix, so `myproject` cannot match
+ * `local/u/other-myproject`.
+ */
+async function findLocalWorkspaceByName(
+  client: ReturnType<typeof createApiClient>,
+  projectName: string,
 ): Promise<{ id: string; slug: string } | null> {
-  const workspaces = await client.get('/api/workspaces') as Array<{ id: string; slug: string }>
-  const nameLower = name.toLowerCase()
-  const match = workspaces.find(w => w.slug.toLowerCase().endsWith(nameLower))
-  return match ?? null
+  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  const want = projectName.toLowerCase()
+  const match = workspaces.find((w) => {
+    // `repoUrl === null` is the discriminator, not the slug prefix: a local
+    // workspace is exactly one with no repo behind it. Without this, a folder
+    // named `docs` whose local create 409s would match `gh/acme/docs` — whichever
+    // the server happened to list first — and push into the team's GitHub
+    // workspace. That is the same "content lands somewhere nobody intended"
+    // harm this change exists to remove, so the narrowing has to cover it too.
+    if (w.repoUrl) return false
+    const segments = w.slug.toLowerCase().split('/')
+    return segments[segments.length - 1] === want
+  })
+  return match ? { id: match.id, slug: match.slug } : null
 }

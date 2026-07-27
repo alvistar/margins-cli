@@ -677,6 +677,14 @@ The stamped workflow uses the
 [margins-sync-action](https://github.com/alvistar/margins-sync-action) and a pinned CLI
 version. Requires Margins server v0.21.0+.
 
+**A repo that cannot be onboarded is `skipped`, not a failure.** Over the cap, on the
+wrong sync mode, or refused by the server because a workspace already exists for it and
+you are not a member — each is reported per-repo and the run continues to the next one.
+So `install` can exit `0` having onboarded nothing. Read the per-repo results (`--json`
+gives you them structured); the exit code only tells you the run itself did not break.
+A refused repo needs an invite link from an editor of the existing workspace, which is
+an action for a person, not a retry.
+
 ---
 
 ### `audit`
@@ -727,6 +735,28 @@ MARGINS_API_KEY=mrgn_... MARGINS_SERVER_URL=https://margins.example.com margins 
 ```
 
 **Exit codes:** `0` on success, `1` on any error (auth failure, network error, not found, etc.). Error details are written to stderr.
+
+### Error envelope
+
+Under `--json`, a failure writes a single JSON object to stderr:
+
+```json
+{ "error": "human-readable message", "code": "ConflictError", "serverCode": "SLUG_CONFLICT" }
+```
+
+| Field | Always present | What it is |
+|---|---|---|
+| `error` | yes | The message meant for a person. Wording is not a contract — do not match on it. |
+| `code` | yes | The CLI's error **class**. Coarse: several unrelated failures share one (a refused workspace and a cancelled prompt are both `ValidationError`). |
+| `serverCode` | no | The **server's** structural code for the failure, when the response carried one. This is the field to branch on. |
+
+`serverCode` is absent whenever the server said nothing structural — a network
+error, a client-side validation failure, or an older server that answers without
+an error code. Treat its absence as "cause unknown", not as a specific cause.
+
+The case this exists for: `margins sync` against a repository whose workspace you
+are not a member of fails with `serverCode: "SLUG_CONFLICT"`, which a CI job can
+distinguish from every other conflict without reading prose the server owns.
 
 ---
 
