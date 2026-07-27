@@ -1,0 +1,55 @@
+# The suite's only pre-merge run.
+#
+# Without this, `release.yaml` is the sole workflow in the repo: it fires on a
+# push to `main` touching package.json, and the suite runs inside it only via
+# `prepublishOnly`. That makes the publish the first time the tests meet a
+# machine that is not a developer's laptop, and a failure there is not a red
+# check — it is a blocked release, after the merge, with the version bump
+# already landed. Three incidents came out of that shape (a runner-only OIDC
+# env leak, a 0.17.0 release that failed and then passed unchanged on a re-run,
+# and a harness ordering bug), and none of them could have been caught earlier
+# because no earlier non-laptop run existed.
+#
+# Deliberately NOT a typecheck lane: `tsc --noEmit` reports 14 pre-existing
+# errors on main, so a typecheck job would be red on its first run and would
+# train everyone to ignore this one. It lands when that baseline is zero.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Distinct from release.yaml's group on purpose: that one sets
+# cancel-in-progress: false because cancelling a publish mid-flight is harmful.
+# Cancelling a superseded test run is not.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The publish runs the suite after building, so build here too — a green
+      # lane should predict a green prepublishOnly, not merely a green vitest.
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
