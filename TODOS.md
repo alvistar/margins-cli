@@ -4,6 +4,39 @@ Deferred work for `margins-cli`, newest first. Same convention as the server
 repo's `TODOS.md`: each entry says what the gap is, why it was not fixed at the
 time, and what the real fix looks like.
 
+## An intermittent `install-hook` failure was reported and never explained (2026-07-27)
+
+**Priority:** P3 — *open, but do not act on it without new evidence*
+
+While shipping 0.18.0, `__tests__/install-hook.test.ts` was reported to fail once
+in five full-suite runs at the tag-push assertion, and to pass 5/5 in isolation.
+Two real harness defects were found and fixed on the strength of that report — a
+pid-lexicographic sort used as if it were chronological, and a non-atomic record
+write. **Neither of them explains the reported rate**, and the report itself does
+not survive scrutiny:
+
+| candidate | measured | verdict |
+|---|---|---|
+| pid-sort inversion | 0 in 500 sequential spawns; <1% computed at a power-of-ten boundary | far too rare |
+| non-atomic write | 69 short reads in 3.4M stat samples | far too rare, and throws a JSON parse error rather than failing the reported assertion |
+| reproduction attempt | 0 failures in 12 full-suite runs on the unfixed harness | nothing |
+
+The failure output was **never captured**. The only record of it is prose. "One
+in five" was one event in five runs, which is consistent with a true rate
+anywhere from roughly 0.5% to 45%. A second opinion from another model, given the
+harness source and these measurements, returned "NO HIGH-RATE MECHANISM FOUND".
+
+**Leading untested hypothesis:** `waitFor`/`waitForCall` use a fixed 10-second
+deadline. Under a full suite — 49 files across parallel workers — a backgrounded
+hook exceeding that would fail and would pass in isolation, which matches the one
+thing actually observed. It is deliberately **not** fixed: hardening it would be
+treating an unfalsifiable hypothesis as a diagnosis, which is the mistake this
+entry exists to avoid repeating.
+
+**What to do instead:** nothing, until it recurs. `waitForCall` now prints every
+recorded call on timeout, so the next occurrence yields a real failure to reason
+from. Capture that output before changing anything.
+
 ## The typecheck baseline is 14 errors, so the PR lane cannot gate on types (2026-07-27)
 
 **Priority:** P3
