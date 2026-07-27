@@ -10,9 +10,12 @@
 # and a harness ordering bug), and none of them could have been caught earlier
 # because no earlier non-laptop run existed.
 #
-# Deliberately NOT a typecheck lane: `tsc --noEmit` reports 14 pre-existing
-# errors on main, so a typecheck job would be red on its first run and would
-# train everyone to ignore this one. It lands when that baseline is zero.
+# The typecheck job below was deliberately absent when this lane was introduced:
+# `tsc --noEmit` reported 14 pre-existing errors, and a job that is red on its
+# first run teaches everyone to ignore the whole lane. The baseline is zero now,
+# so it gates. Keep it that way — the errors accumulated in the first place
+# because nothing ran tsc, and `npm run build` (tsdown) passes straight through
+# type errors, so the build is not a backstop.
 name: Tests
 
 on:
@@ -50,6 +53,12 @@ jobs:
       # lane should predict a green prepublishOnly, not merely a green vitest.
       - name: Build
         run: npm run build
+
+      # Independent of the suite: vitest strips types via esbuild, so a green
+      # suite says nothing about type correctness. Runs after build so a failure
+      # here is unambiguously a type error rather than a missing artifact.
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Test
         run: npm test

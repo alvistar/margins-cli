@@ -37,25 +37,6 @@ entry exists to avoid repeating.
 recorded call on timeout, so the next occurrence yields a real failure to reason
 from. Capture that output before changing anything.
 
-## The typecheck baseline is 14 errors, so the PR lane cannot gate on types (2026-07-27)
-
-**Priority:** P3
-
-`npx tsc --noEmit` reports 14 errors on `main`. There is no `typecheck` script in
-`package.json` and nothing in CI runs one, so the baseline has been free to grow.
-
-`tests.yaml` deliberately does **not** include a typecheck job. A lane that is red
-on its first run teaches everyone to ignore it, and an ignored lane is worse than
-an absent one — it looks like coverage while providing none.
-
-**The fix:** clear the 14 errors, add a `typecheck` script, then add the job to
-`tests.yaml`. Doing it in that order matters; adding the job first just moves the
-red into everyone's PR.
-
-**Worth knowing:** `npm run build` (tsdown) passes with those errors present, so
-the build is not a backstop for type correctness here — the same trap documented
-on the server side, where `next build` stayed green through 66 type errors.
-
 ## The PR test lane is advisory; branch protection is available but unset (2026-07-27)
 
 **Priority:** P3

@@ -105,7 +105,13 @@ export async function handleLogin(cfg: ResolvedConfig): Promise<void> {
     p.log.info(`Make sure your server URL is set correctly: margins config set-url <url>`)
     const issuer = await p.text({
       message: 'Enter Keycloak issuer URL (e.g. https://auth.example.com/realms/margins)',
-      validate: (v) => { try { new URL(v); return undefined } catch { return 'Invalid URL' } },
+      // `v` is `string | undefined` — clack passes undefined for an empty submit.
+      // Handle it explicitly: `new URL(undefined)` throws and would have reported
+      // "Invalid URL" for a field the user simply left blank.
+      validate: (v) => {
+        if (!v) return 'Enter an issuer URL'
+        try { new URL(v); return undefined } catch { return 'Invalid URL' }
+      },
     })
     if (p.isCancel(issuer)) { p.cancel('Login cancelled'); process.exit(0) }
     issuerUrl = new URL(issuer as string)

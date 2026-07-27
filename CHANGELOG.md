@@ -4,9 +4,12 @@ All notable changes to margins-cli will be documented in this file.
 
 ## [Unreleased]
 
-No package-visible change — test harness and CI only, so there is no version
-bump. Bumping `package.json` would fire `release.yaml` and publish a release
-whose entire content is CI configuration.
+No package-visible change — test harness, types and CI only, so the **version is
+unchanged**. Note this section does now touch `package.json` (a new `typecheck`
+script): `release.yaml` is path-filtered on that file, so merging fires the
+workflow. It no-ops — the workflow reads the version, finds `0.18.0` already on
+npm, and skips install, build and publish. A run in the Actions history with
+nothing published is the expected outcome, not a failure.
 
 ### Fixed
 - **Two defects in the `install-hook` test harness.** Records were read back with
@@ -32,7 +35,25 @@ whose entire content is CI configuration.
   observed failure remains unproven. The harness now reports every recorded call
   on a timeout, so a recurrence will produce evidence instead of an anecdote.
 
+- **The 14-error typecheck baseline is now zero.** Thirteen were one cause:
+  `getConfig` typed its parameter as a bare `Command`, which under
+  `@commander-js/extra-typings` means `Command<[], {}, {}>` — the instantiation
+  for a command with no arguments and no options. Every command that declares an
+  argument is a different type that does not assign to it, so all thirteen
+  argument-taking commands failed at their `getConfig(cmd)` call. It now takes
+  the two members it actually uses (`getOptionValue`, `parent`), which accepts
+  every instantiation and removes an `any` plus its eslint-disable rather than
+  adding one. The fourteenth was real: an issuer-URL prompt passed
+  `string | undefined` to `new URL()`, so an empty submit threw and reported
+  "Invalid URL" for a field the user had simply left blank; it now says
+  "Enter an issuer URL".
+
 ### Added
+- **A typecheck job** in the test lane, plus a `typecheck` script. It is
+  independent of the suite by design — vitest strips types via esbuild, so a
+  green suite says nothing about type correctness, and `npm run build` (tsdown)
+  passes straight through type errors, so the build is not a backstop either.
+  Nothing ran `tsc` before, which is how 14 errors accumulated unnoticed.
 - **A pull-request test lane** (`.github/workflows/tests.yaml`). Previously
   `release.yaml` was the only workflow and the suite ran solely via
   `prepublishOnly`, which made the publish the first non-laptop run of the tests —
