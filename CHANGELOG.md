@@ -2,6 +2,32 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [Unreleased]
+
+No package-visible change — test harness and CI only, so there is no version
+bump. Bumping `package.json` would fire `release.yaml` and publish a release
+whose entire content is CI configuration.
+
+### Fixed
+- **The `install-hook` test flake, at both of its causes.** The harness recorded
+  each fake CLI invocation as `<pid>-<ms>-<rand>.json` and read the records back
+  with a lexicographic sort, so ordering was by pid — unrelated to the order the
+  calls were made, since every hook invocation is its own process. Two tests
+  waited for the call count to rise and then read "the last one", which meant
+  "the record that sorted last" and could be the wrong call. They now wait for a
+  call matching the ref under test. Separately, records were written with a plain
+  `writeFileSync` to their final name, making a file visible to a reader before
+  its contents landed; they are now written to a temp sibling and renamed into
+  place. Both fixes carry regression tests that fail against the old harness.
+
+### Added
+- **A pull-request test lane** (`.github/workflows/tests.yaml`). Previously
+  `release.yaml` was the only workflow and the suite ran solely via
+  `prepublishOnly`, which made the publish the first non-laptop run of the tests —
+  so a failure blocked a release instead of failing a check. The lane is advisory;
+  it does not include a typecheck job, because that baseline is currently 14
+  errors. Both points are recorded in `TODOS.md`.
+
 ## [0.18.0] - 2026-07-26
 
 Responds to Margins server 0.60.0, which removed auto-join: `POST /api/workspaces`
