@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { handleInstallHook } from '../src/commands/install-hook.js'
 import { parsePrePushRefs } from '../src/commands/workspace/push.js'
 
@@ -106,15 +106,29 @@ function commit(cwd: string, msg: string): string {
  * values containing newlines — the pre-push refs blob is exactly that — survive
  * intact.
  */
-function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Promise<string[][]> } {
+function useFakeMargins(): {
+  calls: () => string[][]
+  waitFor: (n: number) => Promise<string[][]>
+  /** The fake binary itself, so harness-invariant tests can drive it without git. */
+  marginsBin: string
+  /** The log directory, so a test can plant a decoy record in it. */
+  logDir: string
+} {
   const binDir = mkdtemp('margins-fakebin-')
   const logDir = mkdtemp('margins-fakelog-')
   const recorder = path.join(binDir, 'record.cjs')
   fs.writeFileSync(
     recorder,
+    // Write to a temp sibling and rename into place. `rename(2)` within one
+    // directory is atomic, so a reader polling this directory either does not
+    // see the record or sees it whole — it can never read a half-written one.
+    // Plain writeFileSync makes the file visible at its final name the moment it
+    // is created, before the contents land.
     `const fs=require('fs'),path=require('path');\n` +
-    `const f=path.join(${JSON.stringify(logDir)}, process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.json');\n` +
-    `fs.writeFileSync(f, JSON.stringify(process.argv.slice(2)));\n`,
+    `const base=process.pid+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)+'.json';\n` +
+    `const tmp=path.join(${JSON.stringify(logDir)}, base+'.tmp');\n` +
+    `fs.writeFileSync(tmp, JSON.stringify(process.argv.slice(2)));\n` +
+    `fs.renameSync(tmp, path.join(${JSON.stringify(logDir)}, base));\n`,
   )
   fs.writeFileSync(
     path.join(binDir, 'margins'),
@@ -123,8 +137,12 @@ function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Pr
   )
   hookEnv = { PATH: `${binDir}${path.delimiter}${process.env['PATH'] ?? ''}` }
 
+  /** Completed records only — an in-flight `.json.tmp` is not a record yet. */
+  const recordFiles = (): string[] =>
+    fs.readdirSync(logDir).filter((f) => f.endsWith('.json')).sort()
+
   const calls = (): string[][] =>
-    fs.readdirSync(logDir).sort()
+    recordFiles()
       .map((f) => JSON.parse(fs.readFileSync(path.join(logDir, f), 'utf-8')) as string[])
 
   const waitFor = async (n: number): Promise<string[][]> => {
@@ -139,8 +157,47 @@ function useFakeMargins(): { calls: () => string[][]; waitFor: (n: number) => Pr
     }
   }
 
-  return { calls, waitFor }
+  return { calls, waitFor, marginsBin: path.join(binDir, 'margins'), logDir }
 }
+
+// ─── Harness invariants ──────────────────────────────────────────────────────
+//
+// These do not test the hook. They test `useFakeMargins` itself, because two
+// intermittent suite failures were traced to the harness rather than to the code
+// under test, and a harness defect looks exactly like a flaky feature.
+
+describe('fake-margins recorder', () => {
+  // A record is written under a temp name and renamed into place, so the reader
+  // sees a record only once it is complete. Planting the in-flight name is the
+  // deterministic form of "the reader caught a write mid-flight" — the timing
+  // window that motivates this is real but far too narrow to provoke on demand
+  // (measured at ~69 short reads in 3.4M stat samples, with payloads ~20x larger
+  // than a real invocation's).
+  it('ignores a record that is still being written', () => {
+    const fake = useFakeMargins()
+    fs.writeFileSync(path.join(fake.logDir, '999999-1-inflight.json.tmp'), '["hook-sync","--re')
+
+    expect(() => fake.calls()).not.toThrow()
+    expect(fake.calls()).toHaveLength(0)
+  })
+
+  it('records every concurrent invocation exactly once', async () => {
+    const fake = useFakeMargins()
+    const N = 40
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        new Promise<void>((resolve, reject) => {
+          execFile(fake.marginsBin, ['hook-sync', '--rev', String(i)], (err) =>
+            err ? reject(err) : resolve())
+        })),
+    )
+
+    const seen = fake.calls().map((c) => flag(c, '--rev'))
+    expect(seen.sort((a, b) => Number(a) - Number(b))).toEqual(
+      Array.from({ length: N }, (_, i) => String(i)),
+    )
+  })
+})
 
 /** Read `--flag`'s value out of a recorded argv. */
 function flag(argv: string[], name: string): string | undefined {
