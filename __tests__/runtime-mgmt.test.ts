@@ -96,6 +96,75 @@ describe('runtime cache — in-use guard (M4)', () => {
     expect(pruneRuntimes(2)).toEqual(['0.1.0']) // dead daemon → not in use → prune proceeds
   })
 
+  /** A per-store rendezvous record (runtime 0.15.0+). The filename is a store hash the CLI
+   *  never computes — the scan is deliberately filename-agnostic. */
+  function writeStoreRecord(name: string, version: string, pid: number) {
+    const dir = path.join(home, 'daemons')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, `${name}.json`),
+      JSON.stringify({
+        v: 1,
+        marker: 'margins-daemon',
+        store: `/store/${name}`,
+        pid,
+        port: 40000,
+        token: 'x',
+        ready: true,
+        runtimeDir: pkgRootFor(version),
+      }),
+    )
+  }
+
+  it('pruneRuntimes NEVER deletes a version a live daemon is serving from — PER-STORE record', () => {
+    // Runtime 0.15.0 stopped writing ~/.margins/daemon.json. Reading only that file makes
+    // this guard silently answer "nothing is live" and delete a running daemon's files.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeStoreRecord('af019e9be2230360', '0.1.0', process.pid)
+    expect(pruneRuntimes(2)).toEqual([])
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+  })
+
+  it('protects BOTH runtimes when two daemons are live on different ones', () => {
+    // The case the old singular `liveRuntimeDir()` could not express: the desktop app's
+    // daemon and the CLI's can now run at once, from different cached runtimes. One answer
+    // protects one of them and lets prune delete the other's files out from under it.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    fakeRuntime('0.4.0')
+    writeStoreRecord('appstore', '0.1.0', process.pid)
+    writeStoreRecord('clistore', '0.2.0', process.pid)
+    expect(pruneRuntimes(2)).toEqual([])
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+    expect(fs.existsSync(pkgRootFor('0.2.0'))).toBe(true)
+  })
+
+  it('still honours the LEGACY global file, so a pre-0.15.0 daemon is protected too', () => {
+    // During an upgrade a cached older runtime can be the one actually serving. The risk
+    // here is DELETING a directory a live process is executing from, so every scrap of
+    // liveness evidence should protect — the opposite direction from the attach path, where
+    // reading a global record would bind the wrong store.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeDiscovery('0.1.0', process.pid)
+    writeStoreRecord('newer', '0.2.0', process.pid)
+    expect(pruneRuntimes(2)).toEqual([])
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+  })
+
+  it('ignores a per-store record whose pid is dead, and one that is corrupt', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeStoreRecord('dead', '0.1.0', 999999)
+    fs.writeFileSync(path.join(home, 'daemons', 'corrupt.json'), '{not json')
+    expect(pruneRuntimes(2)).toEqual(['0.1.0'])
+  })
+
   it('pruneRuntimes prunes normally when there is no daemon at all', () => {
     fakeRuntime('0.1.0')
     fakeRuntime('0.2.0')

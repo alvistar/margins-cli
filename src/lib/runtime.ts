@@ -9,6 +9,7 @@
  * `gh` CLI; the isolated .npmrc forces the PUBLIC registry for the bundled deps' unscoped names
  * and GitHub Packages only for @alvistar (Codex #9).
  */
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -299,45 +300,80 @@ export function compareVersionsDesc(a: string, b: string): number {
 
 // A live daemon may have booted from an OLDER cached runtime than the newest; deleting that dir
 // out from under it crashes the process on its next lazy require() (M4). The daemon records the
-// dir it is serving from in ~/.margins/daemon.json (margins-cli M4 contract) — read it and never
-// prune/clean that version while its PID is alive.
+// dir it is serving from, and we must never prune/clean that version while its PID is alive.
 const DISCOVERY_MARKER = 'margins-daemon'
 
-/** The runtime dir a currently-live daemon booted from (from the discovery file), or null. */
-export function liveRuntimeDir(): string | null {
-  let disc: { marker?: string; pid?: unknown; runtimeDir?: unknown }
+/**
+ * Every runtime dir a currently-live daemon booted from.
+ *
+ * PLURAL since runtime 0.15.0. There used to be one global `~/.margins/daemon.json`, so one
+ * daemon and one answer. Each store now publishes `~/.margins/daemons/<storeKey>.json`, and
+ * the desktop app's daemon and the CLI's can run at the same time — from DIFFERENT cached
+ * runtimes. A single answer would protect one and let prune delete the other's dir out from
+ * under it.
+ *
+ * Both formats are read, deliberately, and the direction matters: the risk this guards is
+ * DELETING a directory a live process is executing from, so every scrap of liveness evidence
+ * should protect. That is the opposite of the attach path, where reading a global record
+ * would let a client bind the wrong store — there, dual-reading is fail-open and forbidden.
+ * Same files, opposite safety direction.
+ */
+export function liveRuntimeDirs(): string[] {
+  const dirs = new Set<string>()
+  const consider = (raw: string) => {
+    let rec: { marker?: string; pid?: unknown; runtimeDir?: unknown }
+    try {
+      rec = JSON.parse(raw)
+    } catch {
+      return // unreadable or corrupt names no owner
+    }
+    if (rec?.marker !== DISCOVERY_MARKER || typeof rec.runtimeDir !== 'string') return
+    const pid = Number(rec.pid)
+    if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return
+    dirs.add(rec.runtimeDir)
+  }
+
+  // Per-store records (runtime 0.15.0+).
+  const daemonsDir = path.join(marginsHome(), 'daemons')
   try {
-    disc = JSON.parse(fs.readFileSync(path.join(marginsHome(), 'daemon.json'), 'utf8'))
+    for (const name of fs.readdirSync(daemonsDir)) {
+      if (!name.endsWith('.json')) continue
+      try {
+        consider(fs.readFileSync(path.join(daemonsDir, name), 'utf8'))
+      } catch {
+        // a record that vanished mid-scan protects nothing; skip it
+      }
+    }
   } catch {
-    return null // no daemon, or unreadable/corrupt discovery
+    // no daemons dir — either no 0.15.0+ daemon has ever run, or the home is empty
   }
-  if (disc?.marker !== DISCOVERY_MARKER || typeof disc.runtimeDir !== 'string') return null
-  const pid = Number(disc.pid)
-  if (!Number.isInteger(pid) || pid <= 0) return null
+
+  // The pre-0.15.0 global file. Still read because a cached older runtime can be serving
+  // right now, and prune must not delete the dir it is running from.
   try {
-    process.kill(pid, 0) // liveness probe
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return null // daemon is gone
+    consider(fs.readFileSync(path.join(marginsHome(), 'daemon.json'), 'utf8'))
+  } catch {
+    // absent is the normal case once every daemon is 0.15.0+
   }
-  return disc.runtimeDir
+
+  return [...dirs]
 }
 
-/** True if `version`'s cache dir is the one the live daemon is serving from (path-prefix match). */
-function isVersionInUse(version: string, live: string | null): boolean {
-  if (!live) return false
+/** True if `version`'s cache dir is one a live daemon is serving from (path-prefix match). */
+function isVersionInUse(version: string, live: string[]): boolean {
   const dir = versionDir(version)
-  return live === dir || live.startsWith(dir + path.sep)
+  return live.some((l) => l === dir || l.startsWith(dir + path.sep))
 }
 
-/** The cached version a live daemon is currently serving from (for `runtime list`/`clean` UI), or null. */
+/** A cached version a live daemon is serving from (for `runtime list`/`clean` UI), or null. */
 export function liveRuntimeVersion(): string | null {
-  const live = liveRuntimeDir()
-  if (!live) return null
+  const live = liveRuntimeDirs()
+  if (live.length === 0) return null
   for (const r of listRuntimes()) if (isVersionInUse(r.version, live)) return r.version
   return null
 }
 
-/** Liveness probe (matches liveRuntimeDir): alive unless the PID is gone (ESRCH). */
+/** Liveness probe (matches liveRuntimeDirs): alive unless the PID is gone (ESRCH). */
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -355,44 +391,67 @@ export interface StopResult {
 }
 
 /**
- * Stop the running Margins Light daemon. The launcher advertises `margins stop`, but the command
- * was missing — the detached daemon could only be killed by PID. Reads ~/.margins/daemon.json, and
- * if it records a LIVE margins daemon, SIGTERMs its PID and removes the discovery file.
- * PID-recycle-safe: acts only when the marker is ours AND the PID is alive; a dead PID (crash /
- * already stopped) just cleans the stale file and reports not-running rather than signalling an
- * unrelated process that happened to inherit the recycled PID.
+ * Stop the running Margins Light daemon by DELEGATING to the runtime's own launcher.
+ *
+ * This used to read `~/.margins/daemon.json` and SIGTERM the pid itself. Runtime 0.15.0
+ * removed that file — each store now publishes `~/.margins/daemons/<storeKey>.json` — so a
+ * CLI that keeps its own copy of the discovery format reports "no running daemon" about a
+ * daemon that is running, and leaves it holding `.margins.lock`.
+ *
+ * Porting the new format here would fix today and break at the next one. The launcher ships
+ * INSIDE each runtime, so it always knows that runtime's format: 0.14.x reads the global
+ * file, 0.15.0+ reads the per-store record and falls back to `.margins.lock`. Delegating is
+ * what `margins open` already does (KTD4) and it makes this command version-agnostic by
+ * construction rather than by keeping two implementations in step.
+ *
+ * The launcher also does what this never did: it signals the process GROUP, health-checks
+ * before signalling, refuses a recycled pid, and waits for the process to actually be gone.
+ *
+ * No cached runtime means no daemon can be running, so that is `not-running`, not an error —
+ * and we never DOWNLOAD one just to ask.
  */
 export function stopDaemon(): StopResult {
-  const daemonFile = path.join(marginsHome(), 'daemon.json')
-  let disc: { marker?: string; pid?: unknown }
+  const cached = listRuntimes()
+  if (cached.length === 0) return { stopped: false, reason: 'not-running' }
+
+  // The newest cached launcher. Any launcher can stop any daemon it can find: the store is
+  // resolved from the environment, not from which runtime happens to be newest.
+  const launcher = path.join(pkgRootFor(cached[0]!.version), 'scripts', 'launcher.mjs')
+  if (!fs.existsSync(launcher)) return { stopped: false, reason: 'not-running' }
+
+  const res = spawnSync(process.execPath, [launcher, 'stop', '--json'], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  })
+  const line = (res.stdout || '').trim().split('\n').filter(Boolean).pop()
+  if (!line) return { stopped: false, reason: 'not-running' }
+
+  let out: { outcome?: string; pid?: unknown }
   try {
-    disc = JSON.parse(fs.readFileSync(daemonFile, 'utf8'))
+    out = JSON.parse(line)
   } catch {
-    return { stopped: false, reason: 'not-running' } // no daemon, or unreadable/corrupt discovery
+    return { stopped: false, reason: 'not-running' }
   }
-  if (disc?.marker !== DISCOVERY_MARKER) return { stopped: false, reason: 'not-running' }
-  const pid = Number(disc.pid)
-  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) {
-    fs.rmSync(daemonFile, { force: true }) // stale discovery — clean it, nothing to kill
-    return { stopped: false, reason: 'stale' }
+  const pid = Number(out.pid)
+  const withPid = Number.isInteger(pid) && pid > 0 ? { pid } : {}
+  switch (out.outcome) {
+    case 'stopped':
+      return { stopped: true, reason: 'stopped', ...withPid }
+    case 'not-running':
+      return { stopped: false, reason: 'not-running', ...withPid }
+    default:
+      // 'refused' (a wedged or unidentifiable daemon) and 'timed-out' (signalled, still
+      // alive). Neither is "stopped" and neither is "nothing was there" — surface them as
+      // stale so the user is told rather than reassured. `margins stop` has no --force yet;
+      // the launcher's own `stop --force` is the escape hatch.
+      return { stopped: false, reason: 'stale', ...withPid }
   }
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-      fs.rmSync(daemonFile, { force: true }) // died between the probe and the signal
-      return { stopped: false, reason: 'stale' }
-    }
-    throw err
-  }
-  fs.rmSync(daemonFile, { force: true })
-  return { stopped: true, pid, reason: 'stopped' }
 }
 
 /** Keep the newest KEEP_RUNTIMES; delete older — but NEVER a version a live daemon booted from. */
 export function pruneRuntimes(keep: number = KEEP_RUNTIMES): string[] {
   const versions = listRuntimes().map((r) => r.version)
-  const live = liveRuntimeDir()
+  const live = liveRuntimeDirs()
   const removed: string[] = []
   for (const v of versions.slice(keep)) {
     if (isVersionInUse(v, live)) continue // a live daemon is serving from it (M4)
@@ -404,7 +463,7 @@ export function pruneRuntimes(keep: number = KEEP_RUNTIMES): string[] {
 
 /** Remove all cached runtimes except the active one (and any a live daemon is serving from — M4). */
 export function cleanRuntimes(keepVersion?: string): string[] {
-  const live = liveRuntimeDir()
+  const live = liveRuntimeDirs()
   const removed: string[] = []
   for (const r of listRuntimes()) {
     if (r.version === keepVersion) continue
