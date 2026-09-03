@@ -4,12 +4,67 @@ All notable changes to margins-cli will be documented in this file.
 
 ## [Unreleased]
 
-No package-visible change — test harness, types and CI only, so the **version is
-unchanged**. Note this section does now touch `package.json` (a new `typecheck`
-script): `release.yaml` is path-filtered on that file, so merging fires the
-workflow. It no-ops — the workflow reads the version, finds `0.18.0` already on
-npm, and skips install, build and publish. A run in the Actions history with
-nothing published is the expected outcome, not a failure.
+Nothing yet.
+
+## [0.19.0] - 2026-09-03
+
+
+Runtime 0.15.0 removed `~/.margins/daemon.json`. This CLI read that file in two places, so
+without these changes `margins stop` reports "no running Margins Light daemon" about a daemon
+that IS running — and leaves it holding `.margins.lock`.
+
+### Changed
+
+- **`liveRuntimeDir(): string | null` is now `liveRuntimeDirs(): string[]`.** A breaking
+  change to an exported symbol, and the reason this release is MINOR rather than PATCH
+  despite reading as a list of fixes. The plural is not cosmetic: the desktop app's daemon
+  and the CLI's can now run at once from different cached runtimes, and a single answer
+  protected one while prune deleted the other's files.
+
+- **`margins stop` reports two outcomes it previously could not.** `refused` (the runtime
+  found a daemon and would not signal it) and `timed-out` (signalled, still alive) are
+  distinct verdicts with their own messages, and a launcher that cannot answer at all is
+  `failed` rather than being reported as an absence.
+
+### Fixed
+
+- **`margins stop` works again, by asking the runtime instead of guessing.** It used to read
+  `~/.margins/daemon.json` and SIGTERM the pid itself. Each store now publishes
+  `~/.margins/daemons/<storeKey>.json`, so that read found nothing.
+
+  Rather than port the new format, `stop` now delegates to the launcher shipped **inside** the
+  runtime — the same thing `margins open` already does. A launcher always knows its own
+  runtime's format: 0.14.x reads the global file, 0.15.0+ reads the per-store record and falls
+  back to `.margins.lock`. That makes this command version-agnostic by construction instead of
+  by keeping two implementations in step, and it inherits behaviour the CLI never had — the
+  launcher signals the process GROUP, health-checks before signalling, refuses a recycled pid,
+  and waits for the process to actually be gone.
+
+  A `refused` or `timed-out` verdict is no longer flattened into "not running". The daemon is
+  still there in both cases, and saying otherwise sends you hunting for something the tool can
+  see perfectly well.
+
+- **Pruning no longer deletes a runtime directory a live daemon is executing from.** The M4
+  guard read the same removed file, so after upgrading it answered "nothing is live" and
+  `pruneRuntimes` — which runs automatically after every runtime install — would delete the
+  files of a daemon still running from an older cached version, crashing it on its next lazy
+  `require()`.
+
+  The guard now scans `~/.margins/daemons/*.json` **and** still reads the legacy file, because
+  a cached older runtime can be the one actually serving during an upgrade. Reading both is
+  deliberate and the direction matters: the risk here is deleting a directory a live process
+  is using, so every scrap of liveness evidence should protect. That is the opposite of the
+  attach path, where reading a global record would let a client bind the wrong store.
+
+  It also returns **all** live runtime dirs rather than one. The desktop app's daemon and the
+  CLI's can now run at the same time, from different cached runtimes; a single answer protected
+  one and let prune delete the other's files.
+
+### Also in this release — test harness, types and CI
+
+Written earlier and filed under `[Unreleased]`, on the reasoning that it changed nothing
+package-visible and so needed no bump. That held until this release was cut for the
+daemon-record work above, which carries it along.
 
 ### Fixed
 - **Two defects in the `install-hook` test harness.** Records were read back with
@@ -60,46 +115,6 @@ nothing published is the expected outcome, not a failure.
   so a failure blocked a release instead of failing a check. The lane is advisory;
   it does not include a typecheck job, because that baseline is currently 14
   errors. Both points are recorded in `TODOS.md`.
-
-## [0.19.0] - 2026-09-03
-
-Runtime 0.15.0 removed `~/.margins/daemon.json`. This CLI read that file in two places, so
-without these changes `margins stop` reports "no running Margins Light daemon" about a daemon
-that IS running — and leaves it holding `.margins.lock`.
-
-### Fixed
-
-- **`margins stop` works again, by asking the runtime instead of guessing.** It used to read
-  `~/.margins/daemon.json` and SIGTERM the pid itself. Each store now publishes
-  `~/.margins/daemons/<storeKey>.json`, so that read found nothing.
-
-  Rather than port the new format, `stop` now delegates to the launcher shipped **inside** the
-  runtime — the same thing `margins open` already does. A launcher always knows its own
-  runtime's format: 0.14.x reads the global file, 0.15.0+ reads the per-store record and falls
-  back to `.margins.lock`. That makes this command version-agnostic by construction instead of
-  by keeping two implementations in step, and it inherits behaviour the CLI never had — the
-  launcher signals the process GROUP, health-checks before signalling, refuses a recycled pid,
-  and waits for the process to actually be gone.
-
-  A `refused` or `timed-out` verdict is no longer flattened into "not running". The daemon is
-  still there in both cases, and saying otherwise sends you hunting for something the tool can
-  see perfectly well.
-
-- **Pruning no longer deletes a runtime directory a live daemon is executing from.** The M4
-  guard read the same removed file, so after upgrading it answered "nothing is live" and
-  `pruneRuntimes` — which runs automatically after every runtime install — would delete the
-  files of a daemon still running from an older cached version, crashing it on its next lazy
-  `require()`.
-
-  The guard now scans `~/.margins/daemons/*.json` **and** still reads the legacy file, because
-  a cached older runtime can be the one actually serving during an upgrade. Reading both is
-  deliberate and the direction matters: the risk here is deleting a directory a live process
-  is using, so every scrap of liveness evidence should protect. That is the opposite of the
-  attach path, where reading a global record would let a client bind the wrong store.
-
-  It also returns **all** live runtime dirs rather than one. The desktop app's daemon and the
-  CLI's can now run at the same time, from different cached runtimes; a single answer protected
-  one and let prune delete the other's files.
 
 ## [0.18.0] - 2026-07-26
 

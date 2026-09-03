@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -156,13 +157,107 @@ describe('runtime cache — in-use guard (M4)', () => {
     expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
   })
 
+  /**
+   * A pid that is certainly dead, on every platform.
+   *
+   * The literal 999999 used elsewhere here is dead on macOS (pid_max 99998) but can be a
+   * LIVE process on Linux, where pid_max defaults to 4194304 — the test would then flip to
+   * expecting no pruning and fail only in CI, on a different OS.
+   */
+  function reliablyDeadPid(): number {
+    const child = spawnSync(process.execPath, ['-e', 'process.exit(0)'])
+    const pid = child.pid
+    if (typeof pid === 'number' && pid > 0) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        return pid // exited and reaped: nothing can be running as it
+      }
+    }
+    return 999999 // fallback; still correct on macOS
+  }
+
   it('ignores a per-store record whose pid is dead, and one that is corrupt', () => {
     fakeRuntime('0.1.0')
     fakeRuntime('0.2.0')
     fakeRuntime('0.3.0')
-    writeStoreRecord('dead', '0.1.0', 999999)
+    writeStoreRecord('dead', '0.1.0', reliablyDeadPid())
     fs.writeFileSync(path.join(home, 'daemons', 'corrupt.json'), '{not json')
     expect(pruneRuntimes(2)).toEqual(['0.1.0'])
+  })
+
+  it('ignores a per-store record whose MARKER is not ours', () => {
+    // Mutation-verified as uncovered: deleting the marker check from liveRuntimeDirs left
+    // every test green. The old stop.test.ts had a foreign-marker case; it was deleted with
+    // that file's rewrite and never replaced. Any unrelated tool dropping a JSON file with
+    // a live pid into ~/.margins/daemons/ would pin cached runtimes forever.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    fs.mkdirSync(path.join(home, 'daemons'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'daemons', 'foreign.json'),
+      JSON.stringify({ v: 1, marker: 'some-other-daemon', pid: process.pid, runtimeDir: pkgRootFor('0.1.0') }),
+    )
+    expect(pruneRuntimes(2)).toEqual(['0.1.0'])
+  })
+
+  it('ignores a record whose runtimeDir is not a string, without throwing', () => {
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    fs.mkdirSync(path.join(home, 'daemons'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'daemons', 'weird.json'),
+      JSON.stringify({ v: 1, marker: 'margins-daemon', pid: process.pid, runtimeDir: 12345 }),
+    )
+    fs.writeFileSync(path.join(home, 'daemons', 'notes.txt'), 'not a record at all')
+    expect(pruneRuntimes(2)).toEqual(['0.1.0'])
+  })
+
+  it('a live 0.1.0-beta daemon does NOT protect 0.1.0 (the prefix near-miss)', () => {
+    // Mutation-verified as uncovered: changing `startsWith(dir + path.sep)` to
+    // `startsWith(dir)` left every test green, and one path being a string prefix of
+    // another would then protect the wrong version.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.1.0-beta')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeStoreRecord('beta', '0.1.0-beta', process.pid)
+    expect(pruneRuntimes(2)).toContain('0.1.0')
+    expect(fs.existsSync(pkgRootFor('0.1.0-beta'))).toBe(true)
+  })
+
+  it('protects a live runtime even when the record spells the path differently', () => {
+    // The guard gates an rm -rf and fails TOWARD deletion, so both sides are canonicalised.
+    // A trailing separator, a relative MARGINS_HOME, or a symlinked home (/Users/x vs
+    // /System/Volumes/Data/Users/x on macOS) would otherwise never prefix-match, and prune
+    // would delete the directory a live daemon is executing from.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    const odd = pkgRootFor('0.1.0') + path.sep + '.' + path.sep
+    fs.mkdirSync(path.join(home, 'daemons'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, 'daemons', 'odd.json'),
+      JSON.stringify({ v: 1, marker: 'margins-daemon', pid: process.pid, runtimeDir: odd }),
+    )
+    expect(pruneRuntimes(2)).toEqual([])
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+  })
+
+  it('cleanRuntimes — the MORE destructive deleter — honours per-store records too', () => {
+    // Every per-store test above targets pruneRuntimes. cleanRuntimes removes everything
+    // except the active version, so it can delete strictly more, and its in-use guard was
+    // only ever exercised through the legacy global file.
+    fakeRuntime('0.1.0')
+    fakeRuntime('0.2.0')
+    fakeRuntime('0.3.0')
+    writeStoreRecord('appstore', '0.1.0', process.pid)
+    writeStoreRecord('clistore', '0.2.0', process.pid)
+    expect(cleanRuntimes('0.3.0')).toEqual([])
+    expect(fs.existsSync(pkgRootFor('0.1.0'))).toBe(true)
+    expect(fs.existsSync(pkgRootFor('0.2.0'))).toBe(true)
   })
 
   it('pruneRuntimes prunes normally when there is no daemon at all', () => {

@@ -336,12 +336,17 @@ export function liveRuntimeDirs(): string[] {
   // Per-store records (runtime 0.15.0+).
   const daemonsDir = path.join(marginsHome(), 'daemons')
   try {
-    for (const name of fs.readdirSync(daemonsDir)) {
+    // Bounded: this runs before every automatic prune, and a stuffed directory would stall
+    // the CLI on a synchronous read loop. Two daemons is the designed maximum; 256 records
+    // and 64KB apiece is far past any real configuration.
+    for (const name of fs.readdirSync(daemonsDir).slice(0, 256)) {
       if (!name.endsWith('.json')) continue
       try {
-        consider(fs.readFileSync(path.join(daemonsDir, name), 'utf8'))
+        const file = path.join(daemonsDir, name)
+        if (fs.statSync(file).size > 64 * 1024) continue
+        consider(fs.readFileSync(file, 'utf8'))
       } catch {
-        // a record that vanished mid-scan protects nothing; skip it
+        // vanished mid-scan, or a subdirectory: it protects nothing either way
       }
     }
   } catch {
@@ -359,10 +364,39 @@ export function liveRuntimeDirs(): string[] {
   return [...dirs]
 }
 
-/** True if `version`'s cache dir is one a live daemon is serving from (path-prefix match). */
+/**
+ * Canonicalise a path so two spellings of the same directory compare equal.
+ *
+ * `realpathSync` where it exists (it resolves symlinks), `path.resolve` otherwise — a
+ * daemon's recorded dir can outlive the directory itself, and a comparison that throws
+ * would be worse than one that is merely approximate.
+ */
+function canonical(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/**
+ * True if `version`'s cache dir is one a live daemon is serving from.
+ *
+ * Both sides are CANONICALISED first, and that is load-bearing rather than tidy: this
+ * predicate gates an `fs.rmSync(..., {recursive: true})`, and it fails toward DELETION. The
+ * left side is a string read verbatim from a daemon's record; the right is recomputed from
+ * `marginsHome()`, which is `process.env.MARGINS_HOME || os.homedir()/.margins` and never
+ * resolved. A trailing separator, a relative `MARGINS_HOME`, or a differently-spelled home
+ * — `/Users/x` versus `/System/Volumes/Data/Users/x`, routine on macOS — makes the prefix
+ * never match, the guard answers "not in use", and prune deletes the directory a live
+ * daemon is executing from. The same canonicalisation bug bit the runtime's own store key.
+ *
+ * `+ path.sep` is equally load-bearing in the other direction: without it a live daemon on
+ * `0.1.0-beta` would protect `0.1.0`, because one path is a string prefix of the other.
+ */
 function isVersionInUse(version: string, live: string[]): boolean {
-  const dir = versionDir(version)
-  return live.some((l) => l === dir || l.startsWith(dir + path.sep))
+  const dir = canonical(versionDir(version))
+  return live.map(canonical).some((l) => l === dir || l.startsWith(dir + path.sep))
 }
 
 /** A cached version a live daemon is serving from (for `runtime list`/`clean` UI), or null. */
@@ -386,8 +420,27 @@ function pidAlive(pid: number): boolean {
 export interface StopResult {
   stopped: boolean
   pid?: number
-  /** 'stopped' = SIGTERM sent; 'not-running' = no daemon file/marker; 'stale' = dead PID, file cleaned. */
-  reason: 'stopped' | 'not-running' | 'stale'
+  /**
+   * What the runtime's launcher actually reported, translated one-to-one.
+   *
+   * - `stopped`     the daemon is GONE. The launcher signalled its process group and waited
+   *                 for the pid to leave; this is not "a signal was sent".
+   * - `not-running` there was nothing to stop, and we know that positively: no cached
+   *                 runtime (so no daemon can exist), or the launcher said so itself.
+   * - `refused`     a daemon IS running and the launcher deliberately would not signal it —
+   *                 wedged, or a lock it could not identify as ours.
+   * - `timed-out`   signalled, and STILL ALIVE when the launcher gave up waiting.
+   * - `failed`      the launcher itself did not answer: could not spawn, exited non-zero,
+   *                 was killed by our timeout, or emitted something unparseable.
+   *
+   * The last three were once folded into a single `stale`, whose message told the user
+   * there was no running daemon and that a file had been cleaned up. Both were false, and
+   * "there is nothing to stop" is the most reassuring thing this command can say — the
+   * worst possible answer for the cases where a daemon is alive and holding the store lock.
+   */
+  reason: 'stopped' | 'not-running' | 'refused' | 'timed-out' | 'failed'
+  /** The launcher's stderr, when `failed`. The user needs to see why it could not answer. */
+  detail?: string
 }
 
 /**
@@ -420,31 +473,49 @@ export function stopDaemon(): StopResult {
   if (!fs.existsSync(launcher)) return { stopped: false, reason: 'not-running' }
 
   const res = spawnSync(process.execPath, [launcher, 'stop', '--json'], {
+    // MANDATORY. Without it `stdout` is a Buffer and `.trim()` below throws at runtime.
     encoding: 'utf8',
+    // MANDATORY. A wedged launcher would otherwise hang `margins stop` forever.
     timeout: 30_000,
   })
+
+  // A launcher that could not answer is a FAILURE, never an absence. Reading only stdout
+  // turned `spawn ENOENT`, a non-zero exit, and our own 30s timeout kill into "there is no
+  // running daemon" — the most reassuring sentence this command has, produced by its worst
+  // outcomes, while a daemon stays alive holding `.margins.lock`. The previous
+  // implementation rethrew an unexpected kill error; that surfacing must not be lost.
+  const failed = (detail: string): StopResult => ({ stopped: false, reason: 'failed', detail })
+  if (res.error) return failed(`could not run the runtime launcher: ${res.error.message}`)
+  if (res.signal) return failed(`the runtime launcher was killed by ${res.signal} (timed out)`)
+  if (res.status !== 0) {
+    return failed(`the runtime launcher exited ${res.status}: ${(res.stderr || '').trim() || 'no output'}`)
+  }
+
   const line = (res.stdout || '').trim().split('\n').filter(Boolean).pop()
-  if (!line) return { stopped: false, reason: 'not-running' }
+  if (!line) return failed('the runtime launcher produced no output')
 
   let out: { outcome?: string; pid?: unknown }
   try {
     out = JSON.parse(line)
   } catch {
-    return { stopped: false, reason: 'not-running' }
+    return failed(`could not parse the runtime launcher's reply: ${line.slice(0, 200)}`)
   }
   const pid = Number(out.pid)
   const withPid = Number.isInteger(pid) && pid > 0 ? { pid } : {}
   switch (out.outcome) {
     case 'stopped':
+      // A success claim with no pid is malformed, not a success — and printing it produced
+      // "Stopped the Margins Light daemon (pid undefined)."
+      if (!('pid' in withPid)) return failed('the runtime launcher reported a stop with no pid')
       return { stopped: true, reason: 'stopped', ...withPid }
     case 'not-running':
       return { stopped: false, reason: 'not-running', ...withPid }
+    case 'refused':
+      return { stopped: false, reason: 'refused', ...withPid }
+    case 'timed-out':
+      return { stopped: false, reason: 'timed-out', ...withPid }
     default:
-      // 'refused' (a wedged or unidentifiable daemon) and 'timed-out' (signalled, still
-      // alive). Neither is "stopped" and neither is "nothing was there" — surface them as
-      // stale so the user is told rather than reassured. `margins stop` has no --force yet;
-      // the launcher's own `stop --force` is the escape hatch.
-      return { stopped: false, reason: 'stale', ...withPid }
+      return failed(`the runtime launcher reported an unknown outcome: ${String(out.outcome)}`)
   }
 }
 
