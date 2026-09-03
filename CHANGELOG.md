@@ -8,7 +8,6 @@ Nothing yet.
 
 ## [0.19.0] - 2026-09-03
 
-
 Runtime 0.15.0 removed `~/.margins/daemon.json`. This CLI read that file in two places, so
 without these changes `margins stop` reports "no running Margins Light daemon" about a daemon
 that IS running — and leaves it holding `.margins.lock`.
