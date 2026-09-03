@@ -511,6 +511,34 @@ margins discuss resolve d_abc123 --workspace my-repo
 
 ---
 
+### `stop`
+
+Stop the Margins Light daemon that `margins open` starts for a local folder. The
+daemon outlives the browser tab, so this is how you end it and release the store
+lock it holds.
+
+```sh
+margins stop
+margins stop --json   # → { "stopped": true, "pid": 1234, "reason": "stopped" }
+```
+
+The command does not look for the daemon itself — it asks the cached runtime's own
+launcher to stop it, so it stays correct as the runtime's discovery format changes.
+It reports one of five outcomes:
+
+| `reason` | Meaning |
+|---|---|
+| `stopped` | The daemon is gone — signalled, and confirmed exited. |
+| `not-running` | There was nothing to stop. |
+| `refused` | A daemon **is** running and the runtime would not stop it: it may be wedged mid-boot, or holding a lock it cannot identify as its own. Run the runtime launcher with `stop --force` to signal it anyway. |
+| `timed-out` | The daemon was signalled but is still alive. Give it a moment and try again, or signal it directly. |
+| `failed` | The runtime launcher could not answer; `detail` says why. A daemon may still be running. |
+
+Three of those five mean a daemon is still running, so treat anything other than
+`stopped` or `not-running` as "still up".
+
+---
+
 ### `completions`
 
 Generate shell completion scripts.
