@@ -6,6 +6,39 @@ All notable changes to margins-cli will be documented in this file.
 
 Nothing yet.
 
+## [0.20.0] - 2026-09-09
+
+No change to what `margins stash` does. Every existing test for it passes with its
+assertions untouched, which is the point of the release: the logic moved, the behaviour
+did not.
+
+### Changed
+
+- **The stash update path now lives in `@alvistar/margins-stash-core`.** The config-directory
+  walk, the file→stash binding store with its R13 trust rule, and the R11 recovery matrix
+  (403/404/405/409) are published as an MIT npm package and consumed here.
+
+  They moved because a second program is about to run them: the Margins Light daemon behind
+  the desktop app's **Share** button. Both have to reach the *same* stash from the same file,
+  and two copies of a directory walk eventually look in different places — the symptom being
+  a daemon that reports "no API key" on a machine where `margins auth` plainly works.
+
+  The CLI still owns everything that talks to a person: the trust prompt, the printed lines,
+  the exit codes, and the mapping from the package's outcome codes to this CLI's error
+  classes. The package prompts nothing and prints nothing.
+
+  `createApiClient` remains on the stash path, so `margins stash` from a `margins auth login`
+  session still refreshes its Keycloak token. Switching to the package's own plain-fetch
+  transport would have removed that quietly.
+
+- **A 409 on update is surfaced, never retried.** Unchanged in effect — the CLI has never sent
+  `parentSha` — but the rule is now written down where the daemon, which does send one, will
+  read it. Retrying against the new head would overwrite whatever moved it.
+
+### Added
+
+- **`LICENSE` (MIT).** The repository had none; `package.json` now declares it.
+
 ## [0.19.0] - 2026-09-03
 
 Runtime 0.15.0 removed `~/.margins/daemon.json`. This CLI read that file in two places, so
