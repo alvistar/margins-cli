@@ -31,6 +31,11 @@ did not.
   session still refreshes its Keycloak token. Switching to the package's own plain-fetch
   transport would have removed that quietly.
 
+- **The transport gained `get`.** For the update precondition: a caller reads the stash's
+  current head and sends it as `parentSha`, so the update cannot silently replace an edit made
+  elsewhere. The CLI does not send one yet — `margins stash` behaves exactly as before — but
+  the adapter now exposes the method the daemon uses.
+
 - **A 409 on update is surfaced, never retried.** Unchanged in effect — the CLI has never sent
   `parentSha` — but the rule is now written down where the daemon, which does send one, will
   read it. Retrying against the new head would overwrite whatever moved it.

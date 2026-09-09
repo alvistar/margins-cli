@@ -42,6 +42,7 @@ function makeHttp(put: StashResponse | Error, post: StashResponse = CREATED): St
   put: ReturnType<typeof vi.fn>
 } {
   return {
+    get: vi.fn(async () => ({ status: 200, body: {} })),
     post: vi.fn(async () => post),
     put: vi.fn(async () => {
       if (put instanceof Error) throw put

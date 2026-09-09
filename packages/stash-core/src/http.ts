@@ -33,6 +33,7 @@ export interface StashResponse {
 }
 
 export interface StashHttp {
+  get(path: string): Promise<StashResponse>
   post(path: string, body: unknown): Promise<StashResponse>
   put(path: string, body: unknown): Promise<StashResponse>
 }
@@ -80,7 +81,11 @@ export function createFetchStashHttp(opts: FetchStashHttpOptions): StashHttp {
   const doFetch = opts.fetchImpl ?? fetch
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
-  async function send(method: 'POST' | 'PUT', path: string, body: unknown): Promise<StashResponse> {
+  async function send(
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    body?: unknown,
+  ): Promise<StashResponse> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
@@ -91,7 +96,7 @@ export function createFetchStashHttp(opts: FetchStashHttpOptions): StashHttp {
           Authorization: `Bearer ${opts.apiKey}`,
           ...(opts.clientHeader ? { 'X-Margins-Client': opts.clientHeader } : {}),
         },
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       })
 
@@ -115,6 +120,7 @@ export function createFetchStashHttp(opts: FetchStashHttpOptions): StashHttp {
   }
 
   return {
+    get: (path) => send('GET', path),
     post: (path, body) => send('POST', path, body),
     put: (path, body) => send('PUT', path, body),
   }

@@ -164,6 +164,7 @@ function adaptApiClient(client: ApiClient): StashHttp {
     }
   }
   return {
+    get: (path) => run(() => client.get(path)),
     post: (path, body) => run(() => client.post(path, body)),
     put: (path, body) => run(() => client.put(path, body)),
   }

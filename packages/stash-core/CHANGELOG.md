@@ -20,6 +20,9 @@ existing tests for the stash update path pass against it with their assertions u
   R13 trust rule, and the symlink guard on both.
 - `upsertStash` — create-or-update with the R11 recovery matrix, returning a discriminated
   result instead of printing or prompting. Trust is a callback; absent means refuse.
-- `createFetchStashHttp` — a bearer-only transport that returns a status instead of throwing
-  one, so a body-less 404 stays distinguishable from an enveloped one.
+- `createFetchStashHttp` — a bearer-only transport with `get`, `post` and `put` that returns a
+  status instead of throwing one, so a body-less 404 stays distinguishable from an enveloped
+  one. `get` exists for the update precondition: a caller reads the stash's current head from
+  `GET /api/stash` and sends it as `parentSha`, so an update cannot silently replace an edit
+  made elsewhere.
 - `buildStashReviewUrl`, `STASH_DOC_BRANCH`, `STASH_DOC_PATH`.
