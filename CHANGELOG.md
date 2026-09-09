@@ -44,6 +44,12 @@ did not.
 
 - **`LICENSE` (MIT).** The repository had none; `package.json` now declares it.
 
+- **The release lane publishes both packages.** `release.yaml` watched only the root
+  `package.json` and ran a bare `npm publish`, which in a workspaces repo publishes the root
+  and nothing else — so `@alvistar/margins-stash-core` would never have reached npm. It now
+  watches `packages/*/package.json` too and decides per package, each against its own exact
+  version, so the two release independently. Still trusted publishing: no token in this repo.
+
 ## [0.19.0] - 2026-09-03
 
 Runtime 0.15.0 removed `~/.margins/daemon.json`. This CLI read that file in two places, so
