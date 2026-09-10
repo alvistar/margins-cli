@@ -14,7 +14,7 @@ did not.
 
 ### Changed
 
-- **The stash update path now lives in `@alvistar/margins-stash-core`.** The config-directory
+- **The stash update path now lives in `margins-stash-core`.** The config-directory
   walk, the file→stash binding store with its R13 trust rule, and the R11 recovery matrix
   (403/404/405/409) are published as an MIT npm package and consumed here.
 
@@ -46,7 +46,7 @@ did not.
 
 - **The release lane publishes both packages.** `release.yaml` watched only the root
   `package.json` and ran a bare `npm publish`, which in a workspaces repo publishes the root
-  and nothing else — so `@alvistar/margins-stash-core` would never have reached npm. It now
+  and nothing else — so `margins-stash-core` would never have reached npm. It now
   watches `packages/*/package.json` too and decides per package, each against its own exact
   version, so the two release independently. Still trusted publishing: no token in this repo.
 

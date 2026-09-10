@@ -1,4 +1,4 @@
-# @alvistar/margins-stash-core
+# margins-stash-core
 
 Shared internals of the Margins **stash** — a one-off, single-document workspace
 for review.
@@ -25,7 +25,7 @@ two callers word it for their own user.
 ## Install
 
 ```sh
-npm install @alvistar/margins-stash-core
+npm install margins-stash-core
 ```
 
 ## Use
@@ -36,7 +36,7 @@ import {
   resolveCredential,
   upsertStash,
   buildStashReviewUrl,
-} from '@alvistar/margins-stash-core'
+} from 'margins-stash-core'
 
 const cred = resolveCredential()
 if (!cred.ok) throw new Error(cred.problem) // NO_API_KEY | SESSION_ONLY

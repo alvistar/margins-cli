@@ -20,7 +20,7 @@ export default defineConfig({
     // the published CLI must still declare zero resolvable deps, so `npx -y
     // margins-cli@<exact>` performs no registry lookup. It is a real npm package
     // — the Margins Light runtime installs it normally — but the CLI inlines it.
-    '@alvistar/margins-stash-core',
+    'margins-stash-core',
     '@clack/prompts',
     '@commander-js/extra-typings',
     'commander',

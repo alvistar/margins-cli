@@ -21,16 +21,16 @@
     "url": "https://github.com/alvistar/margins-cli/issues"
   },
   "scripts": {
-    "build": "npm run build -w @alvistar/margins-stash-core && tsdown",
+    "build": "npm run build -w margins-stash-core && tsdown",
     "check:dist": "npm run build && git diff --exit-code -- dist/",
     "dev": "node --import=tsx/esm src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "npm run typecheck -w @alvistar/margins-stash-core && tsc --noEmit",
+    "typecheck": "npm run typecheck -w margins-stash-core && tsc --noEmit",
     "prepublishOnly": "npm test"
   },
   "devDependencies": {
-    "@alvistar/margins-stash-core": "0.1.0",
+    "margins-stash-core": "0.1.0",
     "@clack/prompts": "^1.1.0",
     "@commander-js/extra-typings": "^14.0.0",
     "@types/node": "^22.0.0",

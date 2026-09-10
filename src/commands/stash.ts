@@ -13,7 +13,7 @@ import {
   type StashHttp,
   type StashResponse,
   type StashUpsertResult,
-} from '@alvistar/margins-stash-core'
+} from 'margins-stash-core'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { formatJson } from '../lib/output.js'
@@ -43,7 +43,7 @@ export interface StashOptions {
  * explicit `-`, or piped stdin.
  *
  * The stash update path — the binding store, the R13 trust rule, and the R11
- * recovery matrix — lives in `@alvistar/margins-stash-core`, shared with the
+ * recovery matrix — lives in `margins-stash-core`, shared with the
  * Margins Light daemon so both reach the same stash from the same file. What
  * stays here is everything that talks to a person: the trust prompt, the printed
  * lines, and the mapping from the package's outcome codes to this CLI's error

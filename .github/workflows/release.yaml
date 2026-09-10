@@ -3,7 +3,7 @@ name: Release to npm
 # Publishes every package in this repo whose version is not yet on npm.
 #
 # Two packages now ship from here, and they are INDEPENDENT: `margins-cli` and
-# `@alvistar/margins-stash-core`, each with its own version and its own reason to
+# `margins-stash-core`, each with its own version and its own reason to
 # move. So the trigger watches both manifests and each publish step decides for
 # itself, rather than one version file gating the other — the library changes far
 # more often than the CLI's user-facing behaviour does, and the reverse is also
@@ -53,7 +53,7 @@ jobs:
           CORE=$(node -e "process.stdout.write(require('./packages/stash-core/package.json').version)")
           echo "cli=$CLI" >> "$GITHUB_OUTPUT"
           echo "core=$CORE" >> "$GITHUB_OUTPUT"
-          echo "margins-cli $CLI | @alvistar/margins-stash-core $CORE"
+          echo "margins-cli $CLI | margins-stash-core $CORE"
 
       # Both checks ask for the EXACT version rather than comparing against
       # `latest`: a re-run, a revert, or a second push touching either manifest
@@ -61,7 +61,7 @@ jobs:
       - name: Check whether each version is already published
         id: check
         run: |
-          if npm view "@alvistar/margins-stash-core@${{ steps.version.outputs.core }}" version >/dev/null 2>&1; then
+          if npm view "margins-stash-core@${{ steps.version.outputs.core }}" version >/dev/null 2>&1; then
             echo "core=true" >> "$GITHUB_OUTPUT"
             echo "stash-core ${{ steps.version.outputs.core }} already on npm, skipping"
           else
@@ -84,9 +84,9 @@ jobs:
         if: steps.check.outputs.core == 'false' || steps.check.outputs.cli == 'false'
         run: npm run build
 
-      - name: Publish @alvistar/margins-stash-core
+      - name: Publish margins-stash-core
         if: steps.check.outputs.core == 'false'
-        run: npm publish -w @alvistar/margins-stash-core --access public --provenance
+        run: npm publish -w margins-stash-core --access public --provenance
 
       - name: Publish margins-cli
         if: steps.check.outputs.cli == 'false'

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `@alvistar/margins-stash-core` will be documented in this file.
+All notable changes to `margins-stash-core` will be documented in this file.
 
 ## [0.1.0] - 2026-09-09
 
