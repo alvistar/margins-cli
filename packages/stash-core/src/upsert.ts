@@ -179,6 +179,27 @@ function fail(code: StashFailureCode, res: StashResponse): StashUpsertResult {
 }
 
 /**
+ * The success payload, whichever transport delivered it.
+ *
+ * The stash routes answer with the API's `apiOk` envelope — `{ data: … }` — but
+ * the two transports do not agree on who removes it. The CLI's own client
+ * unwraps every response before its adapter hands one over
+ * (`api-client.ts`, `readJson`), while the daemon's plain `fetch` transport
+ * hands the body through untouched, because the recovery matrix also has to read
+ * un-enveloped bodies (a `PUT` conflict, an old server's bare 404).
+ *
+ * So the matrix accepts both and unwraps here. This is the only place that rule
+ * lives. Without it the daemon read `body.workspace` off the envelope, got
+ * `undefined`, and threw AFTER the stash had already been created on the server.
+ */
+function payload<T>(body: unknown): T {
+  if (typeof body === 'object' && body !== null && 'data' in body) {
+    return (body as { data: T }).data
+  }
+  return body as T
+}
+
+/**
  * Create the stash, or update the one this file is already bound to.
  *
  * Never prompts, never prints, never exits. Every outcome is in the return
@@ -229,7 +250,7 @@ async function tryUpdate(
   }
 
   if (res.status >= 200 && res.status < 300) {
-    const body = res.body as UpdateResponseShape
+    const body = payload<UpdateResponseShape>(res.body)
     return {
       ok: true,
       action: body.changed ? 'updated' : 'unchanged',
@@ -294,7 +315,7 @@ async function createFresh(
     return fail('SERVER', res)
   }
 
-  const body = res.body as CreateResponseShape
+  const body = payload<CreateResponseShape>(res.body)
   const workspace = body.workspace
 
   // Remember the identity so the next run updates instead of forking (R10).

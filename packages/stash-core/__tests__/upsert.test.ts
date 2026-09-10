@@ -175,3 +175,45 @@ describe('upsertStash — options the daemon needs', () => {
     expect(http2.put).toHaveBeenCalledWith('/api/stash', expect.objectContaining({ title: 'From The Heading' }))
   })
 })
+
+describe('upsertStash — the apiOk envelope', () => {
+  // Every fixture above hands `upsertStash` a BARE body, because the CLI's own
+  // client removes the envelope before its adapter passes the response on. The
+  // daemon's `fetch` transport does not, so the real server's
+  // `{ data: { workspace } }` reached the matrix untouched, `body.workspace` was
+  // undefined, and the daemon threw AFTER the stash existed on the server. No
+  // test saw it: the fake transport had always spoken the CLI's dialect.
+  beforeEach(() => vi.clearAllMocks())
+
+  const enveloped = (body: unknown): StashResponse => ({ status: 200, body: { data: body } })
+
+  it('reads the slug off an enveloped CREATE response', async () => {
+    const http = makeHttp({ status: 404 }, enveloped({
+      workspace: { id: 'ws_2', slug: 'stash/alice/newnew12', name: 'Notes' },
+    }))
+    const res = await upsertStash({
+      http, content: 'body', title: 'Notes', forceNew: true, bindings: makeBindings(false),
+    })
+    expect(res).toMatchObject({ ok: true, action: 'created', slug: 'stash/alice/newnew12', workspaceId: 'ws_2' })
+  })
+
+  it('reads the slug and `changed` off an enveloped UPDATE response', async () => {
+    const http = makeHttp(enveloped({
+      workspace: { id: 'ws_1', slug: BINDING.slug, name: 'Notes' },
+      changed: true, url: 'https://margins.test/w/x', head: 'sha-new',
+    }))
+    const res = await upsertStash({
+      http, content: 'body', filePath: 'notes.md', bindings: makeBindings(true),
+    })
+    expect(res).toMatchObject({ ok: true, action: 'updated', slug: BINDING.slug, head: 'sha-new' })
+  })
+
+  it('still reads a BARE body, which is what the CLI hands it', async () => {
+    // The unwrap must be tolerant, not a replacement: both callers stay correct.
+    const http = makeHttp(UPDATED)
+    const res = await upsertStash({
+      http, content: 'body', filePath: 'notes.md', bindings: makeBindings(true),
+    })
+    expect(res).toMatchObject({ ok: true, slug: BINDING.slug })
+  })
+})
