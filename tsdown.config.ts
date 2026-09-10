@@ -16,6 +16,11 @@ export default defineConfig({
   // live in devDependencies; node: builtins stay external via platform: node.
   // `npm run check:dist` must run at release to verify the bundle is current.
   noExternal: [
+    // The shared stash package is bundled like every other runtime dependency:
+    // the published CLI must still declare zero resolvable deps, so `npx -y
+    // margins-cli@<exact>` performs no registry lookup. It is a real npm package
+    // — the Margins Light runtime installs it normally — but the CLI inlines it.
+    '@alvistar/margins-stash-core',
     '@clack/prompts',
     '@commander-js/extra-typings',
     'commander',

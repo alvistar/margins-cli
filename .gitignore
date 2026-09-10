@@ -20,3 +20,6 @@ coverage/
 
 # Local CLI build artifact (the tracked entrypoint is bin/margins.js)
 /bin/margins
+
+# Built package output (published from CI/release, never committed)
+packages/*/dist/

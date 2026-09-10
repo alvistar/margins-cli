@@ -1,6 +1,19 @@
 import { readFileSync } from 'node:fs'
 import { basename, extname } from 'node:path'
 import * as p from '@clack/prompts'
+import {
+  buildStashReviewUrl,
+  isAccepted,
+  lookupBinding,
+  recordAcceptance,
+  recordBinding,
+  upsertStash,
+  type ResolvedBindingStore,
+  type StashBinding,
+  type StashHttp,
+  type StashResponse,
+  type StashUpsertResult,
+} from '@alvistar/margins-stash-core'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { formatJson } from '../lib/output.js'
@@ -10,32 +23,9 @@ import {
   ServerError,
   NotFoundError,
   ForbiddenError,
+  AuthExpired,
+  NetworkError,
 } from '../lib/errors.js'
-import {
-  lookupBinding,
-  recordBinding,
-  isAccepted,
-  recordAcceptance,
-  type StashBinding,
-  type ResolvedBindingStore,
-} from '../lib/stash-bindings.js'
-
-// The stash's single document lives at this fixed path on the local "main"
-// branch (mirrors the web app's stash-constants). The reader deep-link is
-// /w/<slug>/-/<branch>/<path> — kept here as the one place that shape lives.
-const STASH_DOC_BRANCH = 'main'
-const STASH_DOC_PATH = 'document.md'
-
-interface StashResponse {
-  workspace: { id: string; slug: string; name: string }
-}
-
-interface StashUpdateResponse {
-  workspace: { id: string; slug: string; name: string }
-  changed: boolean
-  url: string
-  head: string | null
-}
 
 export interface StashOptions {
   title?: string
@@ -52,22 +42,12 @@ export interface StashOptions {
  * workspace) and print its review URL. Content comes from a file argument, an
  * explicit `-`, or piped stdin.
  *
- * Stash update path: a FILE that was stashed before (a recorded binding) is
- * UPDATED in place — same slug, same share link, reviewers' comments intact —
- * instead of forking a duplicate. Recovery matrix (R11):
- *
- *   PUT /api/stash ──▶ 2xx changed        → "Updated stash: <url>"
- *                  ──▶ 2xx unchanged      → "Already up to date — no new version."
- *                  ──▶ 404 (enveloped)    → stash gone → create fresh + rebind
- *                  ──▶ 403 NOT_A_MEMBER   → foreign binding → create fresh + rebind
- *                  ──▶ 403 INSUFFICIENT_ROLE → comment-only access → error (--new to fork)
- *                  ──▶ 405 / bare 404     → old server → error (upgrade or --new)
- *                  ──▶ 409                → conflict (e.g. REVERT_UNSUPPORTED) → error
- *
- * Trust (R13): a binding this machine didn't record (e.g. committed into a
- * cloned repo) is confirmed once — showing the target stash — before the CLI
- * will overwrite it. `--yes` skips the prompt; declining creates a fresh stash.
- * Stdin input has no file identity, so it always creates.
+ * The stash update path — the binding store, the R13 trust rule, and the R11
+ * recovery matrix — lives in `@alvistar/margins-stash-core`, shared with the
+ * Margins Light daemon so both reach the same stash from the same file. What
+ * stays here is everything that talks to a person: the trust prompt, the printed
+ * lines, and the mapping from the package's outcome codes to this CLI's error
+ * classes and exit codes.
  */
 export async function handleStash(
   cfg: ResolvedConfig,
@@ -79,181 +59,184 @@ export async function handleStash(
     throw new ValidationError('A stash document needs content.')
   }
 
-  const title =
-    opts.title?.trim() ||
-    deriveHeadingTitle(content) ||
-    (fileName ? basename(fileName, extname(fileName)) : undefined)
-
   const client = createApiClient(cfg)
 
-  // ── Update path: only a real file can be bound (stdin has no identity) ──
-  if (fileName && !opts.new) {
-    const hit = lookupBinding(fileName)
-    if (hit) {
-      // Updates send a title only from --title or the H1 (deliberate rename
-      // signals). The filename-stem fallback stays create-only — on update it
-      // would clobber a custom title the owner set (e.g. via --title or the
-      // web UI) every time a heading-less doc is re-stashed.
-      const updateTitle = opts.title?.trim() || deriveHeadingTitle(content)
-      const done = await tryUpdate(cfg, client, hit.store, hit.binding, content, updateTitle, opts)
-      if (done) return
-      // Recoverable failure or declined trust → fall through to a fresh create
-      // (which re-binds the file to the new stash).
-    }
+  // Updates send a title only from --title or the H1 (deliberate rename
+  // signals). The filename-stem fallback stays create-only — on update it would
+  // clobber a custom title the owner set (e.g. via --title or the web UI) every
+  // time a heading-less doc is re-stashed. The package applies whichever title it
+  // is given to whichever path it takes, so the choice is made here, where the
+  // binding is known.
+  const headingTitle = opts.title?.trim() || deriveHeadingTitle(content)
+  const stemTitle = fileName ? basename(fileName, extname(fileName)) : undefined
+
+  const result = await upsertStash({
+    http: adaptApiClient(client),
+    content,
+    ...(fileName ? { filePath: fileName } : {}),
+    ...(headingTitle ?? stemTitle ? { title: (headingTitle ?? stemTitle)! } : {}),
+    ...(headingTitle ? { updateTitle: headingTitle } : {}),
+    ...(opts.new ? { forceNew: true } : {}),
+    confirmTrust: (binding, store) => confirmTrust(cfg, binding, store, opts),
+    // Passed explicitly rather than left to the package's default. The store is
+    // process-global state, and naming it here is what lets this command's tests
+    // substitute one — a package that reached for the real store internally would
+    // make every CLI test touch the developer's own ~/.config.
+    bindings: { lookupBinding, recordBinding, isAccepted, recordAcceptance },
+  })
+
+  if (!result.ok) throw toCliError(result.failure, cfg.serverUrl)
+
+  // The bound stash was gone or foreign, so the link the user shared last time is
+  // dead and this is a different document. Said on stderr, before the new URL, in
+  // the CLI's own words — the package reports which recovery happened and leaves
+  // the telling to whoever has a user.
+  if (result.reboundReason === 'missing') {
+    console.error('The stash this file was bound to no longer exists — creating a fresh one.')
+  } else if (result.reboundReason === 'foreign') {
+    console.error('The bound stash belongs to a different account — creating a fresh one.')
   }
 
-  // ── Create path ──
-  let workspace: StashResponse['workspace']
-  try {
-    const result = (await client.post('/api/stash', {
-      content,
-      ...(title ? { title } : {}),
-    })) as StashResponse
-    workspace = result.workspace
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      throw new ConflictError('Could not allocate a stash slug — please retry.')
-    }
-    // The API client collapses a 400 to a generic ServerError (its human
-    // message isn't preserved); give a clearer, actionable line for the
-    // validation cases the stash route rejects.
-    if (err instanceof ServerError && err.status === 400) {
-      throw new ValidationError(
-        'The stash was rejected (content empty/too large, or title too long). Use --verbose for the server response.',
-      )
-    }
-    throw err
-  }
-
-  // Remember the identity so the next run updates instead of forking (R10).
-  if (fileName) {
-    recordBinding(fileName, { slug: workspace.slug, workspaceId: workspace.id })
-  }
-
-  const url = buildReviewUrl(cfg.serverUrl, workspace.slug)
-  const shareUrl = opts.share ? await mintShareLink(client, workspace.slug, url, 'Stashed for review') : undefined
-
-  if (cfg.json) {
-    console.log(
-      formatJson({ id: workspace.id, slug: workspace.slug, url, action: 'created', ...(shareUrl ? { shareUrl } : {}) }),
-    )
-    return
-  }
-
-  console.log(`Stashed for review: ${url}`)
-  if (shareUrl) console.log(`Share link: ${shareUrl}`)
-}
-
-/**
- * Attempt the in-place update for a bound file. Returns true when the command
- * is DONE (success, or a hard error was thrown); false when the caller should
- * fall through to creating a fresh stash (stale/foreign binding, declined trust).
- */
-async function tryUpdate(
-  cfg: ResolvedConfig,
-  client: ApiClient,
-  store: ResolvedBindingStore,
-  binding: StashBinding,
-  content: string,
-  title: string | undefined,
-  opts: StashOptions,
-): Promise<boolean> {
-  const url = buildReviewUrl(cfg.serverUrl, binding.slug)
-
-  // ── Trust gate (R13): confirm a binding this machine didn't record ──
-  if (!isAccepted(store, binding)) {
-    if (opts.yes) {
-      recordAcceptance(store, binding)
-    } else if (!process.stdin.isTTY) {
-      throw new ValidationError(
-        `This file is bound to an existing stash (${binding.slug}) but the binding was not created on this machine.\n` +
-          `Re-run with --yes to update ${url}, or --new to create a fresh stash.`,
-      )
-    } else {
-      const ok = await p.confirm({
-        message: `This file is bound to an existing stash not created on this machine.\nUpdate ${binding.slug} (${url})?`,
-      })
-      if (p.isCancel(ok) || !ok) {
-        console.error('Not updating that stash — creating a fresh one instead.')
-        return false // fall through to create + rebind
-      }
-      recordAcceptance(store, binding)
-    }
-  }
-
-  // ── PUT the update ──
-  let result: StashUpdateResponse
-  try {
-    result = (await client.put('/api/stash', {
-      slug: binding.slug,
-      content,
-      ...(title ? { title } : {}),
-    })) as StashUpdateResponse
-  } catch (err) {
-    // Old server: the route file exists with GET/POST, so a missing PUT export
-    // returns 405 — never a bare 404. The code-less-404 branch stays only as a
-    // defensive fallback for proxies that rewrite statuses. Neither may fork.
-    if (
-      (err instanceof ServerError && err.status === 405) ||
-      (err instanceof NotFoundError && !err.code)
-    ) {
-      throw new ValidationError(
-        `This Margins server does not support stash updates yet — upgrade the server, or use --new to create a fresh stash.`,
-      )
-    }
-    // Stash gone (swept or deleted): the enveloped 404 carries a JSON code.
-    if (err instanceof NotFoundError) {
-      console.error('The stash this file was bound to no longer exists — creating a fresh one.')
-      return false
-    }
-    if (err instanceof ForbiddenError) {
-      // Comment-only membership: the caller was INVITED to this doc. Recreating
-      // would silently fork it and strand the review — hard error instead.
-      if (err.code === 'INSUFFICIENT_ROLE') {
-        throw new ValidationError(
-          `You have comment-only access to this stash (${binding.slug}) — you can't update it.\nUse --new to deliberately create your own fork.`,
-        )
-      }
-      // Foreign binding (not a member at all): a fresh stash under the caller's
-      // own account is the intended recovery.
-      console.error('The bound stash belongs to a different account — creating a fresh one.')
-      return false
-    }
-    // 400 — validation (content too large, title too long, non-stash slug).
-    // Mirror the create path: the api client collapses 400s to a generic
-    // ServerError whose message would misleadingly say "try again later".
-    if (err instanceof ServerError && err.status === 400) {
-      throw new ValidationError(
-        'The stash update was rejected (content too large, title too long, or the bound slug is not a stash). Use --verbose for the server response.',
-      )
-    }
-    // 409 — e.g. REVERT_UNSUPPORTED; the message now carries the server's text.
-    if (err instanceof ConflictError) {
-      throw new ValidationError(err.userMessage)
-    }
-    throw err
-  }
-
-  const shareUrl = opts.share ? await mintShareLink(client, binding.slug, url, 'Updated stash') : undefined
+  const url = buildStashReviewUrl(cfg.serverUrl, result.slug)
+  const outcome = result.action === 'created' ? 'Stashed for review' : 'Updated stash'
+  const shareUrl = opts.share ? await mintShareLink(client, result.slug, url, outcome) : undefined
 
   if (cfg.json) {
     console.log(
       formatJson({
-        id: result.workspace.id,
-        slug: result.workspace.slug,
+        id: result.workspaceId,
+        slug: result.slug,
         url,
-        action: result.changed ? 'updated' : 'unchanged',
-        changed: result.changed,
-        head: result.head,
+        action: result.action,
+        ...(result.action === 'created'
+          ? {}
+          : { changed: result.changed, head: result.head }),
         ...(shareUrl ? { shareUrl } : {}),
       }),
     )
-    return true
+    return
   }
 
-  console.log(result.changed ? `Updated stash: ${url}` : `Already up to date — no new version: ${url}`)
+  if (result.action === 'created') console.log(`Stashed for review: ${url}`)
+  else if (result.action === 'updated') console.log(`Updated stash: ${url}`)
+  else console.log(`Already up to date — no new version: ${url}`)
   if (shareUrl) console.log(`Share link: ${shareUrl}`)
+}
+
+/**
+ * Present the CLI's HTTP client to the package as a transport that RETURNS a
+ * status instead of throwing one.
+ *
+ * The inversion is the price of keeping `createApiClient` on this path: it owns
+ * the Keycloak refresh, so a `margins stash` from a `margins auth login` session
+ * still works, and dropping it to use the package's own plain-fetch transport
+ * would have quietly removed that.
+ */
+function adaptApiClient(client: ApiClient): StashHttp {
+  async function run(call: () => Promise<unknown>): Promise<StashResponse> {
+    try {
+      return { status: 200, body: await call() }
+    } catch (err) {
+      // Auth and transport failures have no status the matrix should classify:
+      // a revoked key is 401 by definition, and a connection that never opened
+      // has no response at all — rethrowing lets `upsertStash` report NETWORK.
+      if (err instanceof AuthExpired) return { status: 401 }
+      if (err instanceof ServerError) {
+        return { status: err.status, ...(err.code ? { code: err.code } : {}), ...(err.serverMessage ? { message: err.serverMessage } : {}) }
+      }
+      if (err instanceof ForbiddenError) {
+        return { status: 403, ...(err.code ? { code: err.code } : {}), ...(err.serverMessage ? { message: err.serverMessage } : {}) }
+      }
+      if (err instanceof NotFoundError) {
+        // A 404 with NO code is how an old server's missing PUT reaches us
+        // through a status-rewriting proxy. Inventing one here would make the
+        // matrix fork a second stash instead of refusing — see its ordering note.
+        return { status: 404, ...(err.code ? { code: err.code } : {}) }
+      }
+      if (err instanceof ConflictError) {
+        // `userMessage` rather than `serverMessage`: on the UPDATE path the CLI
+        // has always surfaced whatever the client put there, placeholder
+        // included, because a 409 on a stash the user is looking at is more
+        // useful half-worded than replaced by a generic sentence.
+        return { status: 409, ...(err.code ? { code: err.code } : {}), message: err.serverMessage ?? err.userMessage }
+      }
+      throw err
+    }
+  }
+  return {
+    get: (path) => run(() => client.get(path)),
+    post: (path, body) => run(() => client.post(path, body)),
+    put: (path, body) => run(() => client.put(path, body)),
+  }
+}
+
+/**
+ * R13: confirm a binding this machine did not record before overwriting it.
+ *
+ * `--yes` accepts; a non-TTY refuses with instructions rather than guessing;
+ * declining falls through to a fresh stash, which is what returning false means
+ * to the package.
+ */
+async function confirmTrust(
+  cfg: ResolvedConfig,
+  binding: StashBinding,
+  _store: ResolvedBindingStore,
+  opts: StashOptions,
+): Promise<boolean> {
+  if (opts.yes) return true
+
+  const url = buildStashReviewUrl(cfg.serverUrl, binding.slug)
+  if (!process.stdin.isTTY) {
+    throw new ValidationError(
+      `This file is bound to an existing stash (${binding.slug}) but the binding was not created on this machine.\n` +
+        `Re-run with --yes to update ${url}, or --new to create a fresh stash.`,
+    )
+  }
+
+  const ok = await p.confirm({
+    message: `This file is bound to an existing stash not created on this machine.\nUpdate ${binding.slug} (${url})?`,
+  })
+  if (p.isCancel(ok) || !ok) {
+    console.error('Not updating that stash — creating a fresh one instead.')
+    return false
+  }
   return true
+}
+
+/** The package's outcome codes, in this CLI's words. */
+function toCliError(
+  failure: Extract<StashUpsertResult, { ok: false }>['failure'],
+  serverUrl: string,
+): Error {
+  switch (failure.code) {
+    case 'OLD_SERVER':
+      return new ValidationError(
+        'This Margins server does not support stash updates yet — upgrade the server, or use --new to create a fresh stash.',
+      )
+    case 'KEY_ROLE':
+      return new ValidationError(
+        "You have comment-only access to this stash — you can't update it.\nUse --new to deliberately create your own fork.",
+      )
+    case 'UNAUTHORIZED':
+      return new AuthExpired()
+    case 'VALIDATION':
+      return new ValidationError(
+        'The stash was rejected (content empty/too large, title too long, or the bound slug is not a stash). Use --verbose for the server response.',
+      )
+    case 'SLUG_CONFLICT':
+      return new ConflictError('Could not allocate a stash slug — please retry.')
+    case 'CONFLICT':
+      // Surfaced, never retried: the content was built on a version the stash has
+      // moved past, and a retry against the new head would overwrite whatever
+      // moved it.
+      return new ValidationError(
+        failure.serverMessage ?? 'The stash changed since this content was written; nothing was published.',
+      )
+    case 'NETWORK':
+      return new NetworkError(serverUrl)
+    case 'SERVER':
+      return new ServerError(failure.status ?? 500, undefined, failure.serverMessage)
+  }
 }
 
 /** Mint (or fetch) the stable share link; stable across updates by design. */
@@ -304,9 +287,4 @@ function readDocument(file: string | undefined): { content: string; fileName?: s
 function deriveHeadingTitle(content: string): string | undefined {
   const m = /^#[ \t]+(.+?)[ \t]*$/m.exec(content)
   return m?.[1]
-}
-
-function buildReviewUrl(serverUrl: string, slug: string): string {
-  const base = serverUrl.replace(/\/$/, '')
-  return `${base}/w/${slug}/-/${STASH_DOC_BRANCH}/${STASH_DOC_PATH}`
 }

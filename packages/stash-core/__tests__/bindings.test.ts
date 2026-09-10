@@ -9,8 +9,8 @@ import {
   removeBinding,
   isAccepted,
   recordAcceptance,
-} from '../src/lib/stash-bindings.js'
-import { _resetStore } from '../src/lib/config.js'
+} from '../src/bindings.js'
+import { _resetStore } from '../src/config-store.js'
 
 // Binding store (stash update path U5/R10/R13): hybrid project-local/global
 // resolution, tolerant load, acceptance trust records, idempotent gitignore.

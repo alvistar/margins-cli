@@ -1,11 +1,26 @@
 name: Release to npm
 
+# Publishes every package in this repo whose version is not yet on npm.
+#
+# Two packages now ship from here, and they are INDEPENDENT: `margins-cli` and
+# `@alvistar/margins-stash-core`, each with its own version and its own reason to
+# move. So the trigger watches both manifests and each publish step decides for
+# itself, rather than one version file gating the other — the library changes far
+# more often than the CLI's user-facing behaviour does, and the reverse is also
+# true.
+#
+# The library publishes FIRST. Nothing in this repo needs that order (tsdown
+# bundles the library into the CLI, so the CLI builds from the workspace copy),
+# but the Margins Light runtime installs it from the registry, and a CLI release
+# that announced a library version npm did not yet have would be a lie for
+# however long the second step took.
 on:
   push:
     branches:
       - main
     paths:
       - package.json
+      - packages/*/package.json
   workflow_dispatch:
 
 concurrency:
@@ -17,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Trusted publishing: npm mints the credential from this token, so there is
+      # no NPM_TOKEN in this repo and nothing to rotate or leak.
       id-token: write
 
     steps:
@@ -29,34 +46,48 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Read version
+      - name: Read versions
         id: version
         run: |
-          VERSION=$(node -e "process.stdout.write(require('./package.json').version)")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "CLI version: $VERSION"
+          CLI=$(node -e "process.stdout.write(require('./package.json').version)")
+          CORE=$(node -e "process.stdout.write(require('./packages/stash-core/package.json').version)")
+          echo "cli=$CLI" >> "$GITHUB_OUTPUT"
+          echo "core=$CORE" >> "$GITHUB_OUTPUT"
+          echo "margins-cli $CLI | @alvistar/margins-stash-core $CORE"
 
-      - name: Check if exact version already published
+      # Both checks ask for the EXACT version rather than comparing against
+      # `latest`: a re-run, a revert, or a second push touching either manifest
+      # must be a no-op, not a failed publish.
+      - name: Check whether each version is already published
         id: check
         run: |
-          # Check if this exact version exists on npm (not just latest tag)
-          if npm view "margins-cli@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Version ${{ steps.version.outputs.version }} already on npm, skipping"
+          if npm view "@alvistar/margins-stash-core@${{ steps.version.outputs.core }}" version >/dev/null 2>&1; then
+            echo "core=true" >> "$GITHUB_OUTPUT"
+            echo "stash-core ${{ steps.version.outputs.core }} already on npm, skipping"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            LATEST=$(npm view margins-cli version 2>/dev/null || echo "0.0.0")
-            echo "Publishing ${{ steps.version.outputs.version }} (npm latest: $LATEST)"
+            echo "core=false" >> "$GITHUB_OUTPUT"
+          fi
+          if npm view "margins-cli@${{ steps.version.outputs.cli }}" version >/dev/null 2>&1; then
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+            echo "margins-cli ${{ steps.version.outputs.cli }} already on npm, skipping"
+          else
+            echo "cli=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install dependencies
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.core == 'false' || steps.check.outputs.cli == 'false'
         run: npm ci
 
+      # Builds both: the workspace library (tsc → dist) and then the CLI bundle,
+      # which inlines it. `npm run build` at the root already chains the two.
       - name: Build
-        if: steps.check.outputs.skip == 'false'
+        if: steps.check.outputs.core == 'false' || steps.check.outputs.cli == 'false'
         run: npm run build
 
-      - name: Publish to npm
-        if: steps.check.outputs.skip == 'false'
+      - name: Publish @alvistar/margins-stash-core
+        if: steps.check.outputs.core == 'false'
+        run: npm publish -w @alvistar/margins-stash-core --access public --provenance
+
+      - name: Publish margins-cli
+        if: steps.check.outputs.cli == 'false'
         run: npm publish --access public --provenance

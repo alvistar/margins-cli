@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { getConfigDir } from './config.js'
+import { getConfigDir } from './config-store.js'
 
 // ─── Stash bindings (stash update path R10/R13) ───────────────────────────────
 //

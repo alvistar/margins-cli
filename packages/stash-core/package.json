@@ -1,0 +1,43 @@
+{
+  "name": "@alvistar/margins-stash-core",
+  "version": "0.1.0",
+  "description": "Shared Margins stash logic: config-dir resolution, the file→stash binding store with its trust rule, and the stash create/update recovery matrix.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alvistar/margins-cli.git",
+    "directory": "packages/stash-core"
+  },
+  "homepage": "https://github.com/alvistar/margins-cli/tree/main/packages/stash-core#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "conf": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
