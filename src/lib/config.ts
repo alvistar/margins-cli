@@ -1,9 +1,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DEFAULT_SERVER_URL, getGlobalConfig } from '@alvistar/margins-stash-core'
+import { DEFAULT_SERVER_URL, getGlobalConfig } from 'margins-stash-core'
 import { ConfigParseError } from './errors.js'
 
-// The global config STORE lives in @alvistar/margins-stash-core, not here.
+// The global config STORE lives in margins-stash-core, not here.
 // The Margins Light daemon reads the same `config.json`, and two copies of the
 // directory walk would eventually disagree — a daemon reporting "no API key" on
 // a machine where `margins auth` plainly works, because one of them looked in
@@ -16,8 +16,8 @@ export {
   setGlobalConfig,
   clearGlobalConfig,
   getConfigDir,
-} from '@alvistar/margins-stash-core'
-export type { GlobalConfig } from '@alvistar/margins-stash-core'
+} from 'margins-stash-core'
+export type { GlobalConfig } from 'margins-stash-core'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

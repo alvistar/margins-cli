@@ -20,8 +20,8 @@ vi.mock('../src/lib/api-client.js', () => ({
   createApiClient: () => ({ post: mockPost, put: mockPut }),
 }))
 
-vi.mock('@alvistar/margins-stash-core', async (importActual) => {
-  const actual = await importActual<typeof import('@alvistar/margins-stash-core')>()
+vi.mock('margins-stash-core', async (importActual) => {
+  const actual = await importActual<typeof import('margins-stash-core')>()
   return { ...actual, ...bindings }
 })
 

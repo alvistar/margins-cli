@@ -1,5 +1,5 @@
 {
-  "name": "@alvistar/margins-stash-core",
+  "name": "margins-stash-core",
   "version": "0.1.0",
   "description": "Shared Margins stash logic: config-dir resolution, the file→stash binding store with its trust rule, and the stash create/update recovery matrix.",
   "license": "MIT",
