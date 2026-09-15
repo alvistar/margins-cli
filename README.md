@@ -418,17 +418,48 @@ binding. Returns a review URL.
 margins stash notes.md                      # publish a file
 cat notes.md | margins stash                # or pipe markdown via stdin
 margins stash notes.md --title "Q3 plan"    # set the title explicitly
-margins stash notes.md --json               # machine-readable: { id, slug, url }
+margins stash notes.md --json               # machine-readable: { id, slug, url, format, path }
+margins stash site/index.html               # publish an HTML design
 ```
 
 | Flag | Description |
 |---|---|
-| `--title <title>` | Title for the stash doc. Defaults to the document's first `#` heading, then the file name, then "Untitled stash doc". |
+| `--title <title>` | Title for the stash doc. Defaults to the document's first `#` heading (`<title>` or `<h1>` for HTML), then the file name, then "Untitled stash doc". |
+| `--format <markdown\|html>` | Override the format inferred from the extension. `.html` and `.htm` are designs; everything else, and stdin, is Markdown. |
+| `--force` | Update without checking the stash has not moved since. Overwrites whatever it holds now. |
 
 The document comes from the `[file]` argument, or from piped stdin when no file
 is given (or the argument is `-`). The stash is reviewed like any Margins doc —
-open discussions, address them, resolve. Markdown only; for images, use
-`workspace push` or the Margins desktop app.
+open discussions, address them, resolve.
+
+#### HTML designs
+
+A stash can hold an HTML document — a landing page, a mockup, an export from a
+design tool — instead of Markdown. Margins renders it in an isolated frame and
+reviewers comment on **elements** rather than on lines of text.
+
+A design has to be **one self-contained file**, so the CLI folds local assets in
+before uploading: a `<link rel="stylesheet">` becomes a `<style>` block, and an
+`<img src="…">` becomes a `data:` URI. It prints what it inlined, because those
+files leave your machine. Only stylesheets and known image types are ever read —
+a reference to anything else (`.env`, `.json`) is left alone, as is anything
+outside the document's own folder, any symlink, and every remote URL.
+
+The server stores it sanitized: **no scripts**, no external files. Anything your
+page draws with JavaScript will not be there, and web fonts fall back to the next
+family in their stack. A document that is too complex, nests too deeply, carries
+too much CSS, or has nothing left after sanitization is refused, with the
+measurement and the limit named — nothing is stored, so fix it and re-run.
+
+Re-running updates the same stash, and the link you sent stays valid. A design is
+**replaced, never merged**: if the stash changed since your last push the update
+is refused and nothing is written. `--force` overwrites deliberately, `--new`
+publishes a separate stash. Comments survive — one on an element you did not
+touch keeps its pin, one whose element you replaced is shown as *not in this
+version*.
+
+For images inside a *Markdown* document, use `workspace push` or the Margins
+desktop app.
 
 ---
 

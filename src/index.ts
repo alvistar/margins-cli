@@ -204,16 +204,31 @@ program
 program
   .command('stash [file]')
   .description(
-    'Publish a single markdown document to a Margins stash for review. Re-running on the same file updates the existing stash in place.',
+    'Publish a single Markdown or HTML document to a Margins stash for review. Re-running on the same file updates the existing stash in place.',
   )
   .option('--title <title>', 'Title for the stash doc (default: first heading or filename)')
   .option('--share', 'Also mint a shareable /s/<slug> link and print it')
   .option('--new', 'Create a fresh stash even when this file was stashed before (deliberate fork)')
+  .option(
+    '--format <markdown|html>',
+    'Override the format inferred from the file extension (.html and .htm are designs; stdin is markdown)',
+  )
+  .option(
+    '--force',
+    'Update without checking the stash has not moved since — overwrites whatever it holds now',
+  )
   .option('--yes', 'Skip the first-use confirmation for a binding not created on this machine')
   .action(async (file, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleStash } = await import('./commands/stash.js')
-    await handleStash(cfg, file, { title: opts.title, share: opts.share, new: opts.new, yes: opts.yes })
+    await handleStash(cfg, file, {
+      title: opts.title,
+      share: opts.share,
+      new: opts.new,
+      yes: opts.yes,
+      format: opts.format,
+      force: opts.force,
+    })
   })
 
 // ─── share (top-level) ─────────────────────────────────────────────────────────

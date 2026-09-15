@@ -3,9 +3,10 @@ import { handleStash } from '../src/commands/stash.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
 import { ConflictError, ValidationError, ServerError, NotFoundError } from '../src/lib/errors.js'
 
-const { mockPost, mockPut, mockReadFileSync, bindings, mockConfirm } = vi.hoisted(() => ({
+const { mockPost, mockPut, mockGet, mockReadFileSync, bindings, mockConfirm } = vi.hoisted(() => ({
   mockPost: vi.fn(),
   mockPut: vi.fn(),
+  mockGet: vi.fn(),
   mockReadFileSync: vi.fn(),
   bindings: {
     lookupBinding: vi.fn(),
@@ -17,7 +18,7 @@ const { mockPost, mockPut, mockReadFileSync, bindings, mockConfirm } = vi.hoiste
 }))
 
 vi.mock('../src/lib/api-client.js', () => ({
-  createApiClient: () => ({ post: mockPost, put: mockPut }),
+  createApiClient: () => ({ post: mockPost, put: mockPut, get: mockGet }),
 }))
 
 vi.mock('margins-stash-core', async (importActual) => {
@@ -59,6 +60,8 @@ let errSpy: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   mockPost.mockReset().mockResolvedValue(OK)
   mockPut.mockReset()
+  // A server new enough for designs, unless a test says otherwise.
+  mockGet.mockReset().mockResolvedValue({ version: '0.69.0' })
   mockReadFileSync.mockReset()
   bindings.lookupBinding.mockReset().mockReturnValue(null)
   bindings.recordBinding.mockReset()
@@ -112,7 +115,14 @@ describe('handleStash', () => {
     mockReadFileSync.mockReturnValue('body')
     await handleStash(makeConfig({ json: true }), 'notes.md', {})
     const out = logSpy.mock.calls[0]?.[0] as string
-    expect(JSON.parse(out)).toEqual({ id: 'ws_1', slug: 'stash/alice/abcd1234', url: DOC_URL, action: 'created' })
+    expect(JSON.parse(out)).toEqual({
+      id: 'ws_1',
+      slug: 'stash/alice/abcd1234',
+      url: DOC_URL,
+      action: 'created',
+      format: 'markdown',
+      path: 'document.md',
+    })
   })
 
   it('rejects empty/whitespace content without calling the API', async () => {
@@ -170,7 +180,15 @@ describe('handleStash', () => {
 
       await handleStash(makeConfig({ json: true }), 'notes.md', { share: true })
       const out = logSpy.mock.calls[0]?.[0] as string
-      expect(JSON.parse(out)).toEqual({ id: 'ws_1', slug: 'stash/alice/abcd1234', url: DOC_URL, action: 'created', shareUrl: SHARE.shareUrl })
+      expect(JSON.parse(out)).toEqual({
+        id: 'ws_1',
+        slug: 'stash/alice/abcd1234',
+        url: DOC_URL,
+        action: 'created',
+        format: 'markdown',
+        path: 'document.md',
+        shareUrl: SHARE.shareUrl,
+      })
     })
 
     it('does not call the share endpoint without --share', async () => {
@@ -220,6 +238,10 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
       slug: BINDING.slug,
       content: '# Notes\n\nedited',
       title: 'Notes',
+      // Declared on every update (D5). The server refuses before it writes if
+      // this stash turns out to hold a design, rather than storing markdown
+      // over one.
+      format: 'markdown',
     })
     expect(mockPost).not.toHaveBeenCalled() // no duplicate create
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Updated stash'))
@@ -257,6 +279,9 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
     expect(bindings.recordBinding).toHaveBeenCalledWith('notes.md', {
       slug: 'stash/alice/abcd1234',
       workspaceId: 'ws_1',
+      // Recorded from the response so the NEXT update can send it as parentSha.
+      // Null here only because this mocked create returns no head.
+      head: null,
     })
   })
 
@@ -266,6 +291,9 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
     expect(bindings.recordBinding).toHaveBeenCalledWith('notes.md', {
       slug: 'stash/alice/abcd1234',
       workspaceId: 'ws_1',
+      // Recorded from the response so the NEXT update can send it as parentSha.
+      // Null here only because this mocked create returns no head.
+      head: null,
     })
   })
 
@@ -433,7 +461,11 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
       mockPut.mockResolvedValue(UPDATED)
 
       await handleStash(makeConfig(), 'notes.md', {})
-      expect(mockPut).toHaveBeenCalledWith('/api/stash', { slug: BINDING.slug, content: 'no heading here, just prose' })
+      expect(mockPut).toHaveBeenCalledWith('/api/stash', {
+        slug: BINDING.slug,
+        content: 'no heading here, just prose',
+        format: 'markdown',
+      })
     })
 
     it('sends the H1-derived title on update (deliberate rename tracking)', async () => {
@@ -465,5 +497,271 @@ describe('handleStash — update flow (R11/R12/R13)', () => {
       expect(mockPost).toHaveBeenCalledWith('/api/stash/share', { slug: BINDING.slug })
       expect(logSpy).toHaveBeenCalledWith('Share link: https://margins.test/s/Xk9z')
     })
+  })
+})
+
+// ─── HTML designs ─────────────────────────────────────────────────────────────
+//
+// `readFileSync` is mocked here, so the inliner sees no files on disk and leaves
+// every reference alone with a warning. That is deliberate: the inliner has its
+// own suite against a real temp directory (`html-inline.test.ts`). What these
+// pin is everything AROUND it — which format is chosen, what reaches the wire,
+// which URL is printed, and what the user is told when it goes wrong.
+
+const HTML_CREATED = {
+  workspace: { id: 'ws_h', slug: 'stash/alice/deadbeef', name: 'Pricing' },
+  format: 'html',
+  path: 'document.html',
+  head: 'sha-1',
+}
+const DESIGN = '<!doctype html><html><head><title>Pricing</title></head><body><h1>Plans</h1></body></html>'
+
+describe('handleStash — HTML designs', () => {
+  it('infers html from the extension, sends format, and prints the document.html URL', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'site/index.html', {})
+
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', {
+      content: DESIGN,
+      title: 'Pricing',
+      format: 'html',
+    })
+    // From the RESPONSE's path. The default is document.md, which does not exist
+    // in a design's workspace, so a link built from it 404s on arrival.
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('https://margins.test/w/stash/alice/deadbeef/-/main/document.html'),
+    )
+  })
+
+  it('takes the title from <title>, never from a # in the CSS', async () => {
+    mockReadFileSync.mockReturnValue('<style>\n#sidebar { color: red }\n</style><title>Brochure</title>')
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.objectContaining({ title: 'Brochure' }))
+  })
+
+  it('falls back to the first <h1> when there is no <title>', async () => {
+    mockReadFileSync.mockReturnValue('<body><h1>Q3 <em>Plan</em></h1></body>')
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    // Tags stripped, whitespace collapsed.
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.objectContaining({ title: 'Q3 Plan' }))
+  })
+
+  it('--format html publishes stdin as a design', async () => {
+    setTTY(false)
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), undefined, { format: 'html' })
+
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.objectContaining({ format: 'html' }))
+  })
+
+  it('stdin without --format is markdown, and sends NO format at all', async () => {
+    setTTY(false)
+    mockReadFileSync.mockReturnValue('# Piped\n')
+
+    await handleStash(makeConfig(), undefined, {})
+
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', { content: '# Piped\n', title: 'Piped' })
+  })
+
+  it('--format markdown publishes a .html file as text', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+
+    await handleStash(makeConfig(), 'page.html', { format: 'markdown' })
+
+    // Absent, not "markdown": the body must stay what every pre-HTML client sent.
+    expect(mockPost).toHaveBeenCalledWith('/api/stash', expect.not.objectContaining({ format: expect.anything() }))
+  })
+
+  it('rejects a --format value that is neither', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    await expect(handleStash(makeConfig(), 'page.html', { format: 'pdf' })).rejects.toBeInstanceOf(
+      ValidationError,
+    )
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleStash — designs against an old server', () => {
+  it('refuses BEFORE creating anything when /api/health reports an older version', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockGet.mockResolvedValue({ version: '0.68.0' })
+
+    const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
+
+    expect(err).toBeInstanceOf(ValidationError)
+    expect((err as Error).message).toMatch(/0\.68\.0/)
+    expect((err as Error).message).toMatch(/Nothing was uploaded/)
+    // The whole point of asking first: no stash exists to clean up.
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('falls through to the create on an "unknown" version — dev servers must still work', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockGet.mockResolvedValue({ version: 'unknown' })
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(mockPost).toHaveBeenCalled()
+  })
+
+  it('falls through when /api/health is unreachable', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockGet.mockRejectedValue(new NotFoundError('no health route'))
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(mockPost).toHaveBeenCalled()
+  })
+
+  it('names the stash it stranded when the server silently ignored format', async () => {
+    // The backstop behind the preflight, and the case where the damage is
+    // already done: the markdown stash EXISTS and this CLI has no delete.
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockGet.mockResolvedValue({ version: 'unknown' })
+    mockPost.mockReset().mockResolvedValue(OK) // no format/path echo
+
+    const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
+
+    expect(err).toBeInstanceOf(ValidationError)
+    expect((err as Error).message).toContain('stash/alice/abcd1234')
+    expect((err as Error).message).toMatch(/Delete it from the web UI/)
+  })
+
+  it('does not preflight for a markdown stash', async () => {
+    mockReadFileSync.mockReturnValue('# Notes\n')
+    await handleStash(makeConfig(), 'notes.md', {})
+    expect(mockGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleStash — updating with a head', () => {
+  const HTML_BINDING = { slug: 'stash/alice/deadbeef', workspaceId: 'ws_h', head: 'sha-old' }
+  const HTML_STORE = { kind: 'global' as const, storePath: '/tmp/b.json', key: 'page.html' }
+  const HTML_UPDATED = {
+    workspace: { id: 'ws_h', slug: HTML_BINDING.slug, name: 'Pricing' },
+    changed: true,
+    url: 'https://margins.test/w/stash/alice/deadbeef',
+    head: 'sha-new',
+    format: 'html',
+    path: 'document.html',
+  }
+
+  function bindHtml(binding: Record<string, unknown> = HTML_BINDING) {
+    bindings.lookupBinding.mockReturnValue({ store: HTML_STORE, binding })
+  }
+
+  it("sends the binding's head as parentSha and records the new one", async () => {
+    bindHtml()
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPut.mockResolvedValue(HTML_UPDATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(mockPut).toHaveBeenCalledWith('/api/stash', expect.objectContaining({
+      parentSha: 'sha-old',
+      format: 'html',
+    }))
+    expect(bindings.recordBinding).toHaveBeenCalledWith(
+      'page.html',
+      expect.objectContaining({ head: 'sha-new' }),
+    )
+  })
+
+  it('--force omits parentSha entirely', async () => {
+    bindHtml()
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPut.mockResolvedValue(HTML_UPDATED)
+
+    await handleStash(makeConfig(), 'page.html', { force: true })
+
+    const body = mockPut.mock.calls[0]![1] as Record<string, unknown>
+    expect(body).not.toHaveProperty('parentSha')
+  })
+
+  it('a binding with no head overwrites once, says so, and records the head (D9)', async () => {
+    bindHtml({ slug: HTML_BINDING.slug, workspaceId: 'ws_h' })
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPut.mockResolvedValue(HTML_UPDATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    const body = mockPut.mock.calls[0]![1] as Record<string, unknown>
+    expect(body).not.toHaveProperty('parentSha')
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('overwrote it without checking'))
+    // And it is protected from here on.
+    expect(bindings.recordBinding).toHaveBeenCalledWith(
+      'page.html',
+      expect.objectContaining({ head: 'sha-new' }),
+    )
+  })
+
+  it('says nothing about overwriting when the binding DID carry a head', async () => {
+    // The positive control. A notice on every update would train the user to
+    // ignore the one that matters.
+    bindHtml()
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPut.mockResolvedValue(HTML_UPDATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('overwrote it without checking'))
+  })
+})
+
+describe('handleStash — what the server says reaches the user', () => {
+  const B = { slug: 'stash/alice/deadbeef', workspaceId: 'ws_h', head: 'sha-old' }
+  const STORE_H = { kind: 'global' as const, storePath: '/tmp/b.json', key: 'page.html' }
+
+  it('prints an HTML refusal verbatim instead of the generic validation sentence', async () => {
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPost.mockReset().mockRejectedValue(
+      new ServerError(400, 'HTML_TOO_COMPLEX', 'This document has 30000 elements; the limit is 20000.'),
+    )
+
+    const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
+
+    // `toContain`, not `toBe`: ValidationError prefixes "Validation error: ".
+    // What matters is that the server's own sentence survives whole.
+    expect((err as Error).message).toContain('This document has 30000 elements; the limit is 20000.')
+    expect((err as Error).message).not.toMatch(/Use --verbose/)
+  })
+
+  it('points a format mismatch at --new, never at --force', async () => {
+    bindings.lookupBinding.mockReturnValue({ store: STORE_H, binding: B })
+    mockReadFileSync.mockReturnValue('# markdown\n')
+    mockPut.mockRejectedValue(
+      new ConflictError('This stash holds html, not markdown.', 'FORMAT_MISMATCH'),
+    )
+
+    const err = await handleStash(makeConfig(), 'notes.md', {}).catch((e: Error) => e)
+
+    expect((err as Error).message).toContain('This stash holds html, not markdown.')
+    expect((err as Error).message).toContain('--new')
+    // A stash's format is fixed at creation; forcing cannot convert it.
+    expect((err as Error).message).not.toContain('--force')
+  })
+
+  it('offers --force and --new on a genuine conflict', async () => {
+    bindings.lookupBinding.mockReturnValue({ store: STORE_H, binding: B })
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockPut.mockRejectedValue(new ConflictError('This Design changed since parentSha.'))
+
+    const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
+
+    expect((err as Error).message).toContain('This Design changed since parentSha.')
+    expect((err as Error).message).toContain('--force')
+    expect((err as Error).message).toContain('--new')
   })
 })

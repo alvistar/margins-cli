@@ -31,6 +31,18 @@ const BINDINGS_BASENAME = 'stash-bindings.json'
 export interface StashBinding {
   slug: string
   workspaceId: string
+  /**
+   * The branch head as of the last create or update this machine made.
+   *
+   * Sent back as `parentSha` on the next update, so a stash that moved on since
+   * (another machine, the web UI, a teammate) is REFUSED rather than silently
+   * overwritten. OPTIONAL, and it has to stay optional: every binding written
+   * before this existed has no `head`, and the file version is deliberately NOT
+   * bumped for it — a v2 would make this CLI treat every one of those files as
+   * unsupported and discard bindings that are perfectly good. See the
+   * unprotected-update path in `upsert.ts` for what happens to them instead.
+   */
+  head?: string | null
 }
 
 interface BindingsFile {

@@ -35,6 +35,30 @@ import type { StashHttp, StashResponse } from './http.js'
 
 export const STASH_DOC_BRANCH = 'main'
 export const STASH_DOC_PATH = 'document.md'
+export const STASH_DOC_PATH_HTML = 'document.html'
+
+export type StashFormat = 'markdown' | 'html'
+
+/**
+ * The largest document the server accepts, mirrored so a caller can refuse
+ * BEFORE the upload. Server-side this is `MAX_STASH_CONTENT`.
+ *
+ * Mirrored rather than discovered because the refusal has to happen locally to
+ * be useful: an HTML design goes over this by inlining its images, and only the
+ * caller still holds the list of what it inlined and how big each one was. The
+ * server can only say "too large".
+ */
+export const MAX_STASH_CONTENT = 1_000_000
+
+/**
+ * The first Margins version whose `POST /api/stash` understands `format`.
+ *
+ * An older server accepts the request, IGNORES the field, and returns a
+ * perfectly successful markdown stash of the HTML source — the worst possible
+ * outcome, because it looks like it worked. `/api/health` reports the version,
+ * so an html create asks first.
+ */
+export const MIN_HTML_STASH_SERVER_VERSION = '0.69.0'
 
 export type StashFailureCode =
   | 'UNAUTHORIZED'
@@ -45,6 +69,10 @@ export type StashFailureCode =
   | 'VALIDATION'
   | 'SERVER'
   | 'NETWORK'
+  /** The server is too old to understand `format`, so it cannot hold a design. */
+  | 'HTML_UNSUPPORTED'
+  /** The caller asked to update a stash as one format and it holds the other. */
+  | 'FORMAT_MISMATCH'
 
 export interface StashFailure {
   code: StashFailureCode
@@ -54,6 +82,14 @@ export interface StashFailure {
   status?: number
   /** Present on CONFLICT: the head the caller's `parentSha` disagreed with. */
   head?: string | null
+  /**
+   * Present on HTML_UNSUPPORTED after a create ALREADY LANDED: the markdown
+   * stash the old server made from the HTML source. The CLI has no delete
+   * command, so naming it is the only way the user can go and remove it.
+   */
+  strandedSlug?: string
+  /** Present on HTML_UNSUPPORTED from the preflight: the version it read. */
+  serverVersion?: string
 }
 
 export type StashAction = 'created' | 'updated' | 'unchanged'
@@ -104,6 +140,24 @@ export interface StashUpsertSuccess {
   rebound: boolean
   /** Present when `rebound` — which of the three recoveries happened. */
   reboundReason?: ReboundReason
+  /** What the stash holds, as the SERVER reported it. */
+  format: StashFormat
+  /** The stash's real document path — what the review URL must end in. */
+  path: string
+  /**
+   * The update went out with NO `parentSha`, so it overwrote whatever the stash
+   * held rather than checking first.
+   *
+   * Only ever true for a binding written before head tracking existed (D9).
+   * Those have nothing to send, and refusing them would strand every stash
+   * created by an older CLI. So it overwrites ONCE, records the head it gets
+   * back, and every later update is protected — but the caller is told, because
+   * "I overwrote something without checking" is not a thing to do silently.
+   *
+   * A flag rather than a `console.error` here: this module never prints. The
+   * caller owns the wording and the stream.
+   */
+  unprotectedUpdate?: boolean
 }
 
 export type StashUpsertResult = StashUpsertSuccess | { ok: false; failure: StashFailure }
@@ -137,6 +191,22 @@ export interface UpsertStashOptions {
    */
   parentSha?: string | null
   /**
+   * What kind of document this is. Absent means markdown.
+   *
+   * On CREATE it is sent only when `html` — an absent field already means
+   * markdown to the server, and every request body this CLI has ever sent for a
+   * markdown stash stays byte-identical. On UPDATE it is sent whenever known, so
+   * the server can refuse a stash that holds the other format before it writes.
+   */
+  format?: StashFormat
+  /**
+   * Update without an optimistic lock: overwrite whatever the stash holds now.
+   *
+   * The deliberate escape hatch from a conflict. `--new` forks instead; this one
+   * is for "yes, I know it moved, mine is the version that should win".
+   */
+  force?: boolean
+  /**
    * Confirm a binding THIS machine did not record (R13). Honouring a binding is
    * an overwrite capability, so a binding that arrived with a clone is untrusted
    * until something says otherwise.
@@ -153,6 +223,10 @@ export interface UpsertStashOptions {
 
 interface CreateResponseShape {
   workspace: { id: string; slug: string; name: string }
+  /** Both ADDITIVE, and both absent from a server older than `format`. */
+  format?: StashFormat
+  path?: string
+  head?: string | null
 }
 
 interface UpdateResponseShape {
@@ -160,6 +234,48 @@ interface UpdateResponseShape {
   changed: boolean
   url: string
   head: string | null
+  format?: StashFormat
+  path?: string
+}
+
+/** Compare two 3-segment semver strings. Returns <0, 0, or >0. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map((n) => Number.parseInt(n, 10))
+  const pb = b.split('.').map((n) => Number.parseInt(n, 10))
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/**
+ * Refuse an html create against a server too old to understand `format`.
+ *
+ * Such a server does not error — it ignores the field and happily stores the
+ * HTML source as markdown, so the user gets a success message and a link to a
+ * page of escaped tags. Asking first is the only way to fail honestly.
+ *
+ * Everything uncertain FALLS THROUGH: a health endpoint that is missing, a
+ * version that will not parse, and the literal `unknown` a dev server reports
+ * all continue to the create, where the response-echo check is the backstop. A
+ * preflight that refused on uncertainty would block development servers.
+ */
+async function checkHtmlSupport(http: StashHttp): Promise<StashFailure | null> {
+  let res: StashResponse
+  try {
+    res = await http.get('/api/health')
+  } catch {
+    return null
+  }
+  if (res.status < 200 || res.status >= 300) return null
+
+  const body = payload<{ version?: unknown }>(res.body)
+  const version = typeof body?.version === 'string' ? body.version : null
+  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) return null
+
+  if (compareVersions(version, MIN_HTML_STASH_SERVER_VERSION) >= 0) return null
+  return { code: 'HTML_UNSUPPORTED', serverVersion: version }
 }
 
 /** A transport-level throw — no response, so nothing to classify. */
@@ -237,13 +353,33 @@ async function tryUpdate(
     bindings.recordAcceptance(store, binding)
   }
 
+  // ── What to send as `parentSha`, in priority order ──
+  //
+  //   --force            → nothing. "Mine wins", stated deliberately.
+  //   explicit option    → that. The daemon knows the head it read.
+  //   binding.head       → that. The normal CLI path since head tracking.
+  //   a binding with no head → nothing, ONCE, and say so (D9).
+  //
+  // The last one is the only surprising branch. A binding written by an older
+  // CLI has no head to send; refusing it would strand every stash those CLIs
+  // created, and inventing one would be worse. So it overwrites once, records
+  // the head from the response, and protects every update after this.
+  const explicit = opts.parentSha !== undefined
+  const fromBinding = binding.head ?? undefined
+  const sendParentSha = opts.force ? undefined : explicit ? opts.parentSha : fromBinding
+  const unprotected = !opts.force && !explicit && fromBinding === undefined
+
   let res: StashResponse
   try {
     res = await opts.http.put('/api/stash', {
       slug: binding.slug,
       content: opts.content,
       ...(opts.updateTitle ? { title: opts.updateTitle } : {}),
-      ...(opts.parentSha !== undefined ? { parentSha: opts.parentSha } : {}),
+      ...(sendParentSha !== undefined ? { parentSha: sendParentSha } : {}),
+      // Sent whenever known — including "markdown" — so the server can refuse a
+      // stash holding the other format BEFORE it writes. An older server ignores
+      // it, which is the same as not sending it.
+      ...(opts.format ? { format: opts.format } : {}),
     })
   } catch {
     return networkFailure()
@@ -251,14 +387,27 @@ async function tryUpdate(
 
   if (res.status >= 200 && res.status < 300) {
     const body = payload<UpdateResponseShape>(res.body)
+    const head = body.head ?? null
+    // Record the new head so the NEXT update is protected — including the D9
+    // case, which is exactly why that case is allowed to happen once.
+    if (opts.filePath) {
+      bindings.recordBinding(opts.filePath, {
+        slug: body.workspace.slug,
+        workspaceId: body.workspace.id,
+        head,
+      })
+    }
     return {
       ok: true,
       action: body.changed ? 'updated' : 'unchanged',
       slug: body.workspace.slug,
       workspaceId: body.workspace.id,
       changed: body.changed,
-      head: body.head ?? null,
+      head,
       rebound: false,
+      format: body.format ?? opts.format ?? 'markdown',
+      path: body.path ?? pathForFormat(body.format ?? opts.format),
+      ...(unprotected ? { unprotectedUpdate: true } : {}),
     }
   }
 
@@ -277,6 +426,10 @@ async function tryUpdate(
     return 'foreign' // not a member at all → a fresh stash under the caller's account
   }
   if (res.status === 400) return fail('VALIDATION', res)
+  // Before the generic 409: a format mismatch is not a concurrency conflict and
+  // has a different remedy (a new stash, not --force), so `--force` must not
+  // look like it would help.
+  if (res.status === 409 && res.code === 'FORMAT_MISMATCH') return fail('FORMAT_MISMATCH', res)
   if (res.status === 409) {
     const body = res.body as { head?: string | null } | undefined
     return {
@@ -297,11 +450,22 @@ async function createFresh(
   bindings: BindingsPort,
   reboundReason: ReboundReason | undefined,
 ): Promise<StashUpsertResult> {
+  // Ask BEFORE creating anything. An old server would store the HTML source as
+  // markdown and report success, and the CLI has no way to delete what it made.
+  if (opts.format === 'html') {
+    const unsupported = await checkHtmlSupport(opts.http)
+    if (unsupported) return { ok: false, failure: unsupported }
+  }
+
   let res: StashResponse
   try {
     res = await opts.http.post('/api/stash', {
       content: opts.content,
       ...(opts.title ? { title: opts.title } : {}),
+      // ONLY when html. An absent field already means markdown to the server, so
+      // sending "markdown" would change a request body that has never carried it
+      // — and other tests pin that body exactly.
+      ...(opts.format === 'html' ? { format: 'html' } : {}),
     })
   } catch {
     return networkFailure()
@@ -318,12 +482,35 @@ async function createFresh(
   const body = payload<CreateResponseShape>(res.body)
   const workspace = body.workspace
 
+  // The backstop behind the health preflight. A server that understands `format`
+  // echoes it back with the real `path`; one that silently ignored the field
+  // echoes neither. Reached when the preflight could not decide — no health
+  // endpoint, an unparseable or `unknown` version — which is also every case
+  // where a wrong answer is most likely.
+  //
+  // The stash HAS been created by this point and it holds the HTML source as
+  // markdown. Nothing here can undo that (there is no delete in the API this CLI
+  // speaks), so the failure carries the slug and the caller names it.
+  if (opts.format === 'html' && (body.format === undefined || body.path === undefined)) {
+    return {
+      ok: false,
+      failure: { code: 'HTML_UNSUPPORTED', strandedSlug: workspace.slug },
+    }
+  }
+
+  const format = body.format ?? opts.format ?? 'markdown'
+  const head = body.head ?? null
+
   // Remember the identity so the next run updates instead of forking (R10).
   // `recordBinding` also writes the acceptance entry, which is what stops the
   // next `margins stash` on this file asking the user to trust a binding this
   // machine just wrote.
   if (opts.filePath) {
-    bindings.recordBinding(opts.filePath, { slug: workspace.slug, workspaceId: workspace.id })
+    bindings.recordBinding(opts.filePath, {
+      slug: workspace.slug,
+      workspaceId: workspace.id,
+      head,
+    })
   }
 
   return {
@@ -332,13 +519,31 @@ async function createFresh(
     slug: workspace.slug,
     workspaceId: workspace.id,
     changed: true,
-    head: null,
+    head,
     rebound: reboundReason !== undefined,
     ...(reboundReason ? { reboundReason } : {}),
+    format,
+    path: body.path ?? pathForFormat(format),
   }
 }
 
-/** The reader deep-link for a stash — the one place this URL shape lives. */
-export function buildStashReviewUrl(serverUrl: string, slug: string): string {
-  return `${serverUrl.replace(/\/$/, '')}/w/${slug}/-/${STASH_DOC_BRANCH}/${STASH_DOC_PATH}`
+/** The document path a format implies, for a server that did not say. */
+function pathForFormat(format: StashFormat | undefined): string {
+  return format === 'html' ? STASH_DOC_PATH_HTML : STASH_DOC_PATH
+}
+
+/**
+ * The reader deep-link for a stash — the one place this URL shape lives.
+ *
+ * `path` defaults to the markdown document so every existing caller is
+ * unchanged, but a caller holding a result should pass `result.path`: a Design
+ * lives at `document.html`, and the default would link to a document that is not
+ * there.
+ */
+export function buildStashReviewUrl(
+  serverUrl: string,
+  slug: string,
+  path: string = STASH_DOC_PATH,
+): string {
+  return `${serverUrl.replace(/\/$/, '')}/w/${slug}/-/${STASH_DOC_BRANCH}/${path}`
 }
