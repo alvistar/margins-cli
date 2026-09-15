@@ -43,7 +43,7 @@ export {
   STASH_DOC_PATH,
   STASH_DOC_PATH_HTML,
   MAX_STASH_CONTENT,
-  MIN_HTML_STASH_SERVER_VERSION,
+  HTML_STASH_FEATURE,
   upsertStash,
   buildStashReviewUrl,
 } from './upsert.js'

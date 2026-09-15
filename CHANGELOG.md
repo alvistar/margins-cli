@@ -8,9 +8,18 @@ Nothing yet.
 
 ## [0.21.0] - 2026-09-15
 
-Requires a Margins server on **0.69.0 or newer** for HTML. `margins stash` asks
-`/api/health` before creating a design and refuses against an older server rather
-than letting it store your HTML source as Markdown and report success.
+Requires a Margins server that advertises the **`stash-html`** capability on
+`/api/health` (Margins 0.69.0 and newer). `margins stash` asks before creating a
+design and refuses rather than letting an older server store your HTML source as
+Markdown and report success.
+
+It asks for the CAPABILITY, not the version, and that distinction was found by
+running it: `/api/health`'s `version` is the web app's only in the production
+image — started from `margins/` it falls back to the Margins Light runtime
+version, an unrelated numbering line. A fully capable dev server reported
+`0.16.0`, and a version comparison refused to publish to it. A server that
+advertises no `features` at all cannot be asked, so the create proceeds and the
+response-echo check is the backstop.
 
 ### Added
 

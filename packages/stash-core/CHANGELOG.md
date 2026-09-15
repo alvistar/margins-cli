@@ -24,11 +24,18 @@ it always sent.
 - `StashFailure.strandedSlug` and `.serverVersion`, and the `HTML_UNSUPPORTED`
   and `FORMAT_MISMATCH` failure codes.
 - `buildStashReviewUrl` takes an optional `path`, defaulting to `document.md`.
-- An `/api/health` preflight before an html create. A server that predates
-  `format` does not error — it ignores the field and stores the HTML source as
-  Markdown — so asking first is the only way to fail honestly. Anything uncertain
-  (no health route, an unparseable or `unknown` version) falls through to the
-  create, where a missing `format`/`path` echo is the backstop.
+- `HTML_STASH_FEATURE` and an `/api/health` preflight before an html create. A
+  server that predates `format` does not error — it ignores the field and stores
+  the HTML source as Markdown — so asking first is the only way to fail honestly.
+
+  It reads `features`, NOT `version`. The version there means two different
+  things: the production image bakes in the web app's version, while a server
+  started from `margins/` falls back to `npm_package_version`, the Margins Light
+  runtime version on an unrelated numbering line. Measured 2026-09-15, a fully
+  capable dev server reported `0.16.0` and a version comparison refused to
+  publish a design to it. A server advertising no `features` cannot be asked and
+  falls through to the create, where a missing `format`/`path` echo is the
+  backstop.
 
 ### Changed
 

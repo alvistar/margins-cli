@@ -51,14 +51,20 @@ export type StashFormat = 'markdown' | 'html'
 export const MAX_STASH_CONTENT = 1_000_000
 
 /**
- * The first Margins version whose `POST /api/stash` understands `format`.
+ * The capability a server advertises when it can hold an HTML design.
  *
- * An older server accepts the request, IGNORES the field, and returns a
- * perfectly successful markdown stash of the HTML source — the worst possible
- * outcome, because it looks like it worked. `/api/health` reports the version,
- * so an html create asks first.
+ * A CAPABILITY, not a version comparison, and that distinction was learned by
+ * running it. `/api/health` also reports a `version`, but that value means two
+ * different things: the production image bakes in the web app's version, while
+ * anything started from `margins/` falls back to `npm_package_version` — the
+ * Margins Light RUNTIME version, on an unrelated numbering line. Measured
+ * 2026-09-15: a dev server serving a fully capable 0.69.0 web app reported
+ * `0.16.0`, and a version check refused to publish a design to it.
+ *
+ * A server that advertises no `features` at all predates this and cannot be
+ * asked, so it falls through to the create and the response-echo backstop.
  */
-export const MIN_HTML_STASH_SERVER_VERSION = '0.69.0'
+export const HTML_STASH_FEATURE = 'stash-html'
 
 export type StashFailureCode =
   | 'UNAUTHORIZED'
@@ -238,28 +244,26 @@ interface UpdateResponseShape {
   path?: string
 }
 
-/** Compare two 3-segment semver strings. Returns <0, 0, or >0. */
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map((n) => Number.parseInt(n, 10))
-  const pb = b.split('.').map((n) => Number.parseInt(n, 10))
-  for (let i = 0; i < 3; i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d !== 0) return d
-  }
-  return 0
-}
-
 /**
- * Refuse an html create against a server too old to understand `format`.
+ * Refuse an html create against a server that cannot hold a design.
  *
- * Such a server does not error — it ignores the field and happily stores the
- * HTML source as markdown, so the user gets a success message and a link to a
- * page of escaped tags. Asking first is the only way to fail honestly.
+ * Such a server does not error — it ignores `format` and happily stores the HTML
+ * source as markdown, so the user gets a success message and a link to a page of
+ * escaped tags. Asking first is the only way to fail honestly.
  *
- * Everything uncertain FALLS THROUGH: a health endpoint that is missing, a
- * version that will not parse, and the literal `unknown` a dev server reports
- * all continue to the create, where the response-echo check is the backstop. A
- * preflight that refused on uncertainty would block development servers.
+ * THREE answers, and the third is the one that matters:
+ *
+ *   features includes stash-html  → proceed
+ *   features present, without it  → refuse, nothing created
+ *   no features field at all      → fall through; cannot be asked
+ *
+ * Falling through on "cannot be asked" is deliberate. A server that advertises
+ * nothing may be too old, but it may equally be behind a proxy that rewrote the
+ * body, or a build this package has not seen. Refusing on uncertainty would
+ * block real work; the response-echo backstop after the create catches the case
+ * that is genuinely too old, at the cost of one stash the user must delete.
+ *
+ * A missing or failing health endpoint is the same "cannot be asked".
  */
 async function checkHtmlSupport(http: StashHttp): Promise<StashFailure | null> {
   let res: StashResponse
@@ -270,12 +274,15 @@ async function checkHtmlSupport(http: StashHttp): Promise<StashFailure | null> {
   }
   if (res.status < 200 || res.status >= 300) return null
 
-  const body = payload<{ version?: unknown }>(res.body)
-  const version = typeof body?.version === 'string' ? body.version : null
-  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) return null
+  const body = payload<{ version?: unknown; features?: unknown }>(res.body)
+  const features = body?.features
+  if (!Array.isArray(features)) return null
+  if (features.includes(HTML_STASH_FEATURE)) return null
 
-  if (compareVersions(version, MIN_HTML_STASH_SERVER_VERSION) >= 0) return null
-  return { code: 'HTML_UNSUPPORTED', serverVersion: version }
+  return {
+    code: 'HTML_UNSUPPORTED',
+    ...(typeof body?.version === 'string' ? { serverVersion: body.version } : {}),
+  }
 }
 
 /** A transport-level throw — no response, so nothing to classify. */

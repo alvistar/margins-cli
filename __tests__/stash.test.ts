@@ -60,8 +60,8 @@ let errSpy: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   mockPost.mockReset().mockResolvedValue(OK)
   mockPut.mockReset()
-  // A server new enough for designs, unless a test says otherwise.
-  mockGet.mockReset().mockResolvedValue({ version: '0.69.0' })
+  // A server that advertises the design capability, unless a test says otherwise.
+  mockGet.mockReset().mockResolvedValue({ version: '0.69.0', features: ['stash-html'] })
   mockReadFileSync.mockReset()
   bindings.lookupBinding.mockReset().mockReturnValue(null)
   bindings.recordBinding.mockReset()
@@ -591,10 +591,10 @@ describe('handleStash — HTML designs', () => {
   })
 })
 
-describe('handleStash — designs against an old server', () => {
-  it('refuses BEFORE creating anything when /api/health reports an older version', async () => {
+describe('handleStash — designs against a server that cannot hold one', () => {
+  it('refuses BEFORE creating anything when features omit stash-html', async () => {
     mockReadFileSync.mockReturnValue(DESIGN)
-    mockGet.mockResolvedValue({ version: '0.68.0' })
+    mockGet.mockResolvedValue({ version: '0.68.0', features: ['something-else'] })
 
     const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
 
@@ -605,9 +605,28 @@ describe('handleStash — designs against an old server', () => {
     expect(mockPost).not.toHaveBeenCalled()
   })
 
-  it('falls through to the create on an "unknown" version — dev servers must still work', async () => {
+  it('proceeds on a LOW version that advertises the capability', async () => {
+    // The regression this shape exists for, measured against a real dev server
+    // on 2026-09-15. `/api/health`'s `version` is the web app's only in the
+    // production image; started from `margins/` it falls back to
+    // `npm_package_version` — the Margins Light RUNTIME version, an unrelated
+    // series. A fully capable server reported 0.16.0 and a version comparison
+    // refused to publish a design to it.
     mockReadFileSync.mockReturnValue(DESIGN)
-    mockGet.mockResolvedValue({ version: 'unknown' })
+    mockGet.mockResolvedValue({ version: '0.16.0', features: ['stash-html'] })
+    mockPost.mockReset().mockResolvedValue(HTML_CREATED)
+
+    await handleStash(makeConfig(), 'page.html', {})
+
+    expect(mockPost).toHaveBeenCalled()
+  })
+
+  it('falls through when the server advertises no features at all', async () => {
+    // Cannot be asked: too old, or behind a proxy that rewrote the body. Refusing
+    // on uncertainty would block real work; the echo backstop catches the case
+    // that is genuinely too old.
+    mockReadFileSync.mockReturnValue(DESIGN)
+    mockGet.mockResolvedValue({ version: '0.68.0' })
     mockPost.mockReset().mockResolvedValue(HTML_CREATED)
 
     await handleStash(makeConfig(), 'page.html', {})
@@ -629,7 +648,7 @@ describe('handleStash — designs against an old server', () => {
     // The backstop behind the preflight, and the case where the damage is
     // already done: the markdown stash EXISTS and this CLI has no delete.
     mockReadFileSync.mockReturnValue(DESIGN)
-    mockGet.mockResolvedValue({ version: 'unknown' })
+    mockGet.mockResolvedValue({ version: '0.68.0' }) // cannot be asked
     mockPost.mockReset().mockResolvedValue(OK) // no format/path echo
 
     const err = await handleStash(makeConfig(), 'page.html', {}).catch((e: Error) => e)
