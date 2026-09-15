@@ -10,8 +10,7 @@ it always sent.
 
 ### Added
 
-- `StashFormat`, `STASH_DOC_PATH_HTML`, `MAX_STASH_CONTENT`,
-  `MIN_HTML_STASH_SERVER_VERSION`.
+- `StashFormat`, `STASH_DOC_PATH_HTML`, `MAX_STASH_CONTENT`, `HTML_STASH_FEATURE`.
 - `UpsertStashOptions.format` — sent on create only when `html`, and on update
   whenever known so the server can refuse a stash holding the other format before
   it writes.
