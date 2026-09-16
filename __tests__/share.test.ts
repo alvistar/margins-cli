@@ -37,6 +37,12 @@ describe('parseStashSlug', () => {
   it('extracts the slug from a full reader URL', () => {
     expect(parseStashSlug('https://margins.test/w/stash/alice/abcd1234/-/main/document.md')).toBe(SLUG)
   })
+
+  it("accepts a design's URL — the one a user copies for an HTML stash", () => {
+    // It parses on '/-/', not on the filename, so this already worked. Pinned
+    // because a future 'strip document.md' shortcut would break it silently.
+    expect(parseStashSlug('https://margins.test/w/stash/alice/abcd1234/-/main/document.html')).toBe(SLUG)
+  })
   it('extracts the slug from a /w/ URL without a branch segment', () => {
     expect(parseStashSlug('https://margins.test/w/stash/alice/abcd1234')).toBe(SLUG)
   })

@@ -6,6 +6,74 @@ All notable changes to margins-cli will be documented in this file.
 
 Nothing yet.
 
+## [0.21.0] - 2026-09-15
+
+Requires a Margins server that advertises the **`stash-html`** capability on
+`/api/health` (Margins 0.69.0 and newer). `margins stash` asks before creating a
+design and refuses rather than letting an older server store your HTML source as
+Markdown and report success.
+
+It asks for the CAPABILITY, not the version, and that distinction was found by
+running it: `/api/health`'s `version` is the web app's only in the production
+image — started from `margins/` it falls back to the Margins Light runtime
+version, an unrelated numbering line. A fully capable dev server reported
+`0.16.0`, and a version comparison refused to publish to it. A server that
+advertises no `features` at all cannot be asked, so the create proceeds and the
+response-echo check is the backstop.
+
+### Added
+
+- **`margins stash site/index.html` publishes an HTML design.** The format comes
+  from the extension (`.html`, `.htm`); `--format <markdown|html>` overrides it,
+  and stdin is Markdown unless `--format` says otherwise. The printed URL ends in
+  the stash's real document path, taken from the response — a design lives at
+  `document.html`, and the old default would have linked to a page that is not
+  there. `--json` gains `format` and `path`.
+
+- **Local CSS and images are inlined before the upload.** The server drops every
+  external reference, so a design uploaded as authored arrives unstyled. A
+  `<link rel="stylesheet">` becomes a `<style>` block and an `<img src="…">`
+  becomes a `data:` URI, and the CLI prints every file it folded in — they leave
+  your machine, so you get to see which ones.
+
+  Only stylesheets and known image types are read. That is an allow-list, not a
+  filter: without it a crafted page in a stashed folder could have named `.env`
+  or a private `.json` and had its contents base64'd into a document about to be
+  published. References outside the document's folder, symlinks, and remote URLs
+  are left alone, as is anything inside `<!-- -->`, `<script>` or `<style>`.
+
+- **`--force`** updates without an optimistic lock. A design is never merged, so
+  a stash that moved on since your last push is refused; this is the deliberate
+  "mine wins" escape hatch, where `--new` forks instead.
+
+- **A local size refusal that names the cause.** Over the 1 MB cap the CLI stops
+  before uploading and lists what it inlined, largest first. The server can only
+  say "too large"; only the CLI still knows that 900 KB of it was one photograph.
+
+### Changed
+
+- **Updates now send the version they were built on.** The binding records the
+  stash `head` after every create and update and sends it back as `parentSha`, so
+  a stash changed elsewhere — another machine, the web UI, a teammate — is
+  refused instead of silently overwritten. `--force` skips the check.
+
+  A binding written before this existed has no head. Rather than stranding every
+  stash older CLIs created, it overwrites **once**, says so on stderr, and records
+  the head it gets back; every update after that is protected. The bindings file
+  stays version 1 for the same reason — a version bump would make this CLI treat
+  those files as unsupported and fork a duplicate of every stash in them.
+
+- **Updates declare the format they expect**, so a `.md` file bound to a design
+  (or the reverse) is refused with a pointer to `--new` before anything is
+  written. A stash's format is fixed when it is created; `--force` cannot convert
+  one, and the message does not pretend otherwise.
+
+- **The server's own refusal text is printed verbatim.** Margins' HTML refusals
+  name the measurement, the limit and the fix, and the CLI used to replace all of
+  it with "The stash was rejected … use --verbose". A conflict now also names
+  `--force` and `--new`.
+
+
 ## [0.20.0] - 2026-09-09
 
 No change to what `margins stash` does. Every existing test for it passes with its

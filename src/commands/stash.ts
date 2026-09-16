@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { basename, extname } from 'node:path'
+import { basename, dirname, extname, resolve } from 'node:path'
 import * as p from '@clack/prompts'
 import {
   buildStashReviewUrl,
@@ -8,6 +8,8 @@ import {
   recordAcceptance,
   recordBinding,
   upsertStash,
+  MAX_STASH_CONTENT,
+  type StashFormat,
   type ResolvedBindingStore,
   type StashBinding,
   type StashHttp,
@@ -17,6 +19,7 @@ import {
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { formatJson } from '../lib/output.js'
+import { inlineLocalAssets, formatBytes } from '../lib/html-inline.js'
 import {
   ValidationError,
   ConflictError,
@@ -35,6 +38,84 @@ export interface StashOptions {
   new?: boolean
   /** Skip the first-use trust confirmation on a binding this CLI didn't write. */
   yes?: boolean
+  /** Override the format inferred from the file extension. */
+  format?: string
+  /** Update without an optimistic lock — overwrite whatever the stash holds. */
+  force?: boolean
+}
+
+const HTML_EXTENSIONS = new Set(['.html', '.htm'])
+
+/**
+ * What kind of document this is.
+ *
+ * From the EXTENSION, because it is the only signal that is actually about the
+ * author's intent. Sniffing the content would guess — a markdown document may
+ * legitimately open with a div, and an HTML fragment may not — and guessing
+ * wrong in either direction is destructive: markdown sanitized as HTML loses
+ * its source, HTML stored as markdown loses its rendering. `--format` is the
+ * override for the cases with no extension to read (stdin) or a misleading one.
+ */
+function resolveFormat(opts: StashOptions, fileName: string | undefined): StashFormat {
+  if (opts.format) {
+    if (opts.format !== 'markdown' && opts.format !== 'html') {
+      throw new ValidationError(`--format must be "markdown" or "html" (got "${opts.format}").`)
+    }
+    return opts.format
+  }
+  // stdin has no extension, so it is markdown unless --format says otherwise.
+  if (!fileName) return 'markdown'
+  return HTML_EXTENSIONS.has(extname(fileName).toLowerCase()) ? 'html' : 'markdown'
+}
+
+/**
+ * A design's title: the `title` element, else the first `h1`, tags stripped.
+ *
+ * NOT the markdown heading regex. Run over HTML that matches whatever `#`
+ * happened to start a line in the CSS, so a design would be titled `sidebar {`.
+ * The server's sanitizer derives the same two in the same order; this exists so
+ * the title is already right in the printed output and in `--json`.
+ */
+function deriveHtmlTitle(content: string): string | undefined {
+  for (const re of [/<title[^>]*>([\s\S]*?)<\/title\s*>/i, /<h1[^>]*>([\s\S]*?)<\/h1\s*>/i]) {
+    const m = re.exec(content)
+    const text = m?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+    if (text) return text
+  }
+  return undefined
+}
+
+/**
+ * Fold local CSS and images into the document, or refuse if the result is too
+ * big to upload.
+ *
+ * The refusal happens HERE, not at the server, because only here is the
+ * information that makes it actionable: the server can say the document is over
+ * a megabyte, but it cannot say that 900 KB of it is one photograph.
+ */
+function prepareHtml(content: string, fileName: string | undefined): string {
+  const baseDir = fileName ? dirname(resolve(fileName)) : process.cwd()
+  const { html, inlined, warnings } = inlineLocalAssets(content, baseDir)
+
+  for (const warning of warnings) console.error(`Not inlined: ${warning}`)
+  // Always printed, even on success. These files LEAVE THE MACHINE, and the
+  // author is entitled to see which ones before they send anyone the link.
+  for (const asset of inlined) {
+    console.error(`Inlined ${asset.path} (${formatBytes(asset.bytes)})`)
+  }
+
+  if (html.length > MAX_STASH_CONTENT) {
+    const biggest = [...inlined]
+      .sort((a, b) => b.bytes - a.bytes)
+      .map((a) => `  ${a.path} — ${formatBytes(a.bytes)}`)
+      .join('\n')
+    throw new ValidationError(
+      `This design is ${formatBytes(html.length)} once its assets are inlined; the limit is ` +
+        `${formatBytes(MAX_STASH_CONTENT)}. Nothing was uploaded.` +
+        (biggest ? `\n\nInlined, largest first:\n${biggest}` : ''),
+    )
+  }
+  return html
 }
 
 /**
@@ -54,10 +135,15 @@ export async function handleStash(
   file: string | undefined,
   opts: StashOptions = {},
 ): Promise<void> {
-  const { content, fileName } = readDocument(file)
-  if (!content.trim()) {
+  const { content: raw, fileName } = readDocument(file)
+  if (!raw.trim()) {
     throw new ValidationError('A stash document needs content.')
   }
+
+  const format = resolveFormat(opts, fileName)
+  // A design has to arrive as ONE self-contained file — the server drops every
+  // external reference — so its local CSS and images are folded in first.
+  const content = format === 'html' ? prepareHtml(raw, fileName) : raw
 
   const client = createApiClient(cfg)
 
@@ -67,7 +153,9 @@ export async function handleStash(
   // time a heading-less doc is re-stashed. The package applies whichever title it
   // is given to whichever path it takes, so the choice is made here, where the
   // binding is known.
-  const headingTitle = opts.title?.trim() || deriveHeadingTitle(content)
+  const headingTitle =
+    opts.title?.trim() ||
+    (format === 'html' ? deriveHtmlTitle(content) : deriveHeadingTitle(content))
   const stemTitle = fileName ? basename(fileName, extname(fileName)) : undefined
 
   const result = await upsertStash({
@@ -77,6 +165,11 @@ export async function handleStash(
     ...(headingTitle ?? stemTitle ? { title: (headingTitle ?? stemTitle)! } : {}),
     ...(headingTitle ? { updateTitle: headingTitle } : {}),
     ...(opts.new ? { forceNew: true } : {}),
+    // Sent on BOTH paths. On create it reaches the server only when html; on
+    // update the package sends it either way, so a .md file bound to a design
+    // (or the reverse) is refused rather than written.
+    format,
+    ...(opts.force ? { force: true } : {}),
     confirmTrust: (binding, store) => confirmTrust(cfg, binding, store, opts),
     // Passed explicitly rather than left to the package's default. The store is
     // process-global state, and naming it here is what lets this command's tests
@@ -97,7 +190,18 @@ export async function handleStash(
     console.error('The bound stash belongs to a different account — creating a fresh one.')
   }
 
-  const url = buildStashReviewUrl(cfg.serverUrl, result.slug)
+  // D9: this file's binding predates head tracking, so there was no version to
+  // check against and the update overwrote whatever was there. Said out loud,
+  // once — the next update has a head and is protected.
+  if (result.unprotectedUpdate) {
+    console.error(
+      'This stash was published before Margins tracked versions, so this update overwrote it without checking. Future updates are protected.',
+    )
+  }
+
+  // The stash's REAL path, from the response. The default is document.md, which
+  // does not exist in a design's workspace — the link would 404 on arrival.
+  const url = buildStashReviewUrl(cfg.serverUrl, result.slug, result.path)
   const outcome = result.action === 'created' ? 'Stashed for review' : 'Updated stash'
   const shareUrl = opts.share ? await mintShareLink(client, result.slug, url, outcome) : undefined
 
@@ -108,6 +212,8 @@ export async function handleStash(
         slug: result.slug,
         url,
         action: result.action,
+        format: result.format,
+        path: result.path,
         ...(result.action === 'created'
           ? {}
           : { changed: result.changed, head: result.head }),
@@ -220,8 +326,27 @@ function toCliError(
     case 'UNAUTHORIZED':
       return new AuthExpired()
     case 'VALIDATION':
+      // The server's own words when it sent any. Its HTML refusals name the
+      // measurement, the limit and the fix — which is the only thing the author
+      // can act on, and the generic sentence below threw all of it away.
       return new ValidationError(
-        'The stash was rejected (content empty/too large, title too long, or the bound slug is not a stash). Use --verbose for the server response.',
+        failure.serverMessage ??
+          'The stash was rejected (content empty/too large, title too long, or the bound slug is not a stash). Use --verbose for the server response.',
+      )
+    case 'FORMAT_MISMATCH':
+      // Deliberately NOT offered --force: a stash's format is fixed at creation,
+      // so there is nothing forcing would resolve.
+      return new ValidationError(
+        `${failure.serverMessage ?? 'This stash holds a different kind of document.'}\n` +
+          'Use --new to publish this file as a separate stash.',
+      )
+    case 'HTML_UNSUPPORTED':
+      return new ValidationError(
+        failure.strandedSlug
+          ? `This Margins server does not support HTML stashes, and it has already created a MARKDOWN one from this file: ${failure.strandedSlug}\n` +
+            'Delete it from the web UI (the CLI cannot), then update the server.'
+          : `This Margins server${failure.serverVersion ? ` (${failure.serverVersion})` : ''} does not support HTML stashes. ` +
+            'Update the server, or pass --format markdown to publish the source as text. Nothing was uploaded.',
       )
     case 'SLUG_CONFLICT':
       return new ConflictError('Could not allocate a stash slug — please retry.')
@@ -230,7 +355,8 @@ function toCliError(
       // moved past, and a retry against the new head would overwrite whatever
       // moved it.
       return new ValidationError(
-        failure.serverMessage ?? 'The stash changed since this content was written; nothing was published.',
+        `${failure.serverMessage ?? 'The stash changed since this content was written; nothing was published.'}\n` +
+          'Re-run with --force to overwrite it anyway, or --new to publish this as a separate stash.',
       )
     case 'NETWORK':
       return new NetworkError(serverUrl)

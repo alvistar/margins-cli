@@ -284,3 +284,49 @@ describe('.gitignore upkeep (idempotent)', () => {
     expect(gitignore).toContain('.margins/stash-bindings.json')
   })
 })
+
+describe('head tracking (D2/D9)', () => {
+  it('round-trips a head through the file', () => {
+    const root = makeProject('heads')
+    const file = path.join(root, 'notes.md')
+
+    recordBinding(file, { slug: 'stash/a/1', workspaceId: 'ws_1', head: 'sha-1' })
+
+    expect(lookupBinding(file)?.binding).toEqual({
+      slug: 'stash/a/1',
+      workspaceId: 'ws_1',
+      head: 'sha-1',
+    })
+  })
+
+  it('loads a v1 file written BEFORE head tracking, rather than discarding it', () => {
+    // The reason the file version was NOT bumped for `head`. A v2 would make this
+    // CLI treat every binding an older CLI wrote as unsupported and drop it, so
+    // the next `margins stash` would fork a duplicate of every stash the user has.
+    const root = makeProject('legacy')
+    const file = path.join(root, 'legacy.md')
+    const store = resolveBindingStore(file)
+    fs.mkdirSync(path.dirname(store.storePath), { recursive: true })
+    fs.writeFileSync(
+      store.storePath,
+      JSON.stringify({
+        version: 1,
+        bindings: { [store.key]: { slug: 'stash/a/old', workspaceId: 'ws_old' } },
+      }),
+    )
+
+    const hit = lookupBinding(file)
+    expect(hit?.binding.slug).toBe('stash/a/old')
+    expect(hit?.binding.head).toBeUndefined()
+  })
+
+  it('records a head onto a binding that had none', () => {
+    const root = makeProject('upgrade')
+    const file = path.join(root, 'legacy2.md')
+    recordBinding(file, { slug: 'stash/a/old', workspaceId: 'ws_old' })
+    expect(lookupBinding(file)?.binding.head).toBeUndefined()
+
+    recordBinding(file, { slug: 'stash/a/old', workspaceId: 'ws_old', head: 'sha-first' })
+    expect(lookupBinding(file)?.binding.head).toBe('sha-first')
+  })
+})

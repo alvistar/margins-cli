@@ -38,8 +38,12 @@ export {
   type StashUpsertSuccess,
   type StashUpsertResult,
   type UpsertStashOptions,
+  type StashFormat,
   STASH_DOC_BRANCH,
   STASH_DOC_PATH,
+  STASH_DOC_PATH_HTML,
+  MAX_STASH_CONTENT,
+  HTML_STASH_FEATURE,
   upsertStash,
   buildStashReviewUrl,
 } from './upsert.js'
