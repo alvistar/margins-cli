@@ -17,7 +17,7 @@ export async function fetchWorkspaceSyncMode(
   client: ApiClient,
   workspaceId: string,
 ): Promise<'server' | 'client' | null> {
-  const raw = await client.get(`/api/workspaces/${workspaceId}`) as {
+  const raw = await client.get(`/api/workspaces/${encodeURIComponent(workspaceId)}`) as {
     workspace?: { syncMode?: unknown }
     syncMode?: unknown
   } | null
@@ -52,7 +52,14 @@ export async function resolveSyncMode(
     if (!config.workspace_id) return 'server'
     try {
       if (await fetchWorkspaceSyncMode(client, config.workspace_id) === 'client') {
-        upgradeMarginsJson(config, 'client', configDir)
+        // .margins.json is usually committed, so this rewrite shows up as a
+        // change in the working tree. Say so rather than dirtying it silently.
+        if (upgradeMarginsJson(config, 'client', configDir)) {
+          console.error(
+            '.margins.json said this workspace pulls from GitHub; it has switched to push. ' +
+            'Updated the file to "syncMode": "client" — commit it.',
+          )
+        }
         return 'client'
       }
     } catch {
@@ -104,20 +111,23 @@ export async function resolveSyncMode(
   return 'client'
 }
 
-function upgradeMarginsJson(
+/** Rewrite `syncMode` in the folder's .margins.json. True when the file was written. */
+export function upgradeMarginsJson(
   config: LocalConfig,
   syncMode: 'server' | 'client',
   configDir?: string,
-): void {
+): boolean {
   const dir = configDir ?? process.cwd()
   const configPath = path.join(dir, '.margins.json')
-  if (!fs.existsSync(configPath)) return
+  if (!fs.existsSync(configPath)) return false
 
   try {
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
     raw.syncMode = syncMode
     fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
+    return true
   } catch {
     // Non-fatal: upgrade is best-effort
+    return false
   }
 }

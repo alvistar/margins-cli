@@ -51,6 +51,18 @@ export interface InstallOpts {
 
 type RepoStatus = 'installed' | 'skipped' | 'failed'
 
+/** Ctrl-C at a switch prompt: stop the whole run, not just this repo. */
+class InstallCancelled extends Error {}
+
+/** What a switched workspace looks like until something pushes. */
+const FROZEN = 'the workspace was already switched to push; its content stays as it is until a push lands'
+
+function bindingMatches(binding: Binding, repo: gh.RepoInfo): boolean {
+  return binding.githubRepoId === repo.id &&
+    binding.repositoryOwnerId === repo.ownerId &&
+    binding.boundRepoName === repo.fullName
+}
+
 interface RepoResult {
   repo: string
   status: RepoStatus
@@ -99,10 +111,22 @@ async function processRepo(
   target: string,
   dryRun: boolean,
   opts: { yes?: boolean; json?: boolean },
+  /**
+   * Repos whose workspace this run switched to push. Owned by the caller so the
+   * fact survives a throw and a rate-limit retry of this function: the switch
+   * cannot be undone, so no later outcome may hide it.
+   */
+  switchedInRun: Set<string>,
 ): Promise<RepoResult> {
   const actions: string[] = []
-  const result = (status: RepoStatus, reason?: string): RepoResult =>
-    ({ repo: target, status, actions, ...(reason ? { reason } : {}) })
+  const result = (status: RepoStatus, reason?: string): RepoResult => {
+    // Anything short of installed after a switch leaves the workspace frozen:
+    // that is a failure whatever the step said, and the reason must say why.
+    if (switchedInRun.has(target) && status !== 'installed') {
+      return { repo: target, status: 'failed', actions, reason: `${reason ?? 'not installed'} — ${FROZEN}` }
+    }
+    return { repo: target, status, actions, ...(reason ? { reason } : {}) }
+  }
 
   // ── a. Repo facts from gh (id, owner id, canonical name, default branch) ──
   let repo: gh.RepoInfo
@@ -135,17 +159,27 @@ async function processRepo(
   }
 
   // ── c'. A workspace that pulls from GitHub: switch it to push first ────────
-  // In this order: switch, bind, PR. A failed or declined switch stops here, so
-  // a workspace is never bound — and no workflow is opened — while it pulls.
-  let switched = false
+  // In this order: switch, bind, PR. The switch cannot be undone, so every
+  // read-only check that could still stop the install runs BEFORE it: the
+  // caller's right to switch (GET /sync) and the trust binding. A failed,
+  // declined or refused switch stops here, so a workspace is never bound — and
+  // no workflow is opened — while it pulls.
   if (workspace?.syncMode === 'server') {
-    if (dryRun) {
-      actions.push(`would switch ${workspace.slug} to push (Margins stops pulling from GitHub)`)
-    } else {
-      try {
-        const status = await fetchSyncStatus(client, workspace.id)
+    try {
+      const status = await fetchSyncStatus(client, workspace.id)
+      const { binding } = await client.get(`/api/workspaces/${encodeURIComponent(workspace.id)}/binding`) as
+        { binding: Binding | null }
+      if (binding !== null && !bindingMatches(binding, repo)) {
+        return result('failed',
+          `binding mismatch: workspace is bound to ${binding.boundRepoName} (repoId ${binding.githubRepoId}) — ` +
+          'reset the binding before reinstalling; not switched, nothing was changed')
+      }
+      if (dryRun) {
+        actions.push(`would switch ${workspace.slug} to push (Margins stops pulling from GitHub)`)
+      } else {
         if (!opts.json) console.error(switchConsequences(fullName, status, 'the workflow').join('\n'))
         const acceptance = await acceptSwitch(opts)
+        if (acceptance === 'cancelled') throw new InstallCancelled()
         if (acceptance === 'not-interactive') {
           // `failed`, not `skipped`: nobody chose this outcome. A script that
           // forgot `--yes` must not exit 0 having installed nothing. A person who
@@ -157,18 +191,22 @@ async function processRepo(
         if (acceptance === 'declined') {
           return result('skipped', `switch to push declined — ${workspace.slug} still pulls from GitHub, nothing was changed`)
         }
-        switched = (await switchToPush(client, workspace.id)).switched
-      } catch (err) {
-        // A refused switch is this repo's outcome, not the run's: the binding
-        // and the PR below never happen, and an `--org` run moves on.
-        if (err instanceof MarginsError) return result('failed', err.userMessage)
-        throw err
+        const { switched } = await switchToPush(client, workspace.id)
+        if (switched) switchedInRun.add(target)
+        workspace.syncMode = 'client'
+        actions.push(switched
+          ? `switched ${workspace.slug} to push (Margins no longer pulls from GitHub)`
+          : `${workspace.slug} already pushed to Margins`)
       }
-      workspace.syncMode = 'client'
-      actions.push(switched
-        ? `switched ${workspace.slug} to push (Margins no longer pulls from GitHub)`
-        : `${workspace.slug} already pushed to Margins`)
+    } catch (err) {
+      // A refused switch is this repo's outcome, not the run's: the binding
+      // and the PR below never happen, and an `--org` run moves on.
+      if (err instanceof MarginsError) return result('failed', dryRun ? `would fail: ${err.userMessage}` : err.userMessage)
+      throw err
     }
+  } else if (workspace && switchedInRun.has(target)) {
+    // A rate-limit retry of this repo: the switch happened on the first attempt.
+    actions.push(`switched ${workspace.slug} to push earlier in this run`)
   }
 
   let workspaceId: string
@@ -240,11 +278,7 @@ async function processRepo(
           throw err
         }
       }
-    } else if (
-      binding.githubRepoId === repo.id &&
-      binding.repositoryOwnerId === repo.ownerId &&
-      binding.boundRepoName === fullName
-    ) {
+    } else if (bindingMatches(binding, repo)) {
       actions.push('binding already enabled (matches)')
     } else {
       return result('failed',
@@ -300,7 +334,7 @@ async function processRepo(
       title: 'Add Margins credentialless sync workflow',
       head: INSTALL_BRANCH,
       base: repo.defaultBranch,
-      body: prBody(fullName, workspaceId, new URL(cfg.serverUrl).origin, switched),
+      body: prBody(fullName, workspaceId, new URL(cfg.serverUrl).origin, switchedInRun.has(target)),
     })
     actions.push(`PR opened: ${pr.url}`)
     return result('installed')
@@ -373,12 +407,24 @@ export async function handleInstall(
   // SERIALIZED processing — no concurrency, so PR creation honors rate limits
   // and per-repo failures never interleave.
   const results: RepoResult[] = []
-  for (const repo of repos) {
+  const switchedInRun = new Set<string>()
+  /** A row for a repo whose processing threw — never silent about a switch. */
+  const thrown = (repo: string, reason: string): RepoResult => switchedInRun.has(repo)
+    ? { repo, status: 'failed', actions: ['switched to push'], reason: `${reason} — ${FROZEN}` }
+    : { repo, status: 'failed', actions: [], reason }
+  repoLoop: for (const repo of repos) {
     let rateLimitRetried = false
     for (;;) {
       try {
-        results.push(await processRepo(client, cfg, workspaces, repo, dryRun, { yes: opts.yes, json: cfg.json }))
+        results.push(await processRepo(
+          client, cfg, workspaces, repo, dryRun, { yes: opts.yes, json: cfg.json }, switchedInRun,
+        ))
       } catch (err) {
+        if (err instanceof InstallCancelled) {
+          console.error('Cancelled — stopping the run.')
+          results.push({ repo, status: 'skipped', actions: [], reason: 'cancelled — nothing was changed for this repo' })
+          break repoLoop
+        }
         // 403 rate limit from gh: wait out Retry-After once, then retry the repo.
         if (err instanceof GhError && err.status === 403 && !rateLimitRetried) {
           rateLimitRetried = true
@@ -388,11 +434,14 @@ export async function handleInstall(
           continue
         }
         if (err instanceof GhError) {
-          results.push({ repo, status: 'failed', actions: [], reason: `gh: ${err.message}` })
-        } else if (opts.org) {
-          // --org: continue on per-repo failures of any kind
-          const message = err instanceof Error ? err.message : String(err)
-          results.push({ repo, status: 'failed', actions: [], reason: message })
+          results.push(thrown(repo, `gh: ${err.message}`))
+        } else if (opts.org || switchedInRun.has(repo)) {
+          // --org: continue on per-repo failures of any kind. A single repo
+          // whose workspace was already switched also gets its row, so the
+          // summary — not a bare error — tells the user the switch happened.
+          const message = err instanceof MarginsError ? err.userMessage
+            : err instanceof Error ? err.message : String(err)
+          results.push(thrown(repo, message))
         } else {
           throw err
         }

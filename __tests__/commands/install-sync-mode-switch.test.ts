@@ -29,6 +29,7 @@ vi.mock('@clack/prompts', () => ({
 }))
 
 import * as gh from '../../src/lib/gh.js'
+import { GhError } from '../../src/lib/gh.js'
 import { handleInstall } from '../../src/commands/install.js'
 
 const mocked = vi.mocked(gh)
@@ -54,13 +55,17 @@ interface Server {
   switchResponse?: () => Response
   /** Response to GET /sync; default: an OAuth holder named Ada. */
   statusResponse?: () => Response
+  /** The binding already stored on ws-1; default: none. */
+  initialBinding?: unknown
+  /** Response to PUT /binding; default: stores it. */
+  bindingPutResponse?: () => Response
   /** Every request, in order — the test reads the ORDER, not just the set. */
   calls: Call[]
 }
 
 function stubServer(over: Partial<Server> = {}): Server {
   const server: Server = { calls: [], ...over }
-  let binding: unknown = null
+  let binding: unknown = over.initialBinding ?? null
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     const path = new URL(String(url)).pathname
@@ -83,6 +88,7 @@ function stubServer(over: Partial<Server> = {}): Server {
     }
     if (path === '/api/workspaces/ws-1/binding') {
       if (method === 'GET') return ok({ binding })
+      if (server.bindingPutResponse) return server.bindingPutResponse()
       binding = { ...(body as object), enforcedAt: null, override: false }
       return ok({ binding })
     }
@@ -237,8 +243,25 @@ describe('install on a workspace that pulls — acceptance', () => {
     await handleInstall(cfg(), 'acme/docs', { dryRun: true })
 
     expect(writes(s)).toEqual([])
-    expect(s.calls.some((c) => c.url.endsWith('/sync'))).toBe(false)
+    // It reads the caller's right to switch — read-only — so a dry run tells the truth.
+    expect(s.calls.some((c) => c.method === 'GET' && c.url.endsWith('/sync'))).toBe(true)
     expect(stdout()).toMatch(/would switch gh\/acme\/docs to push/)
+  })
+
+  it('--dry-run by a caller who may not switch says the real run would fail', async () => {
+    const s = stubServer({
+      statusResponse: () => ok({
+        syncMode: 'server', repository: 'acme/docs',
+        credential: { source: 'none', installationAccount: null, holder: null },
+        canManagePolicy: false,
+      }),
+    })
+
+    await handleInstall(cfg(), 'acme/docs', { dryRun: true })
+
+    expect(writes(s)).toEqual([])
+    expect(stdout()).toMatch(/would fail: Only the workspace creator can change how it syncs/)
+    expect(stdout()).toMatch(/0 installed, 0 skipped, 1 failed/)
   })
 
   it('an already-switched workspace (switched:false) still binds and opens the PR', async () => {
@@ -297,7 +320,8 @@ describe('install on a workspace that pulls — a refused switch stops the insta
     await handleInstall(cfg(), 'acme/docs', { yes: true })
 
     expect(writes(s)).toEqual([])
-    expect(stdout()).toMatch(/Only the workspace creator can change how it syncs/)
+    // The server's own reason, not a guess: a 403 here is an edit-access check.
+    expect(stdout()).toMatch(/Edit access required\./)
     expect(process.exitCode).toBe(1)
   })
 
@@ -323,5 +347,129 @@ describe('install on a workspace that pulls — a refused switch stops the insta
     expect(mocked.createPullRequest).toHaveBeenCalledTimes(1)
     expect(mocked.createPullRequest).toHaveBeenCalledWith('acme/other', expect.anything())
     expect(process.exitCode).toBe(1)
+  })
+})
+
+describe('install on a workspace that pulls — edges', () => {
+  it('an unreadable status (500) does not block: generic access line, then switch, bind, PR', async () => {
+    const s = stubServer({ statusResponse: () => new Response('oops', { status: 500 }) })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(stderr()).toContain('The GitHub access Margins uses for this workspace is removed from it.')
+    expect(writes(s)).toEqual([
+      'POST /api/workspaces/ws-1/sync-mode',
+      'PUT /api/workspaces/ws-1/binding',
+    ])
+    expect(mocked.createPullRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('--json with --yes switches without printing the consequences to stderr', async () => {
+    const s = stubServer()
+
+    await handleInstall(cfg({ json: true }), 'acme/docs', { yes: true })
+
+    expect(stderr()).not.toContain('Switching acme/docs to push')
+    expect(writes(s)[0]).toBe('POST /api/workspaces/ws-1/sync-mode')
+    const out = JSON.parse(stdout()) as { results: Array<{ status: string }> }
+    expect(out.results[0]!.status).toBe('installed')
+  })
+
+  it('an unknown sync mode is skipped — never read as push, never switched', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname
+      if ((init?.method ?? 'GET') === 'GET' && path === '/api/workspaces') {
+        return ok([{ id: 'ws-1', slug: 'gh/acme/docs', name: 'docs', repoUrl: 'https://github.com/acme/docs', syncMode: 'sideways' }])
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`)
+    }))
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(mocked.createPullRequest).not.toHaveBeenCalled()
+    expect(stdout()).toMatch(/reports an unknown sync mode \("sideways"\) — not installed/)
+    expect(stdout()).toMatch(/0 installed, 1 skipped, 0 failed/)
+  })
+})
+
+describe('install on a workspace that pulls — the switch is never hidden', () => {
+  const otherBinding = {
+    githubRepoId: 555, repositoryOwnerId: 777, boundRepoName: 'acme/other', enforcedAt: null, override: false,
+  }
+
+  it('a binding mismatch is caught BEFORE the switch: failed, nothing switched', async () => {
+    const s = stubServer({ initialBinding: otherBinding })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(writes(s)).toEqual([])
+    expect(stdout()).toMatch(/binding mismatch: workspace is bound to acme\/other .*not switched, nothing was changed/)
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('a binding conflict AFTER the switch is a failure that says the workspace is frozen', async () => {
+    const s = stubServer({ bindingPutResponse: () => fail(409, 'BINDING_CONFLICT', 'Already bound.') })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(writes(s)).toEqual(['POST /api/workspaces/ws-1/sync-mode', 'PUT /api/workspaces/ws-1/binding'])
+    expect(stdout()).toMatch(/binding conflict .* — the workspace was already switched to push/)
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('a PR blocked by permissions after the switch is failed, not skipped', async () => {
+    stubServer()
+    mocked.createPullRequest.mockRejectedValue(new GhError('Forbidden (HTTP 403)', 403))
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(stdout()).toMatch(/PR creation blocked, awaiting permissions — the workspace was already switched to push/)
+    expect(stdout()).toMatch(/0 installed, 0 skipped, 1 failed/)
+  })
+
+  it('a throw after the switch still yields a summary row naming the switch (no --org)', async () => {
+    stubServer({ bindingPutResponse: () => new Response('{}', { status: 500 }) })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true })
+
+    expect(stdout()).toMatch(/the workspace was already switched to push/)
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('a rate-limit retry after the switch keeps the switch in the actions and the PR body', async () => {
+    stubServer()
+    mocked.createPullRequest
+      .mockRejectedValueOnce(new GhError('rate limited (HTTP 403) retry-after: 1', 403, 1))
+      .mockResolvedValueOnce({ url: 'https://github.com/acme/docs/pull/1' })
+
+    await handleInstall(cfg(), 'acme/docs', { yes: true, sleep: async () => {} })
+
+    expect(mocked.createPullRequest).toHaveBeenCalledTimes(2)
+    expect(mocked.createPullRequest.mock.calls[1]![1].body).toMatch(/switched it to push/)
+    expect(stdout()).toMatch(/switched gh\/acme\/docs to push earlier in this run/)
+    expect(stdout()).toMatch(/1 installed/)
+  })
+
+  it('Ctrl-C at the switch prompt stops the whole --org run', async () => {
+    setTTY(true)
+    mockConfirm.mockResolvedValue(Symbol.for('clack:cancel'))
+    const s = stubServer()
+    mocked.listOrgRepos.mockResolvedValue(['acme/docs', 'acme/other'])
+
+    await handleInstall(cfg(), undefined, { org: 'acme' })
+
+    expect(writes(s)).toEqual([])
+    expect(mocked.getRepo).toHaveBeenCalledTimes(1) // acme/other never started
+    expect(stderr()).toMatch(/Cancelled — stopping the run\./)
+  })
+
+  it('prints the consequences before it asks', async () => {
+    setTTY(true)
+    mockConfirm.mockResolvedValue(true)
+    stubServer()
+
+    await handleInstall(cfg(), 'acme/docs', {})
+
+    expect(errSpy.mock.invocationCallOrder[0]!).toBeLessThan(mockConfirm.mock.invocationCallOrder[0]!)
   })
 })

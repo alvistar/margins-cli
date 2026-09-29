@@ -62,9 +62,9 @@ export async function fetchSyncStatus(
 ): Promise<SyncStatus | null> {
   let raw: unknown
   try {
-    raw = await client.get(`/api/workspaces/${workspaceId}/sync`)
+    raw = await client.get(`/api/workspaces/${encodeURIComponent(workspaceId)}/sync`)
   } catch (err) {
-    if (err instanceof ForbiddenError) throw new ValidationError(NOT_CREATOR)
+    if (err instanceof ForbiddenError) throw new ValidationError(err.serverMessage ?? NOT_CREATOR)
     return null
   }
   const s = raw as Partial<SyncStatus> | null
@@ -95,7 +95,7 @@ function accessLine(status: SyncStatus | null): string | null {
  * What the switch changes, as the lines printed before it runs.
  *
  * `firstPush` says what will push: install names the workflow, the standalone
- * command does not know (the desktop app, `margins push`, a workflow later).
+ * command does not know (the desktop app, `margins workspace push`, a workflow later).
  */
 export function switchConsequences(
   repository: string,
@@ -117,19 +117,21 @@ export function switchConsequences(
 
 // ─── Acceptance ───────────────────────────────────────────────────────────────
 
-export type Acceptance = 'accepted' | 'declined' | 'not-interactive'
+export type Acceptance = 'accepted' | 'declined' | 'cancelled' | 'not-interactive'
 
 /**
  * `--yes` accepts; a session that cannot ask (no TTY, or `--json`) is
  * `not-interactive` and the CALLER refuses — install turns that into a per-repo
- * skip so an `--org` run continues, the standalone command into an error. Only
- * a real terminal prompts.
+ * failure (exit 1) and an `--org` run continues, the standalone command into an
+ * error. Only a real terminal prompts. Ctrl-C is `cancelled`, not `declined`:
+ * the person meant to stop the whole run, not to skip one repo.
  */
 export async function acceptSwitch(opts: { yes?: boolean; json?: boolean }): Promise<Acceptance> {
   if (opts.yes) return 'accepted'
   if (!process.stdin.isTTY || opts.json) return 'not-interactive'
   const ok = await p.confirm({ message: 'Switch to push?', initialValue: false })
-  return p.isCancel(ok) || !ok ? 'declined' : 'accepted'
+  if (p.isCancel(ok)) return 'cancelled'
+  return ok ? 'accepted' : 'declined'
 }
 
 // ─── The switch ───────────────────────────────────────────────────────────────
@@ -137,7 +139,7 @@ export async function acceptSwitch(opts: { yes?: boolean; json?: boolean }): Pro
 /** `POST /api/workspaces/:id/sync-mode`. Throws a mapped, user-facing error. */
 export async function switchToPush(client: ApiClient, workspaceId: string): Promise<SwitchResult> {
   try {
-    const res = await client.post(`/api/workspaces/${workspaceId}/sync-mode`, { syncMode: 'client' }) as
+    const res = await client.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/sync-mode`, { syncMode: 'client' }) as
       Partial<SwitchResult> | null
     return {
       syncMode: 'client',

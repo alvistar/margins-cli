@@ -1,14 +1,16 @@
 /**
  * `margins sync-mode client [workspace]` — switch a GitHub workspace from
  * pulling to push, with no trust binding and no workflow (ai-review#282, user
- * story 6). For people who push from the desktop app or `margins push`; the
+ * story 6). For people who push from the desktop app or `margins workspace push`; the
  * workflow path is `margins install`, which switches the same way first.
  *
  * Same gate as install: the consequences are printed, then `--yes` accepts, a
  * terminal prompts, and a session that cannot ask is refused — nothing is
  * switched silently. Idempotent: an already-pushed workspace reports so.
  */
-import type { ResolvedConfig } from '../lib/config.js'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import type { LocalConfig, ResolvedConfig } from '../lib/config.js'
 import { readLocalConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { ValidationError } from '../lib/errors.js'
@@ -16,6 +18,7 @@ import { formatJson } from '../lib/output.js'
 import { detectGitRemote, parseGithubUrl } from '../lib/detect-git-remote.js'
 import { findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
 import { resolveWorkspaceBySlug } from '../lib/resolve-workspace.js'
+import { upgradeMarginsJson } from '../lib/resolve-sync-mode.js'
 import {
   acceptSwitch, fetchSyncStatus, switchConsequences, switchToPush,
 } from '../lib/sync-mode-switch.js'
@@ -95,13 +98,14 @@ export async function handleSyncMode(
         'nothing was changed. Re-run with --yes to accept it.',
       )
     }
-    if (acceptance === 'declined') {
+    if (acceptance === 'declined' || acceptance === 'cancelled') {
       console.error('Cancelled — nothing was changed.')
       return
     }
   }
 
   const result = await switchToPush(client, target.id)
+  updateLocalConfig(target.id)
 
   if (cfg.json) {
     console.log(formatJson({ workspaceId: target.id, repository, ...result }))
@@ -114,5 +118,34 @@ export async function handleSyncMode(
     )
   } else {
     console.log(`${repository} is already pushed to Margins — nothing was changed.`)
+  }
+}
+
+/**
+ * After a switch, the folder's own .margins.json must stop saying "server":
+ * `install-hook` and `margins sync` read that field directly, and would keep
+ * refusing a workspace that now takes pushes. Only the file bound to the
+ * workspace just switched is touched. Best effort; `margins workspace push`
+ * re-checks with the server anyway.
+ */
+function updateLocalConfig(workspaceId: string): void {
+  let dir = process.cwd()
+  for (;;) {
+    const candidate = path.join(dir, '.margins.json')
+    if (fs.existsSync(candidate)) {
+      try {
+        const local = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as LocalConfig
+        if (local.workspace_id === workspaceId && local.syncMode === 'server' &&
+          upgradeMarginsJson(local, 'client', dir)) {
+          console.error(`Updated ${candidate} to "syncMode": "client" — commit it.`)
+        }
+      } catch {
+        // Malformed file: leave it alone.
+      }
+      return
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return
+    dir = parent
   }
 }

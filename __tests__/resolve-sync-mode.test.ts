@@ -132,3 +132,37 @@ describe('resolveSyncMode — a file that says "server" after the switch to push
     expect(await resolveSyncMode(cfg, unreachableClient())).toBe('server')
   })
 })
+
+describe('resolveSyncMode — switch edges', () => {
+  it('reads the flat { syncMode } shape too (fetchWorkspaceSyncMode fallback)', async () => {
+    const legacy = { mode: 'overlay', workspace_id: 'ws-1' } as LocalConfig
+    expect(await resolveSyncMode(legacy, client('server'), '/nonexistent-dir')).toBe('server')
+    expect(await resolveSyncMode(legacy, client('client'), '/nonexistent-dir')).toBe('client')
+  })
+
+  it('"server" with no workspace_id is kept without asking the server', async () => {
+    const c = unreachableClient()
+    expect(await resolveSyncMode({ syncMode: 'server' } as LocalConfig, c)).toBe('server')
+    expect(c.get).not.toHaveBeenCalled()
+  })
+
+  it('a switched workspace upgrades .margins.json to "client" in place', async () => {
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-rsm-'))
+    try {
+      const file = path.join(dir, '.margins.json')
+      fs.writeFileSync(file, JSON.stringify({ workspace_id: 'ws-1', syncMode: 'server', extra: 1 }))
+      const cfg = { syncMode: 'server', workspace_id: 'ws-1' } as LocalConfig
+      const c = { get: vi.fn(async () => ({ workspace: { syncMode: 'client' } })) } as unknown as ApiClient
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(await resolveSyncMode(cfg, c, dir)).toBe('client')
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ workspace_id: 'ws-1', syncMode: 'client', extra: 1 })
+      // A committed file just changed: the user is told, not left with a surprise diff.
+      expect(err.mock.calls.join('\n')).toMatch(/Updated the file to "syncMode": "client" — commit it\./)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

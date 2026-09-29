@@ -738,9 +738,13 @@ GitHub access it used (a member's account, or the Margins GitHub App) is removed
 the workspace, content stays as it is until the workflow's first push, and
 discussions, documents and history are kept. There is no switch back to pull yet.
 Then it asks. On yes it switches, writes the trust binding and opens the workflow
-PR, in that order; a refused switch (a sync is running, you are not the workspace
+PR, in that order. Every check that could still stop the install — your right to
+switch, a trust binding already pointing at another repo — runs before the switch,
+which cannot be undone. A refused switch (a sync is running, you are not the workspace
 creator, or the workspace holds content the switch cannot carry) stops that repo
-before the binding. Without a terminal it needs `--yes`; without it the repo fails
+before the binding. If a later step fails after the switch, the repo is `failed` and
+the reason says the workspace was already switched. Ctrl-C at the prompt stops the
+whole run. Without a terminal it needs `--yes`; without it the repo fails
 (exit 1) and nothing changes.
 
 The stamped workflow uses the
@@ -774,7 +778,10 @@ It prints the same consequences as `install` and asks first. The switch is
 immediate and keeps the slug, documents, discussions and history; content stays as
 it is until the first push. Only the workspace creator can switch (any editor, if the
 creator's account is gone). Running it on a workspace that already pushes changes
-nothing and says so. `--json` returns `{ workspaceId, repository, syncMode, switched }`.
+nothing and says so. After a switch it updates this folder's `.margins.json` (when it is
+bound to that workspace) to `"syncMode": "client"`; commit that change. `--json` returns
+`{ workspaceId, repository, syncMode, switched }`, plus `checkpoints` and `prunedBranches`
+when the server reports them.
 
 ---
 

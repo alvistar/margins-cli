@@ -192,6 +192,92 @@ describe('margins sync-mode client', () => {
   })
 })
 
+describe('margins sync-mode client — target resolution and fallbacks', () => {
+  it('accepts `push` as the same switch as `client`', async () => {
+    const calls = stubServer()
+    await handleSyncMode(cfg(), 'push', 'acme/docs', { yes: true })
+    expect(posts(calls)).toHaveLength(1)
+  })
+
+  it('a workspace UUID is used as is, with no listing or slug lookup', async () => {
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === `/api/workspaces/${id}/sync-mode`) return ok({ switched: true })
+      if (path === `/api/workspaces/${id}/sync`) {
+        return ok({ syncMode: 'server', repository: 'acme/docs', credential: { source: 'none', installationAccount: null, holder: null }, canManagePolicy: true })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    }))
+    await handleSyncMode(cfg(), 'client', id, { yes: true })
+    expect(calls).toEqual([`GET /api/workspaces/${id}/sync`, `POST /api/workspaces/${id}/sync-mode`])
+  })
+
+  it('a GitHub URL resolves by repo', async () => {
+    const calls = stubServer()
+    await handleSyncMode(cfg(), 'client', 'https://github.com/acme/docs.git', { yes: true })
+    expect(calls.some((c) => c.url === '/api/workspaces')).toBe(true)
+    expect(posts(calls)).toHaveLength(1)
+  })
+
+  it('a repo with no workspace is refused before any write', async () => {
+    const calls = stubServer()
+    await expect(handleSyncMode(cfg(), 'client', 'acme/nothing', { yes: true }))
+      .rejects.toThrow(/No workspace you are a member of is connected to acme\/nothing/)
+    expect(posts(calls)).toEqual([])
+  })
+
+  it('no argument, no .margins.json, no GitHub origin: refused with the remedy', async () => {
+    const calls = stubServer()
+    await expect(handleSyncMode(cfg(), 'client', undefined, { yes: true }))
+      .rejects.toThrow(/No workspace to switch\. Pass one/)
+    expect(calls).toEqual([])
+  })
+
+  it('an unreachable status read falls back to the target label and the generic access line', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname
+      if (path === '/api/workspaces/by-slug/gh/acme/docs') return ok({ workspace: { id: 'ws-1' } })
+      if (path === '/api/workspaces/ws-1/sync') return new Response('oops', { status: 500 })
+      if (init?.method === 'POST') return ok({ switched: true })
+      throw new Error(`Unexpected request: ${path}`)
+    }))
+    await handleSyncMode(cfg(), 'client', 'gh/acme/docs', { yes: true })
+    expect(stderr()).toContain('Switching gh/acme/docs to push:')
+    expect(stderr()).toContain('The GitHub access Margins uses for this workspace is removed from it.')
+    expect(stdout()).toMatch(/^Switched gh\/acme\/docs to push\./)
+  })
+
+  it('--json without --yes is refused even at a terminal, and prints no consequences', async () => {
+    setTTY(true)
+    const calls = stubServer()
+    await expect(handleSyncMode(cfg({ json: true }), 'client', 'acme/docs', {}))
+      .rejects.toThrow(/not interactive/)
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(stderr()).toBe('')
+    expect(posts(calls)).toEqual([])
+  })
+
+  it('a refused switch surfaces the mapped message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname
+      if (path === '/api/workspaces') {
+        return ok([{ id: 'ws-1', slug: 'gh/acme/docs', name: 'docs', repoUrl: 'https://github.com/acme/docs', syncMode: 'server' }])
+      }
+      if (path === '/api/workspaces/ws-1/sync') return new Response('x', { status: 500 })
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({ error: 'SYNC_IN_PROGRESS' }), { status: 409 })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    }))
+    await expect(handleSyncMode(cfg(), 'client', 'acme/docs', { yes: true }))
+      .rejects.toThrow(/A sync is running .* nothing was changed/)
+    expect(stdout()).toBe('')
+  })
+})
+
 describe('mapSwitchError', () => {
   it('409 SYNC_IN_PROGRESS → retry later, nothing changed', () => {
     expect(mapSwitchError(new ConflictError('x', 'SYNC_IN_PROGRESS')).message)
@@ -215,5 +301,51 @@ describe('mapSwitchError', () => {
   it('404 with no code is an older server; with a code, a missing workspace', () => {
     expect(mapSwitchError(new NotFoundError('p')).message).toMatch(/Upgrade the server/)
     expect(mapSwitchError(new NotFoundError('p', 'NOT_FOUND')).message).toMatch(/Workspace not found/)
+  })
+})
+
+describe('margins sync-mode client — the local .margins.json', () => {
+  it('after a switch, the folder\'s file bound to that workspace stops saying "server"', async () => {
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sm-')))
+    const cwd = process.cwd()
+    try {
+      const file = path.join(dir, '.margins.json')
+      fs.writeFileSync(file, JSON.stringify({ workspace_id: 'ws-1', syncMode: 'server' }))
+      fs.mkdirSync(path.join(dir, 'sub'))
+      process.chdir(path.join(dir, 'sub')) // found by walking up, like every other reader
+      stubServer()
+
+      await handleSyncMode(cfg(), 'client', 'acme/docs', { yes: true })
+
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).syncMode).toBe('client')
+      expect(stderr()).toMatch(/Updated .*\.margins\.json to "syncMode": "client" — commit it\./)
+    } finally {
+      process.chdir(cwd)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a file bound to a different workspace is left alone', async () => {
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'margins-sm-')))
+    const cwd = process.cwd()
+    try {
+      const file = path.join(dir, '.margins.json')
+      fs.writeFileSync(file, JSON.stringify({ workspace_id: 'ws-other', syncMode: 'server' }))
+      process.chdir(dir)
+      stubServer()
+
+      await handleSyncMode(cfg(), 'client', 'acme/docs', { yes: true })
+
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).syncMode).toBe('server')
+    } finally {
+      process.chdir(cwd)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
