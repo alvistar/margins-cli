@@ -879,7 +879,7 @@ Example `.margins.json`:
 | `workspace_slug` | Default workspace slug for `discuss` and `workspace` commands |
 | `workspace_id` | Default workspace UUID. Used by `workspace push --workspace` for re-pushes — more reliable than slug because it doesn't depend on slug resolution. |
 | `default_branch` | Default branch for `workspace sync`. For local workspaces this is `main`; for GitHub-overlay mode (local edits pushed to a GitHub workspace's `@local` branch) this is `@local`. |
-| `syncMode` | `"client"` — the CLI pushes content via `workspace push` (CAS). `"server"` — Margins syncs the workspace from a GitHub webhook; the CLI refuses `workspace push` and directs you to `workspace sync`. Replaces the legacy `mode` field (`"local"` / `"overlay"`), which is still read and upgraded to `syncMode` in place. |
+| `syncMode` | `"client"` — the CLI pushes content via `workspace push` (CAS). `"server"` — Margins pulls the workspace from GitHub; the CLI refuses `workspace push` and points you at `workspace sync` (pull now) or `margins sync-mode client` (switch to push). Before refusing, the CLI asks the server: if the workspace has since been switched to push, it pushes and rewrites the file to `"client"` (commit that change). Replaces the legacy `mode` field (`"local"` / `"overlay"`), which is still read and upgraded to `syncMode` in place. |
 | `server_url` | Server URL override (lower priority than `--server-url` and `MARGINS_SERVER_URL`) |
 
 > **Project-scoped credentials:** `.margins.json` is intended to be committed to the
