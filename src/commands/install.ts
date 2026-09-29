@@ -117,8 +117,9 @@ async function processRepo(
    * cannot be undone, so no later outcome may hide it.
    */
   switchedInRun: Set<string>,
+  /** This attempt's actions, owned by the caller so a throw keeps them. */
+  actions: string[],
 ): Promise<RepoResult> {
-  const actions: string[] = []
   const result = (status: RepoStatus, reason?: string): RepoResult => {
     // Anything short of installed after a switch leaves the workspace frozen:
     // that is a failure whatever the step said, and the reason must say why.
@@ -259,13 +260,13 @@ async function processRepo(
   // ── d. Trust binding: GET, then PUT if absent; verify if present ──────────
   const wouldEnableBinding = `would enable binding (repoId ${repo.id}, ownerId ${repo.ownerId}, ${fullName})`
   if (workspace || !dryRun) {
-    const { binding } = await client.get(`/api/workspaces/${workspaceId}/binding`) as { binding: Binding | null }
+    const { binding } = await client.get(`/api/workspaces/${encodeURIComponent(workspaceId)}/binding`) as { binding: Binding | null }
     if (binding === null) {
       if (dryRun) {
         actions.push(wouldEnableBinding)
       } else {
         try {
-          await client.put(`/api/workspaces/${workspaceId}/binding`, {
+          await client.put(`/api/workspaces/${encodeURIComponent(workspaceId)}/binding`, {
             githubRepoId: repo.id,
             repositoryOwnerId: repo.ownerId,
             boundRepoName: fullName,
@@ -408,21 +409,29 @@ export async function handleInstall(
   // and per-repo failures never interleave.
   const results: RepoResult[] = []
   const switchedInRun = new Set<string>()
-  /** A row for a repo whose processing threw — never silent about a switch. */
-  const thrown = (repo: string, reason: string): RepoResult => switchedInRun.has(repo)
-    ? { repo, status: 'failed', actions: ['switched to push'], reason: `${reason} — ${FROZEN}` }
-    : { repo, status: 'failed', actions: [], reason }
-  repoLoop: for (const repo of repos) {
+  // A repo whose processing threw keeps the steps it got through — after a
+  // switch, those are what the user needs to recover — and never goes silent
+  // about the switch itself.
+  const thrown = (repo: string, actions: string[], reason: string): RepoResult => switchedInRun.has(repo)
+    ? { repo, status: 'failed', actions, reason: `${reason} — ${FROZEN}` }
+    : { repo, status: 'failed', actions, reason }
+  repoLoop: for (const [index, repo] of repos.entries()) {
     let rateLimitRetried = false
     for (;;) {
+      const actions: string[] = []
       try {
         results.push(await processRepo(
-          client, cfg, workspaces, repo, dryRun, { yes: opts.yes, json: cfg.json }, switchedInRun,
+          client, cfg, workspaces, repo, dryRun, { yes: opts.yes, json: cfg.json }, switchedInRun, actions,
         ))
       } catch (err) {
         if (err instanceof InstallCancelled) {
-          console.error('Cancelled — stopping the run.')
-          results.push({ repo, status: 'skipped', actions: [], reason: 'cancelled — nothing was changed for this repo' })
+          const notStarted = repos.length - index - 1
+          console.error(`Cancelled — stopping the run${notStarted ? `; ${notStarted} repo(s) not started` : ''}.`)
+          results.push({ repo, status: 'skipped', actions, reason: 'cancelled — nothing was changed for this repo' })
+          for (const rest of repos.slice(index + 1)) {
+            results.push({ repo: rest, status: 'skipped', actions: [], reason: 'not started (cancelled)' })
+          }
+          process.exitCode = 130
           break repoLoop
         }
         // 403 rate limit from gh: wait out Retry-After once, then retry the repo.
@@ -434,14 +443,14 @@ export async function handleInstall(
           continue
         }
         if (err instanceof GhError) {
-          results.push(thrown(repo, `gh: ${err.message}`))
+          results.push(thrown(repo, actions, `gh: ${err.message}`))
         } else if (opts.org || switchedInRun.has(repo)) {
           // --org: continue on per-repo failures of any kind. A single repo
           // whose workspace was already switched also gets its row, so the
           // summary — not a bare error — tells the user the switch happened.
           const message = err instanceof MarginsError ? err.userMessage
             : err instanceof Error ? err.message : String(err)
-          results.push(thrown(repo, message))
+          results.push(thrown(repo, actions, message))
         } else {
           throw err
         }

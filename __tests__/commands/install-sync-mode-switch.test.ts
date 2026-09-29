@@ -433,6 +433,8 @@ describe('install on a workspace that pulls — the switch is never hidden', () 
     await handleInstall(cfg(), 'acme/docs', { yes: true })
 
     expect(stdout()).toMatch(/the workspace was already switched to push/)
+    // The steps it got through survive the throw: they are what recovery needs.
+    expect(stdout()).toMatch(/acme\/docs: switched gh\/acme\/docs to push/)
     expect(process.exitCode).toBe(1)
   })
 
@@ -460,7 +462,9 @@ describe('install on a workspace that pulls — the switch is never hidden', () 
 
     expect(writes(s)).toEqual([])
     expect(mocked.getRepo).toHaveBeenCalledTimes(1) // acme/other never started
-    expect(stderr()).toMatch(/Cancelled — stopping the run\./)
+    expect(stderr()).toMatch(/Cancelled — stopping the run; 1 repo\(s\) not started\./)
+    expect(stdout()).toMatch(/acme\/other .*not started \(cancelled\)/)
+    expect(process.exitCode).toBe(130)
   })
 
   it('prints the consequences before it asks', async () => {
