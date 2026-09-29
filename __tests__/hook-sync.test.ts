@@ -229,7 +229,7 @@ describe('handleHookSync', () => {
       { branch: 'two', ok: false },
       { branch: 'three', ok: true },
     ])
-    expect(results[1]!.error).toMatch(/server-managed sync\. Use `margins workspace sync` instead/)
+    expect(results[1]!.error).toMatch(/pulls from GitHub, so it does not take pushes\. Use `margins workspace sync`/)
   })
 
   it('reports a cause shared by every branch once', async () => {

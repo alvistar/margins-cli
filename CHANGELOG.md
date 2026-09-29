@@ -6,6 +6,73 @@ All notable changes to margins-cli will be documented in this file.
 
 Nothing yet.
 
+## [0.22.0] - 2026-09-29
+
+Requires a Margins server with the **sync mode switch** (`POST
+/api/workspaces/:id/sync-mode` and `GET /api/workspaces/:id/sync`, Margins 0.74.0
+and newer). Against an older server the switch refuses with "Upgrade the server"
+and changes nothing.
+
+### Added
+
+- **`margins install` switches a workspace that pulls from GitHub to push.** It
+  used to skip such a workspace with "migrate it to client sync first", and no
+  migration existed. It now prints what the switch does — Margins stops pulling
+  the repo, the GitHub access it used (named: a member's account, or the Margins
+  GitHub App on the org) is removed from the workspace, content stays as it is
+  until the workflow's first push, discussions, documents and history are kept,
+  and there is no switch back to pull yet — and asks. On yes it switches, writes
+  the trust binding and opens the workflow PR, in that order. `--yes` accepts
+  without a prompt; with no terminal and no `--yes` the repo fails (exit 1) and
+  nothing changes — a script that forgot `--yes` does not pass green having
+  installed nothing. Declining at the prompt is a skip. A refused switch — a sync is running (409), you are not the
+  workspace creator (403), or the workspace holds content the switch cannot carry
+  (422) — fails that repo with the server's reason before the binding is written.
+  Every read-only check that could still stop the install (your right to switch,
+  a binding already pointing at another repo) runs before the switch, which
+  cannot be undone. If a later step fails anyway, the repo is `failed` and its
+  reason says the workspace was already switched — including a rate-limit retry
+  and an error thrown mid-install. `--dry-run` reads your right to switch and
+  reports "would fail" when you may not. Ctrl-C at the prompt stops the run
+  (exit 130) and lists the repos it never started.
+
+- **`margins sync-mode client [workspace]`** switches without a trust binding or
+  a workflow, for people who push from the desktop app or `margins workspace
+  push`. The workspace is an `owner/repo`, a slug or an id, else this folder's
+  `.margins.json`, else its `origin` remote. Same consequences, prompt and
+  `--yes`. On a workspace that already pushes it changes nothing and says so.
+
+### Fixed
+
+- **A workspace's sync mode is read from where the server puts it.** The
+  workspace detail answers `{ workspace: { syncMode } }`; the CLI read the top
+  level, found nothing, and took every legacy `mode: "overlay"` folder for one
+  that takes pushes — including ones that pull from GitHub. A missing or unknown
+  value is now refused, never read as push.
+
+- **The first push after a switch is not refused on a stale `.margins.json`.** A
+  folder whose file still says `"syncMode": "server"` used to refuse every push
+  locally. The CLI now asks the server first; a workspace switched to push is
+  pushed to, and the file is updated. If the server cannot be reached the file's
+  claim stands, as before.
+
+### Changed
+
+- **`install --yes` now also accepts the switch to push.** It used to accept only
+  the repo detected from `origin`, and a workspace that pulls from GitHub was
+  always skipped. A script that runs `margins install --org <org> --yes` switches
+  every such workspace you created, and the switch cannot be undone yet. Drop
+  `--yes` from scripts that must not switch: without it those repos fail and
+  nothing changes.
+
+- `margins sync-mode client` rewrites this folder's `.margins.json` to
+  `"syncMode": "client"` when it is bound to the switched workspace, and a push
+  that finds a stale `"server"` does the same; both say so. The file is usually
+  committed, so commit the change.
+
+- Refusals now say "pulls from GitHub" and point at `margins sync-mode client`
+  instead of naming `server` / `client` sync.
+
 ## [0.21.0] - 2026-09-15
 
 Requires a Margins server that advertises the **`stash-html`** capability on

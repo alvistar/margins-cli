@@ -568,7 +568,7 @@ describe('handlePush — failure paths', () => {
 
     await expect(
       handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' }),
-    ).rejects.toThrow(/does not support client push sync/)
+    ).rejects.toThrow(/pulls from GitHub, so it does not take pushes/)
 
     expect(mockPutRaw).not.toHaveBeenCalled()
     expect(calls.filter((c) => c.startsWith('POST '))).toHaveLength(0)
@@ -613,7 +613,7 @@ describe('handlePush — failure paths', () => {
 
     await expect(
       handlePush(makeConfig(), { dir: tmpDir, branch: 'main' }),
-    ).rejects.toThrow(/server-managed sync\. Use `margins workspace sync` instead/)
+    ).rejects.toThrow(/pulls from GitHub, so it does not take pushes\. Use `margins workspace sync`/)
 
     expect(exitSpy).not.toHaveBeenCalled()
     expect(mockPutRaw).not.toHaveBeenCalled()

@@ -237,10 +237,11 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
             // of a server-sync workspace had `syncMode: 'client'` forced into
             // their .margins.json, and the CAS push then failed 422
             // PUSH_SYNC_NOT_SUPPORTED with nothing explaining why.
-            throw new ValidationError(
-              `Workspace ${found.slug} uses syncMode "${found.syncMode}" — `
-              + 'migrate it to client sync before syncing this folder.',
-            )
+            throw new ValidationError(found.syncMode === 'server'
+              ? `Workspace ${found.slug} pulls from GitHub. Switch it to push first — `
+                + `\`margins sync-mode client ${remote.owner}/${remote.repo}\` — then sync this folder.`
+              : `Workspace ${found.slug} reports an unknown sync mode (${JSON.stringify(found.syncMode)}) — `
+                + 'not syncing this folder.')
           }
           if (found) {
             workspaceId = found.id

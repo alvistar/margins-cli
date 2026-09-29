@@ -289,7 +289,7 @@ describe('casSync', () => {
 
     const client = createApiClient(baseConfig())
     await expect(preflightAndSync(client, 'ws-1', 'main', syncFiles()))
-      .rejects.toThrow(/does not support client push sync/)
+      .rejects.toThrow(/pulls from GitHub, so it does not take pushes/)
   })
 
   // ─── Full-branch-delete guard (U5) ─────────────────────────────────────────

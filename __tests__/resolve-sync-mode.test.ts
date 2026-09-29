@@ -86,3 +86,83 @@ describe('resolveSyncMode — legacy overlay against an unreachable server', () 
       .rejects.toThrow(/"syncMode": "client"/)
   })
 })
+
+// ─── The detail read (ai-review#282, user story 33) ───────────────────────────
+//
+// `GET /api/workspaces/:id` answers `{ workspace: { syncMode }, tree, ... }`.
+// Reading `syncMode` off the top level found nothing and defaulted to client —
+// so a workspace that pulls from GitHub was read as one that takes pushes.
+
+describe('resolveSyncMode — the detail endpoint read', () => {
+  const nested = (syncMode: unknown): ApiClient =>
+    ({ get: vi.fn(async () => ({ workspace: { id: 'ws-1', syncMode }, tree: [] })) }) as unknown as ApiClient
+  const legacy = { mode: 'overlay', workspace_id: 'ws-1' } as LocalConfig
+
+  it('reads syncMode from the nested workspace object', async () => {
+    expect(await resolveSyncMode(legacy, nested('server'))).toBe('server')
+    expect(await resolveSyncMode(legacy, nested('client'))).toBe('client')
+  })
+
+  it('a missing value is NOT read as client', async () => {
+    await expect(resolveSyncMode(legacy, nested(undefined)))
+      .rejects.toThrow(/did not report one/)
+    const empty = { get: vi.fn(async () => ({ workspace: { id: 'ws-1' } })) } as unknown as ApiClient
+    await expect(resolveSyncMode(legacy, empty)).rejects.toThrow(/did not report one/)
+  })
+
+  it('an unknown value is NOT read as client', async () => {
+    await expect(resolveSyncMode(legacy, nested('sideways'))).rejects.toThrow(/did not report one/)
+  })
+})
+
+describe('resolveSyncMode — a file that says "server" after the switch to push', () => {
+  it('asks the server, and a switched workspace is client (first push not refused)', async () => {
+    const c = { get: vi.fn(async () => ({ workspace: { syncMode: 'client' } })) } as unknown as ApiClient
+    const cfg = { syncMode: 'server', workspace_id: 'ws-1' } as LocalConfig
+    expect(await resolveSyncMode(cfg, c, '/nonexistent-dir')).toBe('client')
+    expect(c.get).toHaveBeenCalledWith('/api/workspaces/ws-1')
+  })
+
+  it('keeps "server" when the server still says so, says nothing, or cannot be reached', async () => {
+    const cfg = { syncMode: 'server', workspace_id: 'ws-1' } as LocalConfig
+    const still = { get: vi.fn(async () => ({ workspace: { syncMode: 'server' } })) } as unknown as ApiClient
+    const silent = { get: vi.fn(async () => ({ workspace: {} })) } as unknown as ApiClient
+    expect(await resolveSyncMode(cfg, still)).toBe('server')
+    expect(await resolveSyncMode(cfg, silent)).toBe('server')
+    expect(await resolveSyncMode(cfg, unreachableClient())).toBe('server')
+  })
+})
+
+describe('resolveSyncMode — switch edges', () => {
+  it('reads the flat { syncMode } shape too (fetchWorkspaceSyncMode fallback)', async () => {
+    const legacy = { mode: 'overlay', workspace_id: 'ws-1' } as LocalConfig
+    expect(await resolveSyncMode(legacy, client('server'), '/nonexistent-dir')).toBe('server')
+    expect(await resolveSyncMode(legacy, client('client'), '/nonexistent-dir')).toBe('client')
+  })
+
+  it('"server" with no workspace_id is kept without asking the server', async () => {
+    const c = unreachableClient()
+    expect(await resolveSyncMode({ syncMode: 'server' } as LocalConfig, c)).toBe('server')
+    expect(c.get).not.toHaveBeenCalled()
+  })
+
+  it('a switched workspace upgrades .margins.json to "client" in place', async () => {
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-rsm-'))
+    try {
+      const file = path.join(dir, '.margins.json')
+      fs.writeFileSync(file, JSON.stringify({ workspace_id: 'ws-1', syncMode: 'server', extra: 1 }))
+      const cfg = { syncMode: 'server', workspace_id: 'ws-1' } as LocalConfig
+      const c = { get: vi.fn(async () => ({ workspace: { syncMode: 'client' } })) } as unknown as ApiClient
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(await resolveSyncMode(cfg, c, dir)).toBe('client')
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ workspace_id: 'ws-1', syncMode: 'client', extra: 1 })
+      // A committed file just changed: the user is told, not left with a surprise diff.
+      expect(err.mock.calls.join('\n')).toMatch(/Updated the file to "syncMode": "client" — commit it\./)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
