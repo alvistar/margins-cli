@@ -206,7 +206,7 @@ describe('install on a workspace that pulls — acceptance', () => {
     expect(mocked.createPullRequest).toHaveBeenCalledTimes(1)
   })
 
-  it('no terminal and no --yes: refuses with the remedy, switches nothing', async () => {
+  it('no terminal and no --yes: fails with the remedy (exit 1), switches nothing', async () => {
     const s = stubServer()
 
     await handleInstall(cfg(), 'acme/docs', {})
@@ -214,6 +214,8 @@ describe('install on a workspace that pulls — acceptance', () => {
     expect(mockConfirm).not.toHaveBeenCalled()
     expect(writes(s)).toEqual([])
     expect(mocked.createPullRequest).not.toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
+    expect(stdout()).toMatch(/0 installed, 0 skipped, 1 failed/)
     expect(stdout()).toMatch(/needs confirmation: re-run with --yes — nothing was changed/)
   })
 
@@ -226,7 +228,7 @@ describe('install on a workspace that pulls — acceptance', () => {
     expect(mockConfirm).not.toHaveBeenCalled()
     expect(writes(s)).toEqual([])
     const out = JSON.parse(stdout()) as { results: Array<{ status: string; reason: string }> }
-    expect(out.results[0]!.status).toBe('skipped')
+    expect(out.results[0]!.status).toBe('failed')
   })
 
   it('--dry-run reports the switch it would make and writes nothing', async () => {

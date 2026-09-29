@@ -147,7 +147,10 @@ async function processRepo(
         if (!opts.json) console.error(switchConsequences(fullName, status, 'the workflow').join('\n'))
         const acceptance = await acceptSwitch(opts)
         if (acceptance === 'not-interactive') {
-          return result('skipped',
+          // `failed`, not `skipped`: nobody chose this outcome. A script that
+          // forgot `--yes` must not exit 0 having installed nothing. A person who
+          // answers no at the prompt DID choose, and that stays a skip.
+          return result('failed',
             `workspace ${workspace.slug} pulls from GitHub; switching it to push needs confirmation: ` +
             're-run with --yes — nothing was changed')
         }

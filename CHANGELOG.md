@@ -23,8 +23,9 @@ and changes nothing.
   until the workflow's first push, discussions, documents and history are kept,
   and there is no switch back to pull yet — and asks. On yes it switches, writes
   the trust binding and opens the workflow PR, in that order. `--yes` accepts
-  without a prompt; with no terminal and no `--yes` the repo is skipped and
-  nothing changes. A refused switch — a sync is running (409), you are not the
+  without a prompt; with no terminal and no `--yes` the repo fails (exit 1) and
+  nothing changes — a script that forgot `--yes` does not pass green having
+  installed nothing. Declining at the prompt is a skip. A refused switch — a sync is running (409), you are not the
   workspace creator (403), or the workspace holds content the switch cannot carry
   (422) — fails that repo with the server's reason before the binding is written.
 

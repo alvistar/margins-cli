@@ -740,15 +740,15 @@ discussions, documents and history are kept. There is no switch back to pull yet
 Then it asks. On yes it switches, writes the trust binding and opens the workflow
 PR, in that order; a refused switch (a sync is running, you are not the workspace
 creator, or the workspace holds content the switch cannot carry) stops that repo
-before the binding. Without a terminal it needs `--yes`, or it skips the repo and
-changes nothing.
+before the binding. Without a terminal it needs `--yes`; without it the repo fails
+(exit 1) and nothing changes.
 
 The stamped workflow uses the
 [margins-sync-action](https://github.com/alvistar/margins-sync-action) and a pinned CLI
 version. Requires Margins server v0.21.0+.
 
 **A repo that cannot be onboarded is `skipped`, not a failure.** Over the cap, a switch
-to push that was declined or could not be confirmed, or refused by the server because a workspace already exists for it and
+to push you declined at the prompt, or refused by the server because a workspace already exists for it and
 you are not a member — each is reported per-repo and the run continues to the next one.
 So `install` can exit `0` having onboarded nothing. Read the per-repo results (`--json`
 gives you them structured); the exit code only tells you the run itself did not break.
