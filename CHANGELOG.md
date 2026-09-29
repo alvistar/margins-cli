@@ -33,7 +33,8 @@ and changes nothing.
   cannot be undone. If a later step fails anyway, the repo is `failed` and its
   reason says the workspace was already switched — including a rate-limit retry
   and an error thrown mid-install. `--dry-run` reads your right to switch and
-  reports "would fail" when you may not. Ctrl-C at the prompt stops the run.
+  reports "would fail" when you may not. Ctrl-C at the prompt stops the run
+  (exit 130) and lists the repos it never started.
 
 - **`margins sync-mode client [workspace]`** switches without a trust binding or
   a workflow, for people who push from the desktop app or `margins workspace
