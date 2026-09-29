@@ -490,7 +490,7 @@ program
   .option('--include <glob...>', 'With --org: only repos matching these globs')
   .option('--exclude <glob...>', 'With --org: skip repos matching these globs')
   .option('--dry-run', 'Print intended actions without writing anything')
-  .option('--yes', 'Accept the auto-detected origin repo without confirmation (required when no repo is given in a non-interactive context)')
+  .option('--yes', 'Accept without prompting: the auto-detected origin repo, and switching a workspace that pulls from GitHub to push (required when not interactive)')
   .action(async (target, opts, cmd) => {
     const cfg = getConfig(cmd)
     const { handleInstall } = await import('./commands/install.js')
@@ -501,6 +501,21 @@ program
       dryRun: opts.dryRun,
       yes: opts.yes,
     })
+  })
+
+// ─── sync-mode command ────────────────────────────────────────────────────────
+
+// Only the switch to push is built (ai-review#282). `install` runs the same
+// switch before it binds the workspace and opens the workflow PR.
+program
+  .command('sync-mode <mode> [workspace]')
+  .description('Switch a workspace that pulls from GitHub to push (mode: client). No trust binding, no workflow')
+  .option('--yes', 'Accept the switch without prompting (required when not interactive)')
+  .action(async (mode, workspace, opts, cmd) => {
+    // See `content-mode`: a command with positionals does not assign to `Command`.
+    const cfg = getConfig(cmd as unknown as Command)
+    const { handleSyncMode } = await import('./commands/sync-mode.js')
+    await handleSyncMode(cfg, mode, workspace, { yes: opts.yes })
   })
 
 // ─── audit command ────────────────────────────────────────────────────────────

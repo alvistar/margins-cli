@@ -5,35 +5,68 @@ import type { ApiClient } from './api-client.js'
 import { ValidationError } from './errors.js'
 
 /**
+ * Read a workspace's syncMode from the detail endpoint, `GET /api/workspaces/:id`.
+ *
+ * The route answers `{ workspace: { syncMode, ... }, tree, ... }`; the flat
+ * shape is read too, for a server that ever answers it. A missing or unknown
+ * value is `null` — NEVER client. Reading the top level of the nested shape is
+ * how every workspace used to come back as client, including ones that pull
+ * from GitHub (ai-review#282, user story 33).
+ */
+export async function fetchWorkspaceSyncMode(
+  client: ApiClient,
+  workspaceId: string,
+): Promise<'server' | 'client' | null> {
+  const raw = await client.get(`/api/workspaces/${workspaceId}`) as {
+    workspace?: { syncMode?: unknown }
+    syncMode?: unknown
+  } | null
+  const value = raw?.workspace?.syncMode ?? raw?.syncMode
+  return value === 'server' || value === 'client' ? value : null
+}
+
+/**
  * Resolve the workspace's syncMode from .margins.json, handling legacy
  * `mode: "overlay"` by querying the server.
  *
  * Priority:
- * 1. syncMode field (new format) -> return directly
- * 2. mode: "local" (legacy) -> always "client"
- * 3. mode: "overlay" (legacy, ambiguous) -> query server, upgrade file in-place
- * 4. Missing both -> default to "client" (safe fallback)
+ * 1. syncMode "client" -> return directly
+ * 2. syncMode "server" -> confirm with the server: a workspace switched to push
+ *    since the file was written answers "client", and the file is upgraded.
+ *    Any other answer, or none, keeps "server" — the file's own claim.
+ * 3. mode: "local" (legacy) -> always "client"
+ * 4. mode: "overlay" (legacy, ambiguous) -> query server, upgrade file in-place;
+ *    a server that reports no mode is refused, never read as client
+ * 5. Missing both -> default to "client" (safe fallback)
  */
 export async function resolveSyncMode(
   config: LocalConfig,
   client: ApiClient,
   configDir?: string,
 ): Promise<'server' | 'client'> {
-  if (config.syncMode === 'server' || config.syncMode === 'client') {
-    return config.syncMode
+  if (config.syncMode === 'client') return 'client'
+
+  if (config.syncMode === 'server') {
+    // The one way a file's "server" goes stale is the sync mode switch — and
+    // then the first push after it must not be refused on a local memory.
+    if (!config.workspace_id) return 'server'
+    try {
+      if (await fetchWorkspaceSyncMode(client, config.workspace_id) === 'client') {
+        upgradeMarginsJson(config, 'client', configDir)
+        return 'client'
+      }
+    } catch {
+      // Unreachable: keep the file's claim, which is what this returned before.
+    }
+    return 'server'
   }
 
   if (config.mode === 'local') return 'client'
 
   if (config.mode === 'overlay' && config.workspace_id) {
+    let resolved: 'server' | 'client' | null
     try {
-      const workspace = await client.get(`/api/workspaces/${config.workspace_id}`) as {
-        syncMode: 'server' | 'client'
-      }
-      const resolved = workspace.syncMode === 'server' ? 'server' as const : 'client' as const
-
-      upgradeMarginsJson(config, resolved, configDir)
-      return resolved
+      resolved = await fetchWorkspaceSyncMode(client, config.workspace_id)
     } catch {
       // THROWS; this used to `console.error` + `process.exit(1)`.
       //
@@ -57,6 +90,15 @@ export async function resolveSyncMode(
         '(or "server") to .margins.json'
       )
     }
+    if (resolved === null) {
+      throw new ValidationError(
+        'Cannot determine sync mode: the server did not report one for this workspace.\n' +
+        'Add "syncMode": "client" (pushed to Margins) or "server" (pulled from GitHub) ' +
+        'to .margins.json'
+      )
+    }
+    upgradeMarginsJson(config, resolved, configDir)
+    return resolved
   }
 
   return 'client'

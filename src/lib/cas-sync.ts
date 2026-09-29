@@ -99,9 +99,8 @@ export function syntheticCommitSha(manifest: Record<string, string>): string {
 function mapSyncError(err: unknown): never {
   if (err instanceof ServerError && err.code === 'PUSH_SYNC_NOT_SUPPORTED') {
     throw new ValidationError(
-      "This workspace does not support client push sync (its syncMode is not 'client'). " +
-      'Server-managed workspaces sync via GitHub — use `margins workspace sync` instead, ' +
-      'or recreate the workspace with client sync enabled.',
+      'This workspace pulls from GitHub, so it does not take pushes. ' +
+      'Use `margins workspace sync` to pull now, or switch it to push: `margins sync-mode client`.',
     )
   }
   throw err

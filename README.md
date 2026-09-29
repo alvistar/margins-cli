@@ -714,7 +714,7 @@ margins install                      # onboard the current repo
 margins install owner/repo           # onboard a specific repo
 margins install --org my-org         # onboard every repo in an org (or user account)
 margins install --org my-org --include 'docs-*' --exclude 'archived-*'
-margins install --yes                # accept the origin-detected repo without confirming (CI)
+margins install --yes                # accept without prompting: the detected repo, and a switch to push (CI)
 margins install --dry-run            # print intended actions without writing anything
 ```
 
@@ -730,19 +730,51 @@ errors instead of guessing.
 | `--include <glob...>` | no | With `--org`: only repos matching these globs. |
 | `--exclude <glob...>` | no | With `--org`: skip repos matching these globs. |
 | `--dry-run` | no | Print the planned workspace / binding / PR actions without writing anything. |
-| `--yes` | no | Accept the origin-detected repo without the confirmation prompt. Required when no repo is given in a non-interactive context (no TTY or `--json`). |
+| `--yes` | no | Accept without a prompt: the origin-detected repo, and switching a workspace that pulls from GitHub to push. Required for either in a non-interactive context (no TTY or `--json`). |
+
+**A workspace that pulls from GitHub is switched to push first.** Before anything
+changes, `install` prints what the switch does: Margins stops pulling the repo, the
+GitHub access it used (a member's account, or the Margins GitHub App) is removed from
+the workspace, content stays as it is until the workflow's first push, and
+discussions, documents and history are kept. There is no switch back to pull yet.
+Then it asks. On yes it switches, writes the trust binding and opens the workflow
+PR, in that order; a refused switch (a sync is running, you are not the workspace
+creator, or the workspace holds content the switch cannot carry) stops that repo
+before the binding. Without a terminal it needs `--yes`, or it skips the repo and
+changes nothing.
 
 The stamped workflow uses the
 [margins-sync-action](https://github.com/alvistar/margins-sync-action) and a pinned CLI
 version. Requires Margins server v0.21.0+.
 
-**A repo that cannot be onboarded is `skipped`, not a failure.** Over the cap, on the
-wrong sync mode, or refused by the server because a workspace already exists for it and
+**A repo that cannot be onboarded is `skipped`, not a failure.** Over the cap, a switch
+to push that was declined or could not be confirmed, or refused by the server because a workspace already exists for it and
 you are not a member — each is reported per-repo and the run continues to the next one.
 So `install` can exit `0` having onboarded nothing. Read the per-repo results (`--json`
 gives you them structured); the exit code only tells you the run itself did not break.
 A refused repo needs an invite link from an editor of the existing workspace, which is
 an action for a person, not a retry.
+
+---
+
+### `sync-mode`
+
+Switches a workspace that pulls from GitHub to push, with no trust binding and no
+workflow — for people who push from the desktop app or with `margins workspace push`.
+`margins install` runs the same switch before it adds the workflow.
+
+```sh
+margins sync-mode client                 # the workspace of this folder (.margins.json, else the origin remote)
+margins sync-mode client owner/repo      # by repository
+margins sync-mode client gh/owner/repo   # by workspace slug (or id)
+margins sync-mode client --yes           # no prompt (required when not interactive)
+```
+
+It prints the same consequences as `install` and asks first. The switch is
+immediate and keeps the slug, documents, discussions and history; content stays as
+it is until the first push. Only the workspace creator can switch (any editor, if the
+creator's account is gone). Running it on a workspace that already pushes changes
+nothing and says so. `--json` returns `{ workspaceId, repository, syncMode, switched }`.
 
 ---
 

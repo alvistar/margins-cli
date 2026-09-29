@@ -653,14 +653,16 @@ describe('end to end — a human push keeps its exit code', () => {
     fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
 
     const r = cli(['workspace', 'push', '--branch', 'main'], {
-      // Unreachable on purpose: the refusal must land before any network call.
+      // Unreachable on purpose: the one read the refusal makes — has this
+      // workspace been switched to push since the file was written? — cannot be
+      // answered, so the file's own claim stands and the push is refused.
       MARGINS_SERVER_URL: 'http://127.0.0.1:1',
       CI: '',
     })
 
     expect(r.status).toBe(1)
     expect(r.stderr).toContain(
-      'This workspace uses server-managed sync. Use `margins workspace sync` instead.',
+      'This workspace pulls from GitHub, so it does not take pushes. Use `margins workspace sync`',
     )
   }, 60_000)
 })

@@ -14,7 +14,7 @@
 import * as p from '@clack/prompts'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
-import { ConflictError, ValidationError } from '../lib/errors.js'
+import { ConflictError, MarginsError, ValidationError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
 import {
   checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
@@ -23,6 +23,9 @@ import { resolveRepoTargets } from '../lib/repo-targets.js'
 import { stampTemplate, WORKFLOW_PATH } from '../templates/margins-sync.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
+import {
+  acceptSwitch, fetchSyncStatus, switchConsequences, switchToPush,
+} from '../lib/sync-mode-switch.js'
 
 /** Branch the workflow PR is opened from. */
 const INSTALL_BRANCH = 'margins/install-sync'
@@ -37,7 +40,10 @@ export interface InstallOpts {
   include?: string[]
   exclude?: string[]
   dryRun?: boolean
-  /** Accept an auto-detected origin repo without the confirmation prompt. */
+  /**
+   * Accept without a prompt: the auto-detected origin repo, and the switch to
+   * push of a workspace that pulls from GitHub.
+   */
   yes?: boolean
   /** Injectable for tests — defaults to a real setTimeout sleep. */
   sleep?: (ms: number) => Promise<void>
@@ -55,7 +61,14 @@ interface RepoResult {
 
 // ─── PR body ──────────────────────────────────────────────────────────────────
 
-function prBody(fullName: string, workspaceId: string, serverUrl: string): string {
+function prBody(fullName: string, workspaceId: string, serverUrl: string, switched: boolean): string {
+  const frozen = switched
+    ? `
+This workspace used to pull from GitHub. \`margins install\` switched it to push:
+Margins no longer reads this repo, and its content stays as it was until this
+workflow's first push.
+`
+    : ''
   return `## Margins sync — credentialless setup
 
 This PR adds a workflow that syncs this repo's markdown (and referenced images)
@@ -73,7 +86,7 @@ Margins API key in this repo, and Margins holds no GitHub credential.
 
 Merging this PR activates sync. Until the first workflow push succeeds, manual
 \`margins workspace push\` still works.
-`
+${frozen}`
 }
 
 // ─── Per-repo pipeline ────────────────────────────────────────────────────────
@@ -85,6 +98,7 @@ async function processRepo(
   workspaces: WorkspaceListItem[],
   target: string,
   dryRun: boolean,
+  opts: { yes?: boolean; json?: boolean },
 ): Promise<RepoResult> {
   const actions: string[] = []
   const result = (status: RepoStatus, reason?: string): RepoResult =>
@@ -113,9 +127,45 @@ async function processRepo(
 
   // ── c. Workspace: look up by repo URL, create if absent ───────────────────
   const workspace = findWorkspaceByRepoUrl(workspaces, fullName)
-  if (workspace && workspace.syncMode !== 'client') {
+  if (workspace && workspace.syncMode !== 'client' && workspace.syncMode !== 'server') {
+    // Never read an unknown mode as push: binding a workspace that still pulls
+    // is exactly what the switch below exists to do on purpose.
     return result('skipped',
-      `workspace ${workspace.slug} uses syncMode "${workspace.syncMode}" — migrate it to client sync first (never silently bound)`)
+      `workspace ${workspace.slug} reports an unknown sync mode (${JSON.stringify(workspace.syncMode)}) — not installed`)
+  }
+
+  // ── c'. A workspace that pulls from GitHub: switch it to push first ────────
+  // In this order: switch, bind, PR. A failed or declined switch stops here, so
+  // a workspace is never bound — and no workflow is opened — while it pulls.
+  let switched = false
+  if (workspace?.syncMode === 'server') {
+    if (dryRun) {
+      actions.push(`would switch ${workspace.slug} to push (Margins stops pulling from GitHub)`)
+    } else {
+      try {
+        const status = await fetchSyncStatus(client, workspace.id)
+        if (!opts.json) console.error(switchConsequences(fullName, status, 'the workflow').join('\n'))
+        const acceptance = await acceptSwitch(opts)
+        if (acceptance === 'not-interactive') {
+          return result('skipped',
+            `workspace ${workspace.slug} pulls from GitHub; switching it to push needs confirmation: ` +
+            're-run with --yes — nothing was changed')
+        }
+        if (acceptance === 'declined') {
+          return result('skipped', `switch to push declined — ${workspace.slug} still pulls from GitHub, nothing was changed`)
+        }
+        switched = (await switchToPush(client, workspace.id)).switched
+      } catch (err) {
+        // A refused switch is this repo's outcome, not the run's: the binding
+        // and the PR below never happen, and an `--org` run moves on.
+        if (err instanceof MarginsError) return result('failed', err.userMessage)
+        throw err
+      }
+      workspace.syncMode = 'client'
+      actions.push(switched
+        ? `switched ${workspace.slug} to push (Margins no longer pulls from GitHub)`
+        : `${workspace.slug} already pushed to Margins`)
+    }
   }
 
   let workspaceId: string
@@ -247,7 +297,7 @@ async function processRepo(
       title: 'Add Margins credentialless sync workflow',
       head: INSTALL_BRANCH,
       base: repo.defaultBranch,
-      body: prBody(fullName, workspaceId, new URL(cfg.serverUrl).origin),
+      body: prBody(fullName, workspaceId, new URL(cfg.serverUrl).origin, switched),
     })
     actions.push(`PR opened: ${pr.url}`)
     return result('installed')
@@ -324,7 +374,7 @@ export async function handleInstall(
     let rateLimitRetried = false
     for (;;) {
       try {
-        results.push(await processRepo(client, cfg, workspaces, repo, dryRun))
+        results.push(await processRepo(client, cfg, workspaces, repo, dryRun, { yes: opts.yes, json: cfg.json }))
       } catch (err) {
         // 403 rate limit from gh: wait out Retry-After once, then retry the repo.
         if (err instanceof GhError && err.status === 403 && !rateLimitRetried) {

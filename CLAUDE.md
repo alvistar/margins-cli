@@ -53,6 +53,7 @@ src/
     audit.ts            # Sync-coverage report (missing/stale/drift/over-cap; --org, --csv)
     install-hook.ts     # git hook installer (non-blocking push/commit sync)
     sync.ts             # Top-level `sync` (folder setup + tray registry)
+    sync-mode.ts        # `sync-mode client`: switch a pull workspace to push (no binding/workflow)
     completions.ts      # Shell completion script generation
   completions/
     dynamic.js          # Runtime completions (workspace slugs, discussion IDs)
@@ -61,7 +62,8 @@ src/
     auth-env.ts         # hasOidcAuth() — OIDC token / mintable-env detection for the auth gate
     cas-sync.ts         # Content-addressable push protocol (manifest diff + blob upload)
     collect-sync-files.ts # Shared md+image collection pipeline with cap pre-check
-    resolve-sync-mode.ts # syncMode resolution (.margins.json), legacy `mode` upgrade
+    resolve-sync-mode.ts # syncMode resolution (.margins.json), legacy `mode` upgrade, detail read
+    sync-mode-switch.ts # Switch to push: consequences, --yes/prompt gate, error mapping (install + sync-mode)
     repo-targets.ts     # Shared repo-target + org-glob expansion for install/audit
     audit-checks.ts     # Per-repo coverage checks used by `audit`
     config.ts           # Config resolution (env vars → stored config → defaults)

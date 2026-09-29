@@ -306,7 +306,7 @@ describe('handleInstall', () => {
     expect(mocked.createPullRequest).toHaveBeenCalled()
   })
 
-  it('skips a syncMode conflict, continues the run, and succeeds on rerun after fix', async () => {
+  it('skips a workspace that pulls when the switch cannot be confirmed (no TTY, no --yes), continues the run, and succeeds on rerun after the switch', async () => {
     const state: ServerState = {
       workspaces: [
         { id: 'ws-1', slug: 'acme/docs', name: 'docs', repoUrl: 'https://github.com/acme/docs', syncMode: 'server' },
@@ -328,7 +328,7 @@ describe('handleInstall', () => {
     // Conflict is a skip, not a failure
     expect(process.exitCode === 0 || process.exitCode === undefined).toBe(true)
 
-    // Rerun after the operator migrates the workspace to client sync
+    // Rerun after the operator switches the workspace to push
     state.workspaces[0]!.syncMode = 'client'
     mocked.createPullRequest.mockClear()
     await handleInstall(cfg(), 'acme/docs', {})
