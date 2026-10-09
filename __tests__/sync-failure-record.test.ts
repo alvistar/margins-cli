@@ -567,7 +567,7 @@ describe('end to end — the CI channel is the exit code and the log', () => {
     try {
       fs.writeFileSync(
         path.join(projectDir, '.margins.json'),
-        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'push' }),
       )
       const r = cli(
         ['workspace', 'hook-sync', '--event', 'pre-push',
@@ -648,7 +648,7 @@ describe('end to end — a human push keeps its exit code', () => {
     // and only a real process can prove an exit code.
     fs.writeFileSync(
       path.join(projectDir, '.margins.json'),
-      JSON.stringify({ workspace_id: 'ws-srv', syncMode: 'server' }),
+      JSON.stringify({ workspace_id: 'ws-srv', syncMode: 'pull' }),
     )
     fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
 
@@ -682,7 +682,7 @@ describe('end to end — a hook with no usable credentials', () => {
     try {
       fs.writeFileSync(
         path.join(projectDir, '.margins.json'),
-        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'push' }),
       )
       fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
       const before = tree(projectDir)
@@ -742,7 +742,7 @@ describe('end to end — a hook with no usable credentials', () => {
     try {
       fs.writeFileSync(
         path.join(projectDir, '.margins.json'),
-        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'push' }),
       )
       fs.writeFileSync(path.join(projectDir, 'a.md'), '# a\n')
 
@@ -780,7 +780,7 @@ describe('end to end — the local channel is the record', () => {
     try {
       fs.writeFileSync(
         path.join(projectDir, '.margins.json'),
-        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+        JSON.stringify({ workspace_id: 'ws-1', syncMode: 'push' }),
       )
       const before = tree(projectDir)
 

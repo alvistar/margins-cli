@@ -100,7 +100,7 @@ function mapSyncError(err: unknown): never {
   if (err instanceof ServerError && err.code === 'PUSH_SYNC_NOT_SUPPORTED') {
     throw new ValidationError(
       'This workspace pulls from GitHub, so it does not take pushes. ' +
-      'Use `margins workspace sync` to pull now, or switch it to push: `margins sync-mode client`.',
+      'Use `margins workspace sync` to pull now, or switch it to push: `margins sync-mode push`.',
     )
   }
   throw err

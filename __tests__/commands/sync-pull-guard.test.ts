@@ -65,7 +65,7 @@ describe('sync — a GitHub workspace that does not take pushes', () => {
 
     await expect(handleSync(cfg(), { dir })).rejects.toThrow(
       'Workspace gh/acme/docs pulls from GitHub. Switch it to push first — '
-      + '`margins sync-mode client acme/docs` — then sync this folder.',
+      + '`margins sync-mode push acme/docs` — then sync this folder.',
     )
     expect(fs.existsSync(path.join(dir, '.margins.json'))).toBe(false)
     expect(writes).toEqual(['POST /api/workspaces'])

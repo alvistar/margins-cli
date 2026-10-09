@@ -26,7 +26,7 @@ const poster = (impl: () => Promise<unknown>): ApiClient =>
   ({ post: vi.fn(impl) }) as unknown as ApiClient
 
 const status = (credential: SyncStatus['credential']): SyncStatus => ({
-  syncMode: 'server', repository: 'acme/docs', credential, canManagePolicy: true,
+  syncMode: 'pull', repository: 'acme/docs', credential, canManagePolicy: true,
 })
 
 function setTTY(value: boolean): void {
@@ -49,6 +49,14 @@ describe('fetchSyncStatus', () => {
       .rejects.toThrow(/Only the workspace creator/)
   })
 
+  it('translates the API value: server is pull, client is push', async () => {
+    const credential = { source: 'none', installationAccount: null, holder: null }
+    expect((await fetchSyncStatus(getter(async () => ({ syncMode: 'server', repository: 'a/b', credential, canManagePolicy: true })), 'ws-1'))?.syncMode)
+      .toBe('pull')
+    expect((await fetchSyncStatus(getter(async () => ({ syncMode: 'client', repository: 'a/b', credential, canManagePolicy: true })), 'ws-1'))?.syncMode)
+      .toBe('push')
+  })
+
   it('an unexpected shape is null (unknown mode, no credential, null body)', async () => {
     expect(await fetchSyncStatus(getter(async () => null), 'ws-1')).toBeNull()
     expect(await fetchSyncStatus(getter(async () => ({ syncMode: 'sideways', credential: {} })), 'ws-1')).toBeNull()
@@ -56,14 +64,15 @@ describe('fetchSyncStatus', () => {
   })
 
   it('canManagePolicy:false refuses with the creator-only message', async () => {
-    const c = getter(async () => ({ ...status({ source: 'none', installationAccount: null, holder: null }), canManagePolicy: false }))
+    const c = getter(async () => ({ ...status({ source: 'none', installationAccount: null, holder: null }), syncMode: 'server', canManagePolicy: false }))
     await expect(fetchSyncStatus(c, 'ws-1')).rejects.toBeInstanceOf(ValidationError)
     await expect(fetchSyncStatus(c, 'ws-1')).rejects.toThrow(/Only the workspace creator/)
   })
 
-  it('a well-formed status is returned as is', async () => {
+  it('a well-formed status is returned, translated', async () => {
     const s = status({ source: 'none', installationAccount: null, holder: null })
-    expect(await fetchSyncStatus(getter(async () => s), 'ws-1')).toEqual(s)
+    // The server answers its API value; the CLI holds the word.
+    expect(await fetchSyncStatus(getter(async () => ({ ...s, syncMode: 'server' })), 'ws-1')).toEqual(s)
   })
 })
 
@@ -114,8 +123,13 @@ describe('acceptSwitch', () => {
 
 describe('switchToPush', () => {
   it('a bare or empty response is switched:false with no extra keys', async () => {
-    expect(await switchToPush(poster(async () => null), 'ws-1')).toEqual({ syncMode: 'client', switched: false })
-    expect(await switchToPush(poster(async () => ({})), 'ws-1')).toEqual({ syncMode: 'client', switched: false })
+    expect(await switchToPush(poster(async () => null), 'ws-1')).toEqual({ syncMode: 'push', switched: false })
+    expect(await switchToPush(poster(async () => ({})), 'ws-1')).toEqual({ syncMode: 'push', switched: false })
+  })
+
+  it('carries repairedBranches (Margins 0.77.1) when the server sends it', async () => {
+    expect(await switchToPush(poster(async () => ({ syncMode: 'client', switched: false, repairedBranches: ['main'] })), 'ws-1'))
+      .toEqual({ syncMode: 'push', switched: false, repairedBranches: ['main'] })
   })
 
   it('posts the API value to the sync-mode route', async () => {

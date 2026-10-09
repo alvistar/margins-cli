@@ -768,20 +768,25 @@ workflow — for people who push from the desktop app or with `margins workspace
 `margins install` runs the same switch before it adds the workflow.
 
 ```sh
-margins sync-mode client                 # the workspace of this folder (.margins.json, else the origin remote)
-margins sync-mode client owner/repo      # by repository
-margins sync-mode client gh/owner/repo   # by workspace slug (or id)
-margins sync-mode client --yes           # no prompt (required when not interactive)
+margins sync-mode push                   # the workspace of this folder (.margins.json, else the origin remote)
+margins sync-mode push owner/repo        # by repository
+margins sync-mode push gh/owner/repo     # by workspace slug (or id)
+margins sync-mode push --yes             # no prompt (required when not interactive)
 ```
 
 It prints the same consequences as `install` and asks first. The switch is
 immediate and keeps the slug, documents, discussions and history; content stays as
 it is until the first push. Only the workspace creator can switch (any editor, if the
 creator's account is gone). Running it on a workspace that already pushes changes
-nothing and says so. After a switch it updates this folder's `.margins.json` (when it is
-bound to that workspace) to `"syncMode": "client"`; commit that change. `--json` returns
-`{ workspaceId, repository, syncMode, switched }`, plus `checkpoints` and `prunedBranches`
-when the server reports them.
+nothing and says so — except that a Margins 0.77.1+ server may repair a branch head a
+retry needs, and then the output names the repaired branches. After a switch it updates
+this folder's `.margins.json` (when it is bound to that workspace) to `"syncMode": "push"`;
+commit that change. `--json` returns `{ workspaceId, repository, syncMode: "push", switched }`,
+plus `checkpoints`, `prunedBranches` and `repairedBranches` when the server reports them.
+
+`push` is the only mode accepted. `sync-mode client` (accepted before 0.23.0) is refused
+with `Use: margins sync-mode push`; `sync-mode pull` is refused because switching back to
+pull is not available yet.
 
 ---
 
@@ -869,7 +874,7 @@ Example `.margins.json`:
   "workspace_slug": "local/avigano/my-docs",
   "workspace_id": "0cfbdc14-c023-4c84-bc4a-e027e13cefab",
   "default_branch": "main",
-  "syncMode": "client",
+  "syncMode": "push",
   "server_url": "https://margins.example.com"
 }
 ```
@@ -879,7 +884,7 @@ Example `.margins.json`:
 | `workspace_slug` | Default workspace slug for `discuss` and `workspace` commands |
 | `workspace_id` | Default workspace UUID. Used by `workspace push --workspace` for re-pushes — more reliable than slug because it doesn't depend on slug resolution. |
 | `default_branch` | Default branch for `workspace sync`. For local workspaces this is `main`; for GitHub-overlay mode (local edits pushed to a GitHub workspace's `@local` branch) this is `@local`. |
-| `syncMode` | `"client"` — the CLI pushes content via `workspace push` (CAS). `"server"` — Margins pulls the workspace from GitHub; the CLI refuses `workspace push` and points you at `workspace sync` (pull now) or `margins sync-mode client` (switch to push). Before refusing, the CLI asks the server: if the workspace has since been switched to push, it pushes and rewrites the file to `"client"` (commit that change). Replaces the legacy `mode` field (`"local"` / `"overlay"`), which is still read and upgraded to `syncMode` in place. |
+| `syncMode` | `"push"` — the CLI pushes content via `workspace push` (CAS). `"pull"` — Margins pulls the workspace from GitHub; the CLI refuses `workspace push` and points you at `workspace sync` (pull now) or `margins sync-mode push` (switch to push). Before refusing, the CLI asks the server: if the workspace has since been switched to push, it pushes and rewrites the file to `"push"` (commit that change). `"client"` and `"server"` (written before 0.23.0, and still by the legacy Margins Sync tray app) are deprecated aliases for `"push"` and `"pull"`: the CLI reads them and rewrites the file in place, printing `Updated .margins.json: "syncMode": "client" → "push" — commit it.` Replaces the legacy `mode` field (`"local"` / `"overlay"`), which is still read and upgraded to `syncMode` in place. |
 | `server_url` | Server URL override (lower priority than `--server-url` and `MARGINS_SERVER_URL`) |
 
 > **Project-scoped credentials:** `.margins.json` is intended to be committed to the

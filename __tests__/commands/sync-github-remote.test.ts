@@ -108,8 +108,10 @@ describe('handleSync — GitHub remote must request a client-sync workspace', ()
     const recorded = JSON.parse(
       fs.readFileSync(path.join(tmpDir, '.margins.json'), 'utf-8'),
     ) as { syncMode: string }
-    // The original bug is exactly this disagreement: recorded 'client', requested (implicit) 'server'.
-    expect(requested).toBe(recorded.syncMode)
+    // The original bug is exactly this disagreement: recorded push, requested (implicit) pull.
+    // The API value is `client`; the file records the CLI word for the same mode.
+    expect(requested).toBe('client')
+    expect(recorded.syncMode).toBe('push')
   })
 
   it('still falls back to a local workspace when there is no GitHub remote', async () => {

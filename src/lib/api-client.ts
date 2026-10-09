@@ -5,7 +5,7 @@ import {
   AuthExpired, ForbiddenError, NotFoundError, ServerError, ConflictError,
   MergeConflictError, FullDeleteNotConfirmedError, NetworkError, TimeoutError,
   ResponseParseError,
-  type SyncConflictEntry,
+  type SyncConflictEntry, type ServerErrorDetail,
 } from './errors.js'
 import { maskKey } from './output.js'
 import { CLI_VERSION } from './version.js'
@@ -191,6 +191,8 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     message?: string
     conflicts?: SyncConflictEntry[]
     head?: string | null
+    /** `withBody` validation 400s: `{ details: [{ field, message }] }`. */
+    details?: ServerErrorDetail[]
   }
 
   /**
@@ -232,7 +234,17 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     const head = typeof parsed['head'] === 'string' ? parsed['head'] as string
       : parsed['head'] === null ? null : undefined
 
-    return { code, message, conflicts, head }
+    const details = Array.isArray(parsed['details'])
+      ? (parsed['details'] as unknown[])
+          .filter((d): d is { field?: unknown; message: string } =>
+            !!d && typeof d === 'object' && typeof (d as { message?: unknown }).message === 'string')
+          .map((d) => ({
+            ...(typeof d.field === 'string' ? { field: d.field } : {}),
+            message: d.message,
+          }))
+      : undefined
+
+    return { code, message, conflicts, head, details }
   }
 
   /**
@@ -291,8 +303,10 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
       )
     }
     if (response.status >= 400) {
-      const body = await readError(response)
-      throw new ServerError(response.status, body.code, body.message)
+      // A 4xx's userMessage carries the server's reason (and validation
+      // details); a 5xx's stays generic — see ServerError.
+      const body = await parseErrorBody(response)
+      throw new ServerError(response.status, body?.code, body?.message, body?.details)
     }
   }
 

@@ -10,6 +10,8 @@ import { MAX_BLOB_SIZE } from './collect-sync-files.js'
 import { SYNCABLE_IMAGE_EXTENSIONS } from './image-scanner.js'
 import { parseGithubUrl } from './detect-git-remote.js'
 import * as gh from './gh.js'
+import type { ApiClient } from './api-client.js'
+import { fromApiSyncMode, type SyncMode } from './sync-mode.js'
 
 /** Server MAX_MANIFEST_FILES default — repos over this are skipped/flagged. */
 export const MAX_MANIFEST_FILES = 1000
@@ -28,12 +30,32 @@ export interface WorkspaceListItem {
   slug: string
   name: string
   repoUrl: string | null
-  syncMode: 'server' | 'client'
+  /**
+   * Translated from the API value by {@link fetchWorkspaceList}. `null` when the
+   * server sent none, or one this CLI does not know — never read as push.
+   */
+  syncMode: SyncMode | null
+  /** The API value as sent (`undefined` when absent), for naming an unknown one. */
+  apiSyncMode?: unknown
   /**
    * Default branch the workspace syncs from (when the server reports it).
    * Field name matches the server's list serialization (`defaultBranch`).
    */
   defaultBranch?: string | null
+}
+
+/**
+ * `GET /api/workspaces`, with each item's sync mode translated from the API
+ * value. Every reader of the list goes through here, so nothing past it holds
+ * `client` / `server`.
+ */
+export async function fetchWorkspaceList(client: ApiClient): Promise<WorkspaceListItem[]> {
+  const raw = await client.get('/api/workspaces') as Array<Record<string, unknown>> | null
+  return (Array.isArray(raw) ? raw : []).map((w) => ({
+    ...(w as unknown as WorkspaceListItem),
+    syncMode: fromApiSyncMode(w.syncMode),
+    apiSyncMode: w.syncMode,
+  }))
 }
 
 export interface Binding {

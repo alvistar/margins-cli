@@ -45,6 +45,12 @@ export class TimeoutError extends MarginsError {
   }
 }
 
+/** One field-level problem from a validation refusal (`{ details: [{ field, message }] }`). */
+export interface ServerErrorDetail {
+  field?: string
+  message: string
+}
+
 export class ServerError extends MarginsError {
   constructor(
     public readonly status: number,
@@ -53,16 +59,34 @@ export class ServerError extends MarginsError {
     /**
      * The server's own `message`, when the body carried one.
      *
-     * Deliberately NOT folded into `userMessage`: a generic 5xx must keep
-     * saying "Server error (500). Try again later." rather than leaking an
-     * internal string. Callers that KNOW the route words its refusals for a
-     * human — the content-mode migration's 422 is the case this exists for —
-     * opt in by reading this field. The CLI cannot reconstruct that advice.
+     * Folded into `userMessage` for a 4xx only — a refusal of THIS request,
+     * whose reason the user needs (`parentSha must be a hex SHA`) and which
+     * retrying will not change. A 5xx keeps saying "Server error (500). Try
+     * again later." rather than leaking an internal string. Callers that know
+     * a route words its refusals for a human (the content-mode migration's
+     * 422) still read this field directly.
      */
     public readonly serverMessage?: string,
+    /** Field-level validation details (`withBody` 400s), when the body carried them. */
+    public readonly details?: ServerErrorDetail[],
   ) {
-    super(`Server error ${status}`, `Server error (${status}). Try again later.`, 1)
+    super(`Server error ${status}`, serverErrorUserMessage(status, code, serverMessage, details), 1)
   }
+}
+
+function serverErrorUserMessage(
+  status: number,
+  code: string | undefined,
+  serverMessage: string | undefined,
+  details: ServerErrorDetail[] | undefined,
+): string {
+  if (status < 400 || status >= 500) return `Server error (${status}). Try again later.`
+  const head = `Margins refused the request (${status}${code ? ` ${code}` : ''})`
+  const detailText = (details ?? [])
+    .map((d) => (d.field ? `${d.field}: ${d.message}` : d.message))
+    .join('; ')
+  const reason = [serverMessage, detailText].filter((x) => x).join(' — ')
+  return reason ? `${head}: ${reason}` : `${head}.`
 }
 
 export class ForbiddenError extends MarginsError {

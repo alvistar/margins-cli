@@ -179,9 +179,25 @@ describe('handleSync — an already-configured workspace', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.margins.json'),
       JSON.stringify({
-        workspace_id: 'ws-1', workspace_slug: 'gh/x/y', default_branch: 'main', syncMode: 'client',
+        workspace_id: 'ws-1', workspace_slug: 'gh/x/y', default_branch: 'main', syncMode: 'push',
       }),
     )
+  })
+
+  it('a deprecated "client" in .margins.json still syncs, and the file is rewritten to "push"', async () => {
+    const file = path.join(tmpDir, '.margins.json')
+    fs.writeFileSync(file, JSON.stringify({
+      workspace_id: 'ws-1', workspace_slug: 'gh/x/y', default_branch: 'main', syncMode: 'client',
+    }))
+    mockPost.mockResolvedValue({})
+    mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await runSync()
+
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).syncMode).toBe('push')
+    expect(err.mock.calls.map((c) => c[0])).toContain('Updated .margins.json: "syncMode": "client" → "push" — commit it.')
+    err.mockRestore()
   })
 
   it('never prompts — the workspace already has a mode, and the preflight delivers it', async () => {

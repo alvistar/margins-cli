@@ -16,7 +16,10 @@ import { createApiClient } from '../lib/api-client.js'
 import { ConflictError, ValidationError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
-import { findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
+import { fetchWorkspaceList, findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
+import {
+  parseFileSyncMode, readMarginsJson, toApiSyncMode, type ApiSyncMode, type SyncMode,
+} from '../lib/sync-mode.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import {
   casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
@@ -31,7 +34,8 @@ interface MarginsJson {
   workspace_id?: string
   default_branch?: string
   server_url?: string
-  syncMode?: 'server' | 'client'
+  /** Written as push / pull; client / server are deprecated aliases (lib/sync-mode.ts). */
+  syncMode?: SyncMode | ApiSyncMode
   mode?: string // Legacy field, replaced by syncMode
 }
 
@@ -99,7 +103,8 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   let marginsJson: MarginsJson | null = null
   if (fs.existsSync(configPath)) {
     try {
-      marginsJson = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+      // A deprecated "client" / "server" is rewritten here, with one line.
+      marginsJson = readMarginsJson<MarginsJson>(configPath)
     } catch {
       // Invalid JSON, treat as fresh setup
     }
@@ -156,12 +161,8 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   // Step 2-3: Create workspace if needed
   let workspaceId = marginsJson?.workspace_id ?? ''
   let slug = marginsJson?.workspace_slug ?? ''
-  let syncMode: 'server' | 'client' = marginsJson?.syncMode ?? 'client'
-  // Legacy: infer syncMode from mode field
-  if (!marginsJson?.syncMode && marginsJson?.mode === 'overlay') {
-    syncMode = 'client'
-  }
-  let branch = (marginsJson?.mode === 'overlay' || syncMode === 'server')
+  let syncMode: SyncMode = parseFileSyncMode(marginsJson?.syncMode)?.mode ?? 'push'
+  let branch = (marginsJson?.mode === 'overlay' || syncMode === 'pull')
     ? '@local'
     : (marginsJson?.default_branch ?? 'main')
 
@@ -182,18 +183,18 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
           repoUrl,
           // Must be explicit: the server defaults source:'github' to syncMode 'server'
           // (the clone-and-pull path), but everything below this point — the .margins.json
-          // we write and the CAS push we run next — is client sync. Omitting it created a
+          // we write and the CAS push we run next — is push. The API calls push 'client'. Omitting it created a
           // server-sync workspace and the push then failed 422 PUSH_SYNC_NOT_SUPPORTED,
           // but ONLY for users with GitHub linked: without it the create throws
           // GITHUB_NOT_LINKED and the catch below quietly falls back to a local workspace.
           // `margins install` has always passed this (see commands/install.ts).
-          syncMode: 'client',
+          syncMode: toApiSyncMode('push'),
         }) as { workspace: { id: string; slug: string } }
 
         workspaceId = result.workspace.id
         slug = result.workspace.slug
         branch = '@local'
-        syncMode = 'client'
+        syncMode = 'push'
       } catch (err) {
         // A REFUSAL, not a "you already have this". Margins 0.60.0 removed
         // auto-join: a caller who is not a member of the workspace holding this
@@ -231,23 +232,25 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
           // assuming a refusal would send the user to ask for an invite they do
           // not need. Unchanged: the workspace probably does exist for them.
           const found = await findWorkspaceForRepo(client, `${remote.owner}/${remote.repo}`)
-          if (found && found.syncMode && found.syncMode !== 'client') {
+          // An item with no sync mode at all (an older server) is let through, as
+          // before; one the server named, other than push, is refused.
+          if (found && found.apiSyncMode && found.syncMode !== 'push') {
             // `margins install` applies this guard at the other call site of the
             // same helper; moving to the shared lookup without it meant a MEMBER
             // of a server-sync workspace had `syncMode: 'client'` forced into
             // their .margins.json, and the CAS push then failed 422
             // PUSH_SYNC_NOT_SUPPORTED with nothing explaining why.
-            throw new ValidationError(found.syncMode === 'server'
+            throw new ValidationError(found.syncMode === 'pull'
               ? `Workspace ${found.slug} pulls from GitHub. Switch it to push first — `
-                + `\`margins sync-mode client ${remote.owner}/${remote.repo}\` — then sync this folder.`
-              : `Workspace ${found.slug} reports an unknown sync mode (${JSON.stringify(found.syncMode)}) — `
+                + `\`margins sync-mode push ${remote.owner}/${remote.repo}\` — then sync this folder.`
+              : `Workspace ${found.slug} reports an unknown sync mode (${JSON.stringify(found.apiSyncMode)}) — `
                 + 'not syncing this folder.')
           }
           if (found) {
             workspaceId = found.id
             slug = found.slug
             branch = '@local'
-            syncMode = 'client'
+            syncMode = 'push'
           } else {
             // Can't find it, fall back to local
             if (!isJson) {
@@ -278,7 +281,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     const config: MarginsJson = {
       workspace_slug: slug,
       workspace_id: workspaceId,
-      default_branch: syncMode === 'client' && branch !== '@local' ? 'main' : undefined,
+      default_branch: syncMode === 'push' && branch !== '@local' ? 'main' : undefined,
       syncMode,
     }
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
@@ -441,7 +444,7 @@ async function findWorkspaceForRepo(
   client: ReturnType<typeof createApiClient>,
   fullName: string,
 ): Promise<WorkspaceListItem | null> {
-  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  const workspaces = await fetchWorkspaceList(client)
   return findWorkspaceByRepoUrl(workspaces, fullName) ?? null
 }
 
@@ -455,7 +458,7 @@ async function findLocalWorkspaceByName(
   client: ReturnType<typeof createApiClient>,
   projectName: string,
 ): Promise<{ id: string; slug: string } | null> {
-  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  const workspaces = await fetchWorkspaceList(client)
   const want = projectName.toLowerCase()
   const match = workspaces.find((w) => {
     // `repoUrl === null` is the discriminator, not the slug prefix: a local

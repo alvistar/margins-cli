@@ -1,5 +1,5 @@
 /**
- * `margins sync-mode client [workspace]` — switch a GitHub workspace from
+ * `margins sync-mode push [workspace]` — switch a GitHub workspace from
  * pulling to push, with no trust binding and no workflow (ai-review#282, user
  * story 6). For people who push from the desktop app or `margins workspace push`; the
  * workflow path is `margins install`, which switches the same way first.
@@ -16,9 +16,10 @@ import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { ValidationError } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, parseGithubUrl } from '../lib/detect-git-remote.js'
-import { findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
+import { fetchWorkspaceList, findWorkspaceByRepoUrl } from '../lib/audit-checks.js'
 import { resolveWorkspaceBySlug } from '../lib/resolve-workspace.js'
 import { upgradeMarginsJson } from '../lib/resolve-sync-mode.js'
+import { parseFileSyncMode } from '../lib/sync-mode.js'
 import {
   acceptSwitch, fetchSyncStatus, switchConsequences, switchToPush,
 } from '../lib/sync-mode-switch.js'
@@ -29,17 +30,21 @@ export interface SyncModeOpts {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** `client` is the API value; `push` is the word the rest of Margins uses. */
-function parseMode(raw: string): 'client' {
-  if (raw === 'client' || raw === 'push') return 'client'
+/**
+ * `push` is the only switch. `client` — the API value, accepted before 0.23.0 —
+ * is refused with the command that replaced it; `pull` (and `server`) is a
+ * switch that does not exist yet.
+ */
+function parseMode(raw: string): 'push' {
+  if (raw === 'push') return 'push'
   if (raw === 'server' || raw === 'pull') {
     throw new ValidationError('Switching a workspace back to pull from GitHub is not available yet.')
   }
-  throw new ValidationError(`Unknown sync mode "${raw}". The only switch available is: margins sync-mode client`)
+  throw new ValidationError(`Unknown sync mode "${raw}". Use: margins sync-mode push`)
 }
 
 async function findByRepo(client: ApiClient, fullName: string): Promise<{ id: string; label: string }> {
-  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  const workspaces = await fetchWorkspaceList(client)
   const found = findWorkspaceByRepoUrl(workspaces, fullName)
   if (!found) throw new ValidationError(`No workspace you are a member of is connected to ${fullName}.`)
   return { id: found.id, label: found.slug }
@@ -64,7 +69,9 @@ async function resolveTarget(
     const ws = await resolveWorkspaceBySlug(client, arg)
     return { id: ws.id, label: arg }
   }
-  const local = readLocalConfig()
+  // No rewrite here: if this file still says "server", `updateLocalConfig`
+  // rewrites it once, to "push", after the switch.
+  const local = readLocalConfig({ upgradeDeprecated: false })
   if (local?.workspace_id) return { id: local.workspace_id, label: local.workspace_slug ?? local.workspace_id }
   const remote = detectGitRemote(process.cwd())
   if (remote.type === 'github') return findByRepo(client, `${remote.owner}/${remote.repo}`)
@@ -89,7 +96,7 @@ export async function handleSyncMode(
 
   // Known to push already: no consequences to accept. The POST still goes out —
   // it is idempotent, and the server, not this read, has the last word.
-  if (status?.syncMode !== 'client') {
+  if (status?.syncMode !== 'push') {
     if (!cfg.json) console.error(switchConsequences(repository, status, 'anything').join('\n'))
     const acceptance = await acceptSwitch({ yes: opts.yes, json: cfg.json })
     if (acceptance === 'not-interactive') {
@@ -117,12 +124,29 @@ export async function handleSyncMode(
       'content stays as it is until the first push.',
     )
   } else {
-    console.log(`${repository} is already pushed to Margins — nothing was changed.`)
+    const repaired = repairedBranchNames(result.repairedBranches)
+    console.log(repaired.length > 0
+      ? `${repository} is already pushed to Margins. ${repairedSentence(repaired)}`
+      : `${repository} is already pushed to Margins — nothing was changed.`)
   }
 }
 
+/** The branch names in a `repairedBranches` answer (Margins 0.77.1+); [] when absent. */
+function repairedBranchNames(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((b): b is string => typeof b === 'string' && b !== '') : []
+}
+
+function repairedSentence(branches: string[]): string {
+  if (branches.length === 1) {
+    return `Repaired the head of ${branches[0]} so pushes to it are accepted again.`
+  }
+  const list = `${branches.slice(0, -1).join(', ')} and ${branches[branches.length - 1]}`
+  return `Repaired the heads of ${list} so pushes to them are accepted again.`
+}
+
 /**
- * After a switch, the folder's own .margins.json must stop saying "server":
+ * After a switch, the folder's own .margins.json must say "push" (it may say
+ * "pull", or a deprecated "server" / "client"):
  * `install-hook` and `margins sync` read that field directly, and would keep
  * refusing a workspace that now takes pushes. Only the file bound to the
  * workspace just switched is touched. Best effort; `margins workspace push`
@@ -135,9 +159,12 @@ function updateLocalConfig(workspaceId: string): void {
     if (fs.existsSync(candidate)) {
       try {
         const local = JSON.parse(fs.readFileSync(candidate, 'utf-8')) as LocalConfig
-        if (local.workspace_id === workspaceId && local.syncMode === 'server' &&
-          upgradeMarginsJson(local, 'client', dir)) {
-          console.error(`Updated ${candidate} to "syncMode": "client" — commit it.`)
+        // One rewrite, one line — even from a deprecated "server", which is
+        // not first rewritten to "pull" on the way.
+        const fileMode = parseFileSyncMode(local.syncMode)
+        const stale = fileMode?.mode === 'pull' || fileMode?.deprecated !== undefined
+        if (local.workspace_id === workspaceId && stale && upgradeMarginsJson(local, 'push', dir)) {
+          console.error(`Updated ${candidate} to "syncMode": "push" — commit it.`)
         }
       } catch {
         // Malformed file: leave it alone.

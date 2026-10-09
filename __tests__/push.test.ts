@@ -184,7 +184,7 @@ describe('handlePush — workspace resolution', () => {
 
   it('falls back to workspace_id in .margins.json when no flag is given', async () => {
     write('README.md', '# Hi\n')
-    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'client' }))
+    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'push' }))
 
     await handlePush(makeConfig(), { dir: tmpDir, branch: 'main' })
 
@@ -193,7 +193,7 @@ describe('handlePush — workspace resolution', () => {
 
   it('--workspace wins over .margins.json', async () => {
     write('README.md', '# Hi\n')
-    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'client' }))
+    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'push' }))
 
     await handlePush(makeConfig(), { workspace: 'ws-flag', dir: tmpDir, branch: 'main' })
 
@@ -340,7 +340,7 @@ describe('handlePush — content mode settles at preflight', () => {
 
   it('writes no content mode into .margins.json on any path', async () => {
     write('README.md', '# Hi\n')
-    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'client' }))
+    write('.margins.json', JSON.stringify({ workspace_id: 'ws-cfg', syncMode: 'push' }))
     mockGet.mockResolvedValue({ files: {}, headSha: null, contentMode: 'working-tree' })
 
     await handlePush(makeConfig(), { dir: tmpDir, branch: 'main' })
@@ -607,7 +607,7 @@ describe('handlePush — failure paths', () => {
     // prints the same sentence and still exits non-zero — asserted end to end in
     // `sync-failure-record.test.ts`, since only a real process has an exit code.
     write('README.md', '# Hi\n')
-    write('.margins.json', JSON.stringify({ workspace_id: 'ws-srv', syncMode: 'server' }))
+    write('.margins.json', JSON.stringify({ workspace_id: 'ws-srv', syncMode: 'pull' }))
 
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
 

@@ -54,7 +54,7 @@ describe('handleSync — oversized blobs are skipped, not pushed', () => {
         workspace_id: 'ws-1',
         workspace_slug: 'gh/x/y',
         default_branch: 'main',
-        syncMode: 'client',
+        syncMode: 'push',
       }),
     )
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Hello\n\n![huge](huge.png)\n')

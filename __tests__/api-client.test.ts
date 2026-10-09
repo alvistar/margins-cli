@@ -385,6 +385,32 @@ describe('api client — 409 conflict typing (merge vs generic)', () => {
     expect(caught).toBeInstanceOf(ServerError)
     expect((caught as ServerError).code).toBe('PUSH_SYNC_NOT_SUPPORTED')
   })
+
+  it('a 400 shows the server\'s reason, including withBody validation details', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        error: 'VALIDATION_ERROR', message: 'Validation failed',
+        details: [{ field: 'parentSha', message: 'must be a hex SHA' }],
+      }), { status: 400 }),
+    ))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(ServerError)
+    expect((caught as ServerError).userMessage).toBe(
+      'Margins refused the request (400 VALIDATION_ERROR): Validation failed — parentSha: must be a hex SHA',
+    )
+  })
+
+  it('a 500 keeps the generic wording', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'INTERNAL', message: 'pg: relation missing' }), { status: 500 }),
+    ))
+    let caught: unknown
+    await createApiClient(baseConfig()).post('/api/x', {}).catch((e) => { caught = e })
+
+    expect((caught as ServerError).userMessage).toBe('Server error (500). Try again later.')
+  })
 })
 
 describe('api client — Keycloak token refresh', () => {

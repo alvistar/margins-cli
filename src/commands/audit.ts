@@ -14,7 +14,7 @@ import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { formatJson, formatTable } from '../lib/output.js'
 import {
-  checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
+  checkRepoCaps, fetchWorkspaceList, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
 } from '../lib/audit-checks.js'
 import { resolveRepoTargets } from '../lib/repo-targets.js'
 import { poolMap } from '../lib/pool.js'
@@ -251,7 +251,7 @@ export async function handleAudit(
   const fetchWorkspaces = async (): Promise<WorkspaceListItem[] | null> => {
     if (!client) return null
     try {
-      return await client.get('/api/workspaces') as WorkspaceListItem[]
+      return await fetchWorkspaceList(client)
     } catch (err) {
       driftSkippedReason = err instanceof Error ? err.message : String(err)
       return null
