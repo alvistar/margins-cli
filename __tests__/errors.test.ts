@@ -37,6 +37,41 @@ describe('error classes', () => {
     expect(e.userMessage).toContain('503')
   })
 
+  it('a 5xx keeps the generic wording and never shows the server\'s message', () => {
+    const e = new ServerError(500, 'INTERNAL', 'connection to db-7 refused')
+    expect(e.userMessage).toBe('Server error (500). Try again later.')
+  })
+
+  it('a 4xx carries the server\'s reason and code, and does not say "try again later"', () => {
+    const e = new ServerError(400, 'INVALID_BODY', 'parentSha must be a hex SHA')
+    expect(e.userMessage).toBe('Margins refused the request (400 INVALID_BODY): parentSha must be a hex SHA')
+    expect(e.userMessage).not.toMatch(/try again later/i)
+    // Public fields unchanged for existing callers.
+    expect(e.status).toBe(400)
+    expect(e.code).toBe('INVALID_BODY')
+    expect(e.serverMessage).toBe('parentSha must be a hex SHA')
+  })
+
+  it('a 4xx with no body still refuses without "try again later"', () => {
+    expect(new ServerError(405).userMessage).toBe('Margins refused the request (405).')
+    expect(new ServerError(413, 'TOO_LARGE').userMessage).toBe('Margins refused the request (413 TOO_LARGE).')
+    expect(new ServerError(422, undefined, 'No.').userMessage).toBe('Margins refused the request (422): No.')
+    // A rate limit or a request timeout is transient: retrying is the right advice.
+    expect(new ServerError(429, 'RATE_LIMITED', 'Slow down.').userMessage).toBe('Server busy (429). Try again later.')
+    expect(new ServerError(408).userMessage).toBe('Server busy (408). Try again later.')
+  })
+
+  it('a 4xx with validation details names each field', () => {
+    const e = new ServerError(400, 'VALIDATION_ERROR', 'Validation failed', [
+      { field: 'parentSha', message: 'must be a hex SHA' },
+      { field: '', message: 'Required' },
+    ])
+    expect(e.userMessage).toBe(
+      'Margins refused the request (400 VALIDATION_ERROR): Validation failed — parentSha: must be a hex SHA; Required',
+    )
+    expect(e.serverMessage).toBe('Validation failed')
+  })
+
   it('ForbiddenError includes resource', () => {
     const e = new ForbiddenError('workspace')
     expect(e.userMessage).toContain('workspace')

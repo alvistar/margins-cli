@@ -180,6 +180,28 @@ describe('casSync', () => {
     expect(calls.filter((c) => c.method === 'GET')).toHaveLength(1)
   })
 
+  it('on PUSH_PARENT_PREDATES_SWITCH: shows the server\'s repair message, not the generic conflict', async () => {
+    // A branch whose head is still the pull's git sha after a switch before
+    // Margins 0.77.1. Re-pushing reads the same head, so "pull and push again"
+    // loops forever; only the server's text names the repair.
+    const remedy = 'This branch\'s head was written by a pull ... run `margins sync-mode push acme/docs`.'
+    stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return new Response(
+        JSON.stringify({ error: 'PUSH_PARENT_PREDATES_SWITCH', message: remedy }),
+        { status: 409 },
+      )
+    })
+
+    const client = createApiClient(baseConfig())
+    let caught: unknown
+    await preflightAndSync(client, 'ws-1', 'main', syncFiles()).catch((e) => { caught = e })
+
+    expect(caught).toBeInstanceOf(ConflictError)
+    expect((caught as ConflictError).userMessage).toBe(remedy)
+  })
+
   // ─── SYNC_MERGE_CONFLICT: surface-and-stop, never clobber (U2) ──────────────
 
   const mergeConflict = (head: string, conflicts = [{ path: 'readme.md', reason: 'content' }]) =>

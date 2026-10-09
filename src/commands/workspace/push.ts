@@ -120,10 +120,10 @@ export async function handlePush(
     }
   }
   const resolvedSyncMode = localCfg ? await resolveSyncMode(localCfg, client, cwd) : undefined
-  if (resolvedSyncMode === 'server') {
+  if (resolvedSyncMode === 'pull') {
     throw new ValidationError(
       'This workspace pulls from GitHub, so it does not take pushes. Use `margins workspace sync` ' +
-        'to pull now, or switch it to push: `margins sync-mode client`.',
+        'to pull now, or switch it to push: `margins sync-mode push`.',
     )
   }
 

@@ -22,6 +22,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { GIT_STDIO } from '../lib/git-branch.js'
+import { parseFileSyncMode, readMarginsJson } from '../lib/sync-mode.js'
 import * as p from '@clack/prompts'
 
 interface InstallHookOpts {
@@ -107,10 +108,10 @@ export async function handleInstallHook(opts: InstallHookOpts): Promise<void> {
   const configPath = path.join(repoRoot, '.margins.json')
   if (fs.existsSync(configPath)) {
     try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
-      const syncMode = config.syncMode ?? (config.mode === 'local' ? 'client' : undefined)
+      // A deprecated "client" / "server" is rewritten here, with one line.
+      const config = readMarginsJson<{ syncMode?: unknown }>(configPath)
 
-      if (syncMode === 'server') {
+      if (parseFileSyncMode(config.syncMode)?.mode === 'pull') {
         console.log('This workspace syncs via GitHub webhook — no hook needed.')
         console.log('Content is pulled by the server automatically on push.')
         return

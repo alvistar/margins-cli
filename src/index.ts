@@ -509,7 +509,7 @@ program
 // switch before it binds the workspace and opens the workflow PR.
 program
   .command('sync-mode <mode> [workspace]')
-  .description('Switch a workspace that pulls from GitHub to push (mode: client). No trust binding, no workflow')
+  .description('Switch a workspace that pulls from GitHub to push (mode: push). No trust binding, no workflow')
   .option('--yes', 'Accept the switch without prompting (required when not interactive)')
   .action(async (mode, workspace, opts, cmd) => {
     // See `content-mode`: a command with positionals does not assign to `Command`.

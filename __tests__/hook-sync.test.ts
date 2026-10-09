@@ -32,7 +32,7 @@ vi.mock('../src/lib/api-client.js', () => ({
 // server-sync workspace. It answers 'client' for every other test, which is what
 // the real one returns for the fixture's `.margins.json`.
 vi.mock('../src/lib/resolve-sync-mode.js', () => ({
-  resolveSyncMode: vi.fn(async () => 'client' as const),
+  resolveSyncMode: vi.fn(async () => 'push' as const),
 }))
 
 // The collector is stubbed so a test can (a) count tree reads and (b) attach the
@@ -85,7 +85,7 @@ beforeEach(async () => {
   vi.restoreAllMocks()
   const { resolveSyncMode } = await import('../src/lib/resolve-sync-mode.js')
   vi.mocked(resolveSyncMode).mockReset()
-  vi.mocked(resolveSyncMode).mockResolvedValue('client')
+  vi.mocked(resolveSyncMode).mockResolvedValue('push')
   mockCasSync.mockReset()
   mockCasSync.mockResolvedValue({ added: 0, changed: 0, deleted: 0, uploaded: 0, skipped: 0 })
   mockCollectForMode.mockReset()
@@ -99,7 +99,7 @@ beforeEach(async () => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-hook-work-'))
   fs.writeFileSync(
     path.join(workDir, '.margins.json'),
-    JSON.stringify({ workspace_id: 'ws-1', syncMode: 'client' }),
+    JSON.stringify({ workspace_id: 'ws-1', syncMode: 'push' }),
   )
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
@@ -201,7 +201,7 @@ describe('handleHookSync', () => {
     let call = 0
     vi.mocked(resolveSyncMode).mockImplementation(async () => {
       call += 1
-      return call === 2 ? 'server' : 'client'
+      return call === 2 ? 'pull' : 'push'
     })
 
     // If anything still calls process.exit, the branch loop is over — mimic the

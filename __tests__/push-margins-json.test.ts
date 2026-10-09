@@ -42,7 +42,7 @@ describe('handlePush — oversized blobs are skipped, not pushed', () => {
     const { MAX_BLOB_SIZE } = await import('../src/lib/collect-sync-files.js')
     fs.writeFileSync(
       path.join(tmpDir, '.margins.json'),
-      JSON.stringify({ workspace_id: 'ws-1', workspace_slug: 'gh/x/y', syncMode: 'client' }),
+      JSON.stringify({ workspace_id: 'ws-1', workspace_slug: 'gh/x/y', syncMode: 'push' }),
     )
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Hello\n\n![huge](huge.png)\n')
     fs.writeFileSync(path.join(tmpDir, 'huge.png'), Buffer.alloc(MAX_BLOB_SIZE + 1, 1))

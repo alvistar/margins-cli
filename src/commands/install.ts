@@ -17,7 +17,7 @@ import { createApiClient, type ApiClient } from '../lib/api-client.js'
 import { ConflictError, MarginsError, ValidationError } from '../lib/errors.js'
 import { formatJson, formatTable } from '../lib/output.js'
 import {
-  checkRepoCaps, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
+  checkRepoCaps, fetchWorkspaceList, findWorkspaceByRepoUrl, type WorkspaceListItem, type Binding,
 } from '../lib/audit-checks.js'
 import { resolveRepoTargets } from '../lib/repo-targets.js'
 import { stampTemplate, WORKFLOW_PATH } from '../templates/margins-sync.js'
@@ -26,6 +26,7 @@ import { GhError } from '../lib/gh.js'
 import {
   acceptSwitch, fetchSyncStatus, switchConsequences, switchToPush,
 } from '../lib/sync-mode-switch.js'
+import { toApiSyncMode } from '../lib/sync-mode.js'
 
 /** Branch the workflow PR is opened from. */
 const INSTALL_BRANCH = 'margins/install-sync'
@@ -152,11 +153,11 @@ async function processRepo(
 
   // ── c. Workspace: look up by repo URL, create if absent ───────────────────
   const workspace = findWorkspaceByRepoUrl(workspaces, fullName)
-  if (workspace && workspace.syncMode !== 'client' && workspace.syncMode !== 'server') {
+  if (workspace && workspace.syncMode === null) {
     // Never read an unknown mode as push: binding a workspace that still pulls
     // is exactly what the switch below exists to do on purpose.
     return result('skipped',
-      `workspace ${workspace.slug} reports an unknown sync mode (${JSON.stringify(workspace.syncMode)}) — not installed`)
+      `workspace ${workspace.slug} reports an unknown sync mode (${JSON.stringify(workspace.apiSyncMode)}) — not installed`)
   }
 
   // ── c'. A workspace that pulls from GitHub: switch it to push first ────────
@@ -165,7 +166,7 @@ async function processRepo(
   // caller's right to switch (GET /sync) and the trust binding. A failed,
   // declined or refused switch stops here, so a workspace is never bound — and
   // no workflow is opened — while it pulls.
-  if (workspace?.syncMode === 'server') {
+  if (workspace?.syncMode === 'pull') {
     try {
       const status = await fetchSyncStatus(client, workspace.id)
       const { binding } = await client.get(`/api/workspaces/${encodeURIComponent(workspace.id)}/binding`) as
@@ -194,7 +195,7 @@ async function processRepo(
         }
         const { switched } = await switchToPush(client, workspace.id)
         if (switched) switchedInRun.add(target)
-        workspace.syncMode = 'client'
+        workspace.syncMode = 'push'
         actions.push(switched
           ? `switched ${workspace.slug} to push (Margins no longer pulls from GitHub)`
           : `${workspace.slug} already pushed to Margins`)
@@ -215,7 +216,7 @@ async function processRepo(
     workspaceId = workspace.id
     actions.push(`workspace exists (${workspace.slug})`)
   } else if (dryRun) {
-    actions.push(`would create workspace (source: github, syncMode: client, repoUrl: ${repoUrl})`)
+    actions.push(`would create workspace (source: github, sync mode: push, repoUrl: ${repoUrl})`)
     workspaceId = '<new-workspace-id>'
   } else {
     const name = fullName.split('/')[1]!
@@ -226,7 +227,7 @@ async function processRepo(
         source: 'github',
         repoUrl,
         branch: repo.defaultBranch,
-        syncMode: 'client',
+        syncMode: toApiSyncMode('push'),
       }) as { workspace: { id: string; slug: string } } | { id: string; slug: string }
     } catch (err) {
       // A workspace exists for this repo and this caller is not a member of it
@@ -253,7 +254,7 @@ async function processRepo(
     workspaceId = ws.id
     // Keep the per-run snapshot current so a later repo (or rerun logic)
     // sees the workspace we just created.
-    workspaces.push({ id: ws.id, slug: ws.slug, name, repoUrl, syncMode: 'client', defaultBranch: repo.defaultBranch })
+    workspaces.push({ id: ws.id, slug: ws.slug, name, repoUrl, syncMode: 'push', defaultBranch: repo.defaultBranch })
     actions.push(`workspace created (${ws.slug})`)
   }
 
@@ -403,7 +404,7 @@ export async function handleInstall(
   }
 
   // Workspace list fetched once per run; processRepo appends what it creates.
-  const workspaces = await client.get('/api/workspaces') as WorkspaceListItem[]
+  const workspaces = await fetchWorkspaceList(client)
 
   // SERIALIZED processing — no concurrency, so PR creation honors rate limits
   // and per-repo failures never interleave.

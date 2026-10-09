@@ -100,7 +100,7 @@ function mapSyncError(err: unknown): never {
   if (err instanceof ServerError && err.code === 'PUSH_SYNC_NOT_SUPPORTED') {
     throw new ValidationError(
       'This workspace pulls from GitHub, so it does not take pushes. ' +
-      'Use `margins workspace sync` to pull now, or switch it to push: `margins sync-mode client`.',
+      'Use `margins workspace sync` to pull now, or switch it to push: `margins sync-mode push`.',
     )
   }
   throw err
@@ -415,6 +415,12 @@ export async function casSync(
     // (that would clobber a concurrent writer). Post-PR2 the server only emits
     // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
     // user must reconcile, not an overwrite.
+    // A branch head an old switch to push left as the pull's git sha (Margins
+    // 0.77.1+). Re-pushing reads the same head, so the generic advice below
+    // would loop; the server's text names the one-time repair.
+    if (err instanceof ConflictError && err.code === 'PUSH_PARENT_PREDATES_SWITCH' && err.serverMessage) {
+      throw new ConflictError(err.serverMessage, err.code, err.serverMessage)
+    }
     if (err instanceof ConflictError) {
       throw new ConflictError(
         'Your push conflicted with the server and was not applied. ' +

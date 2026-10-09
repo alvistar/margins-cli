@@ -13,7 +13,7 @@
  * reason `collect-committed-files.test.ts` does: the developer's global
  * ~/.gitconfig otherwise leaks into the result.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -513,12 +513,23 @@ describe('hooks directory resolution', () => {
   })
 
   it('reads .margins.json from the repository root, not the cwd', async () => {
-    fs.writeFileSync(path.join(tmpDir, '.margins.json'), JSON.stringify({ syncMode: 'server' }))
+    fs.writeFileSync(path.join(tmpDir, '.margins.json'), JSON.stringify({ syncMode: 'pull' }))
     write(tmpDir, 'docs/a.md', '# one\n')
     commit(tmpDir, 'first')
     process.chdir(path.join(tmpDir, 'docs'))
     await handleInstallHook({ force: true })
     // Server-sync workspaces need no hook — nothing installed.
     expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'pre-push'))).toBe(false)
+  })
+
+  it('reads the deprecated "server" as pull, and rewrites the file to "pull"', async () => {
+    const file = path.join(tmpDir, '.margins.json')
+    fs.writeFileSync(file, JSON.stringify({ syncMode: 'server' }))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await handleInstallHook({ force: true })
+    expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'pre-push'))).toBe(false)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).syncMode).toBe('pull')
+    expect(err.mock.calls.map((c) => c[0])).toContain('Updated .margins.json: "syncMode": "server" → "pull" — commit it.')
+    err.mockRestore()
   })
 })

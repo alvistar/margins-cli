@@ -6,6 +6,71 @@ All notable changes to margins-cli will be documented in this file.
 
 Nothing yet.
 
+## [0.23.0] - 2026-10-09
+
+The CLI now says **push** and **pull** for the two sync modes everywhere a person
+or a file sees them — output, `--json`, `.margins.json` — matching the rest of
+Margins. The server API keeps its own values (`client` / `server`); the CLI
+translates at the API boundary only.
+
+### Changed
+
+- **A push to a branch stuck on a pull's head shows how to repair it.** Margins 0.77.1
+  answers such a push with 409 `PUSH_PARENT_PREDATES_SWITCH`; the CLI now prints the
+  server's message, which names `margins sync-mode push`, instead of "pull, reconcile, and
+  push again", which would fail the same way every time.
+
+- **`margins sync-mode push`** is the switch from pull to push (it was
+  `margins sync-mode client`). Every message that tells you to switch now names
+  `margins sync-mode push`.
+- **`.margins.json` is written with `"syncMode": "push"` or `"pull"`**, by
+  `margins sync`, by `sync-mode push` (for the folder bound to the switched
+  workspace), and by the in-place upgrades of a stale `"pull"` and of the legacy
+  `mode` field.
+- **`--json` output says `push` / `pull`**, never the API values:
+  `sync-mode push --json` returns `"syncMode": "push"`, and `margins sync --json`
+  reports the folder's mode the same way.
+- **A refused request (4xx) shows the server's reason.** It used to read
+  "Server error (400). Try again later." for any 4xx without a specific mapping —
+  wrong advice for a request that will be refused again. It now reads, e.g.,
+  `Margins refused the request (400 VALIDATION_ERROR): Validation failed —
+  parentSha: must be a hex SHA`, with the field-level details of a validation
+  refusal. A 5xx keeps the generic "Try again later." and does not show the
+  server's message; a 429 or 408 says "Server busy … Try again later."
+- **`sync-mode push` on a workspace that already pushes** names the branches the
+  server repaired, when it repaired any: `<repo> is already pushed to Margins.
+  Repaired the head of main so pushes to it are accepted again.` `--json` carries
+  `repairedBranches` as returned. This needs Margins 0.77.1; against an older
+  server the output is unchanged ("nothing was changed").
+- `margins workspace sync` on a workspace that takes pushes now says it is pushed
+  to Margins, rather than "uses client-managed sync".
+
+### Deprecated
+
+- **`"syncMode": "client"` and `"server"` in `.margins.json`.** Still read, as
+  push and pull; the CLI rewrites the file in place to the new word and prints
+  one line on stderr, e.g. `Updated .margins.json: "syncMode": "client" →
+  "push" — commit it.`
+
+### Removed
+
+- **`margins sync-mode client`.** Refused with `Unknown sync mode "client". Use:
+  margins sync-mode push`. (`sync-mode pull` / `server` are refused as before:
+  switching back to pull is not available yet.)
+
+### Known caveats
+
+- The legacy **Margins Sync tray app reads only `"client"`**: it treats any other
+  `syncMode`, including `"push"`, as a pull folder and sends it to `/ingest`, which
+  a pushed GitHub workspace refuses (422). A folder this CLI has touched no longer
+  syncs from the tray. The tray is legacy; use the CLI or the sync workflow.
+- A CLI older than 0.23.0 reads `"pull"` as an unknown value and falls back to
+  push: its `workspace push` is refused by the server (422
+  `PUSH_SYNC_NOT_SUPPORTED`) instead of by its own check, its `workspace sync`
+  refuses with "uses client-managed sync", and its `install-hook` installs a hook
+  whose every background push is refused the same way. `"push"` is read
+  correctly, so a sync workflow pinned to an older CLI keeps working.
+
 ## [0.22.0] - 2026-09-29
 
 Requires a Margins server with the **sync mode switch** (`POST

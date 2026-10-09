@@ -3,7 +3,7 @@
  * (Margins reads the repo) to pushing (a workflow or a person sends content).
  *
  * Shared by `margins install`, which switches before it binds and opens the
- * workflow PR, and `margins sync-mode client`, which only switches. One owner
+ * workflow PR, and `margins sync-mode push`, which only switches. One owner
  * for three things both need:
  *
  *   - the consequences, stated before anything changes (U7's four points);
@@ -11,19 +11,22 @@
  *     that cannot ask must never switch silently;
  *   - the error mapping, so a 409/403/422 reads the same from either command.
  *
- * Words (U11): output says "pull" and "push", never `server` / `client`. The
- * API values stay in the request body and in `--json`.
+ * Words (U11): output — `--json` included — says "pull" and "push", never
+ * `server` / `client`. The API values stay in the request body; the
+ * translation is lib/sync-mode.ts.
  */
 import * as p from '@clack/prompts'
 import type { ApiClient } from './api-client.js'
 import {
   ConflictError, ForbiddenError, NotFoundError, ServerError, ValidationError,
 } from './errors.js'
+import { fromApiSyncMode, toApiSyncMode, type SyncMode } from './sync-mode.js'
 
 // ─── Server shapes (margins/src/lib/services/workspace-sync-status.ts) ────────
 
 export interface SyncStatus {
-  syncMode: 'server' | 'client'
+  /** Translated from the API value (`server` → pull, `client` → push). */
+  syncMode: SyncMode
   /** `owner/repo`, or null for a workspace with no GitHub side. */
   repository: string | null
   credential: {
@@ -35,10 +38,16 @@ export interface SyncStatus {
 }
 
 export interface SwitchResult {
-  syncMode: 'client'
+  syncMode: 'push'
   switched: boolean
   checkpoints?: unknown
   prunedBranches?: unknown
+  /**
+   * Margins 0.77.1+, on the "already pushed" answer: branches whose head the
+   * server re-labelled so pushes to them are accepted again. Absent from an
+   * older server.
+   */
+  repairedBranches?: unknown
 }
 
 /** The refusal a non-creator gets, in the server's words (route 403). */
@@ -67,10 +76,11 @@ export async function fetchSyncStatus(
     if (err instanceof ForbiddenError) throw new ValidationError(err.serverMessage ?? NOT_CREATOR)
     return null
   }
-  const s = raw as Partial<SyncStatus> | null
-  if (!s || (s.syncMode !== 'server' && s.syncMode !== 'client') || !s.credential) return null
+  const s = raw as (Omit<Partial<SyncStatus>, 'syncMode'> & { syncMode?: unknown }) | null
+  const syncMode = fromApiSyncMode(s?.syncMode)
+  if (!s || !syncMode || !s.credential) return null
   if (s.canManagePolicy === false) throw new ValidationError(NOT_CREATOR)
-  return s as SyncStatus
+  return { ...(s as Omit<SyncStatus, 'syncMode'>), syncMode }
 }
 
 // ─── Consequences ─────────────────────────────────────────────────────────────
@@ -139,13 +149,16 @@ export async function acceptSwitch(opts: { yes?: boolean; json?: boolean }): Pro
 /** `POST /api/workspaces/:id/sync-mode`. Throws a mapped, user-facing error. */
 export async function switchToPush(client: ApiClient, workspaceId: string): Promise<SwitchResult> {
   try {
-    const res = await client.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/sync-mode`, { syncMode: 'client' }) as
-      Partial<SwitchResult> | null
+    const res = await client.post(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sync-mode`,
+      { syncMode: toApiSyncMode('push') },
+    ) as Omit<Partial<SwitchResult>, 'syncMode'> | null
     return {
-      syncMode: 'client',
+      syncMode: 'push',
       switched: res?.switched === true,
       ...(res?.checkpoints !== undefined ? { checkpoints: res.checkpoints } : {}),
       ...(res?.prunedBranches !== undefined ? { prunedBranches: res.prunedBranches } : {}),
+      ...(res?.repairedBranches !== undefined ? { repairedBranches: res.repairedBranches } : {}),
     }
   } catch (err) {
     throw mapSwitchError(err)

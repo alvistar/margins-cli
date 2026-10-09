@@ -20,12 +20,12 @@ export async function handleSync(cfg: ResolvedConfig, slug: string | undefined, 
 
   const client = createApiClient(cfg)
 
-  // Gate: refuse to trigger server-side sync on client-sync workspaces
+  // Gate: refuse to trigger a pull on a workspace that takes pushes
   const localCfg = readLocalConfig()
   if (localCfg) {
     const syncMode = await resolveSyncMode(localCfg, client)
-    if (syncMode === 'client') {
-      console.error('This workspace uses client-managed sync. Use `margins workspace push` instead.')
+    if (syncMode === 'push') {
+      console.error('This workspace is pushed to Margins, not pulled from GitHub. Use `margins workspace push` instead.')
       process.exit(1)
     }
   }

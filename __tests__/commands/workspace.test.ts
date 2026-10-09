@@ -43,6 +43,22 @@ describe('workspace list', () => {
     expect(JSON.parse(spy.mock.calls[0]?.[0] as string)).toEqual(ws)
     spy.mockRestore()
   })
+
+  it('translates syncMode to push/pull in JSON, never the API value', async () => {
+    // Value: protects=--json says push/pull as the CHANGELOG promises; fails_when=list passes raw API items through; why_new=the JSON test had no syncMode; seam=none
+    const ws = [
+      { id: '1', slug: 'gh/a/b', syncMode: 'client' },
+      { id: '2', slug: 'gh/c/d', syncMode: 'server' },
+      { id: '3', slug: 'local/x' },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(ws), { status: 200 })))
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { handleList } = await import('../../src/commands/workspace/list.js')
+    await handleList({ ...baseCfg(), json: true })
+    const out = JSON.parse(spy.mock.calls[0]?.[0] as string) as { syncMode?: string }[]
+    expect(out.map((w) => w.syncMode)).toEqual(['push', 'pull', undefined])
+    spy.mockRestore()
+  })
 })
 
 describe('workspace create', () => {

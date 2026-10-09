@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { DEFAULT_SERVER_URL, getGlobalConfig } from 'margins-stash-core'
 import { ConfigParseError } from './errors.js'
+import { parseFileSyncMode, upgradeDeprecatedSyncMode, type ApiSyncMode, type SyncMode } from './sync-mode.js'
 
 // The global config STORE lives in margins-stash-core, not here.
 // The Margins Light daemon reads the same `config.json`, and two copies of the
@@ -26,7 +27,12 @@ export interface LocalConfig {
   workspace_id?: string
   default_branch?: string
   server_url?: string
-  syncMode?: 'server' | 'client'
+  /**
+   * `push` / `pull`. A file written before 0.23.0 (or by the legacy Margins
+   * Sync tray) says `client` / `server`: deprecated aliases, read through
+   * `parseFileSyncMode` and rewritten in place (lib/sync-mode.ts).
+   */
+  syncMode?: SyncMode | ApiSyncMode
   mode?: 'overlay' | 'local' // Legacy field, replaced by syncMode
 }
 
@@ -58,8 +64,13 @@ export interface CliOpts {
 /**
  * Walk up from cwd looking for .margins.json.
  * Returns parsed contents, null if not found, throws ConfigParseError if malformed.
+ *
+ * A deprecated `syncMode` (`client` / `server`) is rewritten in the file to
+ * `push` / `pull`, with one line on stderr — unless `upgradeDeprecated` is
+ * false: config resolution runs for every command, completions included, and
+ * must not touch the file or print.
  */
-export function readLocalConfig(): LocalConfig | null {
+export function readLocalConfig(opts: { upgradeDeprecated?: boolean } = {}): LocalConfig | null {
   let dir = process.cwd()
   const root = path.parse(dir).root
 
@@ -67,11 +78,18 @@ export function readLocalConfig(): LocalConfig | null {
     const candidate = path.join(dir, '.margins.json')
     if (fs.existsSync(candidate)) {
       const raw = fs.readFileSync(candidate, 'utf-8')
+      let parsed: LocalConfig
       try {
-        return JSON.parse(raw) as LocalConfig
+        parsed = JSON.parse(raw) as LocalConfig
       } catch (e) {
         throw new ConfigParseError(`Invalid .margins.json at ${candidate}: ${(e as Error).message}`)
       }
+      const fileMode = parsed && typeof parsed === 'object' ? parseFileSyncMode(parsed.syncMode) : null
+      if (fileMode?.deprecated) {
+        if (opts.upgradeDeprecated !== false) upgradeDeprecatedSyncMode(candidate)
+        parsed.syncMode = fileMode.mode
+      }
+      return parsed
     }
     if (dir === root) break
     dir = path.dirname(dir)
@@ -92,7 +110,7 @@ export function resolveConfig(cliOpts: CliOpts): ResolvedConfig {
   const global = getGlobalConfig()
   let local: LocalConfig | null = null
   try {
-    local = readLocalConfig()
+    local = readLocalConfig({ upgradeDeprecated: false })
   } catch (err) {
     // Warn but don't fatal — a malformed .margins.json should not block commands.
     // The error is also surfaced when commands explicitly call readLocalConfig().

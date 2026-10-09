@@ -83,7 +83,7 @@ function writeMarginsJson(): void {
       workspace_id: 'ws-1',
       workspace_slug: 'gh/x/y',
       default_branch: 'main',
-      syncMode: 'client',
+      syncMode: 'push',
     }),
   )
 }
