@@ -15,6 +15,11 @@ translates at the API boundary only.
 
 ### Changed
 
+- **A push to a branch stuck on a pull's head shows how to repair it.** Margins 0.77.1
+  answers such a push with 409 `PUSH_PARENT_PREDATES_SWITCH`; the CLI now prints the
+  server's message, which names `margins sync-mode push`, instead of "pull, reconcile, and
+  push again", which would fail the same way every time.
+
 - **`margins sync-mode push`** is the switch from pull to push (it was
   `margins sync-mode client`). Every message that tells you to switch now names
   `margins sync-mode push`.
