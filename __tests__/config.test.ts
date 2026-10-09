@@ -53,6 +53,22 @@ describe('readLocalConfig', () => {
     expect(config).toEqual({ workspace_slug: 'gh/owner/repo' })
   })
 
+  it('resolveConfig reads a deprecated syncMode without rewriting the file or printing', () => {
+    // Value: protects=config resolution (every command, tab completion) never edits a committed .margins.json; fails_when=resolveConfig drops upgradeDeprecated:false; why_new=only the helpers were tested; seam=none
+    const file = path.join(tmpDir, '.margins.json')
+    const original = JSON.stringify({ workspace_id: 'ws-1', syncMode: 'server' })
+    fs.writeFileSync(file, original)
+    process.chdir(tmpDir)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      resolveConfig({})
+      expect(fs.readFileSync(file, 'utf-8')).toBe(original)
+      expect(err).not.toHaveBeenCalled()
+    } finally {
+      err.mockRestore()
+    }
+  })
+
   it('throws ConfigParseError on malformed .margins.json', () => {
     fs.writeFileSync(path.join(tmpDir, '.margins.json'), 'not-valid-json{')
     process.chdir(tmpDir)

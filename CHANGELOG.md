@@ -36,7 +36,7 @@ translates at the API boundary only.
   `Margins refused the request (400 VALIDATION_ERROR): Validation failed —
   parentSha: must be a hex SHA`, with the field-level details of a validation
   refusal. A 5xx keeps the generic "Try again later." and does not show the
-  server's message.
+  server's message; a 429 or 408 says "Server busy … Try again later."
 - **`sync-mode push` on a workspace that already pushes** names the branches the
   server repaired, when it repaired any: `<repo> is already pushed to Margins.
   Repaired the head of main so pushes to it are accepted again.` `--json` carries
@@ -60,13 +60,16 @@ translates at the API boundary only.
 
 ### Known caveats
 
-- The legacy **Margins Sync tray app still writes `"client"` / `"server"`** into
-  `.margins.json`. The CLI reads those and rewrites them; do not run the tray
-  alongside this CLI on the same folder, or the two will keep rewriting the file.
-- A CLI older than 0.23.0 (for example one pinned by a sync workflow) reads
-  `"pull"` as an unknown value and falls back to push: on a workspace that
-  pulls, its push is refused by the server (422 `PUSH_SYNC_NOT_SUPPORTED`)
-  instead of by its own earlier, friendlier check. `"push"` is read correctly.
+- The legacy **Margins Sync tray app reads only `"client"`**: it treats any other
+  `syncMode`, including `"push"`, as a pull folder and sends it to `/ingest`, which
+  a pushed GitHub workspace refuses (422). A folder this CLI has touched no longer
+  syncs from the tray. The tray is legacy; use the CLI or the sync workflow.
+- A CLI older than 0.23.0 reads `"pull"` as an unknown value and falls back to
+  push: its `workspace push` is refused by the server (422
+  `PUSH_SYNC_NOT_SUPPORTED`) instead of by its own check, its `workspace sync`
+  refuses with "uses client-managed sync", and its `install-hook` installs a hook
+  whose every background push is refused the same way. `"push"` is read
+  correctly, so a sync workflow pinned to an older CLI keeps working.
 
 ## [0.22.0] - 2026-09-29
 

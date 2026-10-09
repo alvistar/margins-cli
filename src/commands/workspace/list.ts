@@ -1,6 +1,7 @@
 import type { ResolvedConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson, formatTable } from '../../lib/output.js'
+import { fromApiSyncMode } from '../../lib/sync-mode.js'
 
 interface Workspace {
   id: string
@@ -10,6 +11,8 @@ interface Workspace {
   lastSyncedAt: string | null
   documentCount?: string | number
   openDiscussionCount?: string | number
+  /** The API value (client/server); translated before any output. */
+  syncMode?: unknown
 }
 
 function formatDate(iso: string | null): string {
@@ -22,7 +25,9 @@ export async function handleList(cfg: ResolvedConfig): Promise<void> {
   const workspaces = await client.get('/api/workspaces') as Workspace[]
 
   if (cfg.json) {
-    console.log(formatJson(workspaces))
+    // --json says push/pull, never the API's client/server.
+    console.log(formatJson(workspaces.map((w) =>
+      w.syncMode === undefined ? w : { ...w, syncMode: fromApiSyncMode(w.syncMode) ?? w.syncMode })))
     return
   }
 

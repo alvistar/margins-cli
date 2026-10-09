@@ -56,6 +56,9 @@ describe('error classes', () => {
     expect(new ServerError(405).userMessage).toBe('Margins refused the request (405).')
     expect(new ServerError(413, 'TOO_LARGE').userMessage).toBe('Margins refused the request (413 TOO_LARGE).')
     expect(new ServerError(422, undefined, 'No.').userMessage).toBe('Margins refused the request (422): No.')
+    // A rate limit or a request timeout is transient: retrying is the right advice.
+    expect(new ServerError(429, 'RATE_LIMITED', 'Slow down.').userMessage).toBe('Server busy (429). Try again later.')
+    expect(new ServerError(408).userMessage).toBe('Server busy (408). Try again later.')
   })
 
   it('a 4xx with validation details names each field', () => {

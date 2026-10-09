@@ -72,7 +72,16 @@ export function upgradeDeprecatedSyncMode(configPath: string): boolean {
   if (!parsed?.deprecated) return false
   raw.syncMode = parsed.mode
   try {
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
+    // Temp file + rename: a concurrent reader (the hook runs one process per
+    // branch) sees the old file or the new one, never a truncated one.
+    const tmp = `${configPath}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
+    try {
+      fs.renameSync(tmp, configPath)
+    } catch (err) {
+      fs.rmSync(tmp, { force: true })
+      throw err
+    }
   } catch {
     // Read-only checkout: the alias is still read correctly; nothing to report.
     return false

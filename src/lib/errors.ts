@@ -81,6 +81,8 @@ function serverErrorUserMessage(
   details: ServerErrorDetail[] | undefined,
 ): string {
   if (status < 400 || status >= 500) return `Server error (${status}). Try again later.`
+  // A rate limit or a request timeout passes on its own: retrying is the advice.
+  if (status === 429 || status === 408) return `Server busy (${status}). Try again later.`
   const head = `Margins refused the request (${status}${code ? ` ${code}` : ''})`
   const detailText = (details ?? [])
     .map((d) => (d.field ? `${d.field}: ${d.message}` : d.message))
