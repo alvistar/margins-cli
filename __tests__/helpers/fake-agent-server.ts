@@ -119,6 +119,22 @@ function sse(event: string, data: unknown, id?: string): string {
   return [`event: ${event}`, ...(id ? [`id: ${id}`] : []), `data: ${JSON.stringify(data)}`].join('\n') + '\n\n'
 }
 
+/**
+ * The propose route's refusals of a Proposal (`DiscussionCreateSchema` with `kind:
+ * suggestion`, and the route's own guard), so a request the server would answer 400
+ * fails here too.
+ */
+function proposalRefusal(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return '`proposal` must be a Suggestion.'
+  const p = raw as Record<string, unknown>
+  if (typeof p['replacementBody'] !== 'string') return 'A suggestion needs a replacement'
+  if (p['anchorType'] !== 'text') return 'A suggestion needs a text selection'
+  const filled = (k: string) => typeof p[k] === 'string' && (p[k] as string).trim() !== ''
+  if (!filled('anchorPrefix') || !filled('anchorSuffix')) return 'A suggestion needs surrounding context'
+  if (p['send'] !== undefined || p['clientRef'] !== undefined) return 'An agent Proposal has no `send` or `clientRef`.'
+  return undefined
+}
+
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
@@ -182,6 +198,13 @@ export async function startFakeAgentServer(opts: { workspaceId: string; script?:
     if (!send || workspaceId !== opts.workspaceId) {
       json(res, 404, { error: AGENT_CHANNEL_ERROR.sendNotFound.code, message: 'No such send.' })
       return
+    }
+    if (action === 'propose') {
+      const refusal = proposalRefusal(body['proposal'])
+      if (refusal) {
+        json(res, 400, { error: 'VALIDATION_ERROR', message: refusal })
+        return
+      }
     }
     const { attempt, ...rest } = body as { attempt: number }
     const { record, outcome } = applySendEvent(send, {

@@ -14,10 +14,11 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from '../config.js'
+import type { ApiClient } from '../api-client.js'
 import {
   AuthExpired, ConflictError, MarginsError, NetworkError, NotFoundError, ServerError, TimeoutError, ValidationError,
 } from '../errors.js'
-import { agentClient, forgetAgentKey, mintAgentKey, readAgentKey } from './agent-key.js'
+import { withAgentKey } from './agent-key.js'
 import {
   AGENT_CHANNEL_ERROR,
   AGENT_CHANNEL_PATHS,
@@ -82,7 +83,8 @@ function refusalCode(err: unknown): string | undefined {
   return undefined
 }
 
-async function withStore<T>(use: (store: AgentChannelStore) => T): Promise<T> {
+/** The outbox is the protocol's idempotency: an unusable store fails the action. */
+async function inOutbox<T>(use: (store: AgentChannelStore) => T): Promise<T> {
   const store = await openAgentChannelStore()
   try {
     return use(store)
@@ -100,9 +102,8 @@ export async function sendAgentAction(
   const requestBody: ActionRequestBody = { attempt: req.attempt, ...req.body }
   const bodyJson = JSON.stringify(requestBody)
 
-  // The outbox is the protocol's idempotency, not bookkeeping: an unusable store
-  // fails the command rather than risk a second write under a new key.
-  const entry = await withStore((store) => {
+  // An unusable store fails the command rather than risk a second write under a new key.
+  const entry = await inOutbox((store) => {
     const workspaceId = req.workspaceId
       ?? store.heldSends().find((h) => h.sendId === req.sendId)?.workspaceId
     if (!workspaceId) {
@@ -110,8 +111,8 @@ export async function sendAgentAction(
         `No Workspace on record for send ${req.sendId}. Pass --workspace <id> (the id \`margins discuss wait\` was run with).`,
       )
     }
-    const pending = store.pendingAction(req.sendId, req.action, req.attempt, bodyJson)
-    if (pending && pending.workspaceId === workspaceId) return pending
+    const pending = store.pendingAction(workspaceId, req.sendId, req.action, req.attempt, bodyJson)
+    if (pending) return pending
     const fresh = {
       idempotencyKey: `${req.action}-${randomUUID()}`,
       sendId: req.sendId,
@@ -125,38 +126,34 @@ export async function sendAgentAction(
   })
 
   const path = AGENT_CHANNEL_PATHS.action(entry.workspaceId, req.sendId, req.action)
-  const stored = readAgentKey(cfg.serverUrl, entry.workspaceId)
-  let key = stored ?? await mintAgentKey(cfg, entry.workspaceId)
-  let reminted = !stored
-
-  for (let sends = 1; ; sends++) {
-    try {
-      const answer = await agentClient(cfg, key).post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }) as ActionResponseBody
-      await withStore((store) => store.settleAction(entry.idempotencyKey))
-      return answer
-    } catch (err) {
-      if (err instanceof AuthExpired && !reminted) {
-        // A revoked or expired key: mint once through the login, resend under the same key.
-        forgetAgentKey(cfg.serverUrl, entry.workspaceId)
-        key = await mintAgentKey(cfg, entry.workspaceId)
-        reminted = true
-        sends--
-        continue
-      }
-      if (isLostResponse(err)) {
-        if (sends >= MAX_SENDS) throw new ActionLeftInOutboxError(req.action, req.sendId, err)
+  const post = async (client: ApiClient): Promise<ActionResponseBody> => {
+    for (let sends = 1; ; sends++) {
+      try {
+        return await client.post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }) as ActionResponseBody
+      } catch (err) {
+        if (!isLostResponse(err) || sends >= MAX_SENDS) throw err
         await sleep(RESEND_BASE_MS * 2 ** (sends - 1))
-        continue
       }
-      const code = refusalCode(err)
-      if (code === AGENT_CHANNEL_ERROR.attemptSuperseded.code || code === AGENT_CHANNEL_ERROR.sendClosed.code) {
-        await withStore((store) => store.dropSend(req.sendId))
-        throw new SendNoLongerHeldError(req.sendId, code)
-      }
-      // Any other refusal changed nothing (only accepted actions are stored), and the
-      // same request would be refused again: it leaves the outbox.
-      if (!(err instanceof AuthExpired)) await withStore((store) => store.settleAction(entry.idempotencyKey))
-      throw err
     }
+  }
+
+  try {
+    // A revoked key is minted again inside, and the same request resent under the same key.
+    const answer = await withAgentKey(cfg, entry.workspaceId, post)
+    await inOutbox((store) => store.settleAction(entry.idempotencyKey))
+    return answer
+  } catch (err) {
+    // The answer may have been lost, or the login cannot mint a key now: either way the
+    // request may yet land, so it stays in the outbox for the same command to resend.
+    if (isLostResponse(err) || err instanceof AuthExpired) throw new ActionLeftInOutboxError(req.action, req.sendId, err)
+    const code = refusalCode(err)
+    if (code === AGENT_CHANNEL_ERROR.attemptSuperseded.code || code === AGENT_CHANNEL_ERROR.sendClosed.code) {
+      await inOutbox((store) => store.dropSend(req.sendId))
+      throw new SendNoLongerHeldError(req.sendId, code)
+    }
+    // Any other refusal changed nothing (only accepted actions are stored), and the
+    // same request would be refused again: it leaves the outbox.
+    await inOutbox((store) => store.settleAction(entry.idempotencyKey))
+    throw err
   }
 }

@@ -18,6 +18,7 @@ import * as path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { getConfigDir } from '../config.js'
 import { MarginsError } from '../errors.js'
+import type { AgentAction } from './protocol.js'
 
 const STORE_BASENAME = 'agent-channel.sqlite'
 const BUSY_TIMEOUT_MS = 2_000
@@ -49,7 +50,7 @@ export interface OutboxEntry {
   idempotencyKey: string
   sendId: string
   workspaceId: string
-  action: string
+  action: AgentAction
   attempt: number
   /** The request body as sent, JSON: a resend must be byte-for-byte the same request. */
   body: string
@@ -64,7 +65,7 @@ export interface AgentChannelStore {
   linkedSessions(): LinkedSession[]
   heldSends(): HeldSend[]
   /** The pending entry for this exact request, if one was sent and never answered. */
-  pendingAction(sendId: string, action: string, attempt: number, body: string): OutboxEntry | undefined
+  pendingAction(workspaceId: string, sendId: string, action: AgentAction, attempt: number, body: string): OutboxEntry | undefined
   queueAction(entry: Omit<OutboxEntry, 'createdAt'>): void
   /** The action was answered: its entry goes. */
   settleAction(idempotencyKey: string): void
@@ -117,7 +118,7 @@ function outboxRow(r: Record<string, unknown>): OutboxEntry {
     idempotencyKey: String(r['idempotency_key']),
     sendId: String(r['send_id']),
     workspaceId: String(r['workspace_id']),
-    action: String(r['action']),
+    action: String(r['action']) as AgentAction,
     attempt: Number(r['attempt']),
     body: String(r['body']),
     createdAt: String(r['created_at']),
@@ -180,11 +181,12 @@ export async function openAgentChannelStore(dir: string = getConfigDir()): Promi
         receivedAt: String(r['received_at']),
       }))
     },
-    pendingAction(sendId, action, attempt, body) {
+    pendingAction(workspaceId, sendId, action, attempt, body) {
       const row = db.prepare(
-        `SELECT ${OUTBOX_COLUMNS} FROM outbox WHERE send_id = ? AND action = ? AND attempt = ? AND body = ?
+        `SELECT ${OUTBOX_COLUMNS} FROM outbox
+         WHERE workspace_id = ? AND send_id = ? AND action = ? AND attempt = ? AND body = ?
          ORDER BY created_at LIMIT 1`,
-      ).get(sendId, action, attempt, body)
+      ).get(workspaceId, sendId, action, attempt, body)
       return row ? outboxRow(row) : undefined
     },
     queueAction(entry) {

@@ -18,7 +18,7 @@ import * as path from 'node:path'
 import type { ResolvedConfig } from '../config.js'
 import { getConfigDir } from '../config.js'
 import { createApiClient, type ApiClient } from '../api-client.js'
-import { ForbiddenError, MarginsError, ResponseParseError } from '../errors.js'
+import { AuthExpired, ForbiddenError, MarginsError, ResponseParseError } from '../errors.js'
 
 const KEYS_BASENAME = 'agent-keys.json'
 /** A key this close to its expiry is minted again rather than used. */
@@ -109,12 +109,28 @@ export async function mintAgentKey(cfg: ResolvedConfig, workspaceId: string): Pr
   return stored
 }
 
-/** The stored key for this Workspace, or a new one minted through the login. */
-export async function ensureAgentKey(cfg: ResolvedConfig, workspaceId: string): Promise<StoredAgentKey> {
-  return readAgentKey(cfg.serverUrl, workspaceId) ?? mintAgentKey(cfg, workspaceId)
+/** An API client that sends the agent key and nothing else. */
+function agentClient(cfg: ResolvedConfig, key: StoredAgentKey): ApiClient {
+  return createApiClient(cfg, { fixedBearer: key.key })
 }
 
-/** An API client that sends the agent key and nothing else. */
-export function agentClient(cfg: ResolvedConfig, key: StoredAgentKey): ApiClient {
-  return createApiClient(cfg, { fixedBearer: key.key })
+/**
+ * Run `use` with a client that sends the Workspace's agent key: the stored one, else
+ * one minted now through the login. A 401 to a stored key (revoked, or expired early)
+ * mints a new key once and runs `use` again; a 401 to a key minted in this run is the end.
+ */
+export async function withAgentKey<T>(
+  cfg: ResolvedConfig,
+  workspaceId: string,
+  use: (client: ApiClient) => Promise<T>,
+): Promise<T> {
+  const stored = readAgentKey(cfg.serverUrl, workspaceId)
+  const key = stored ?? await mintAgentKey(cfg, workspaceId)
+  try {
+    return await use(agentClient(cfg, key))
+  } catch (err) {
+    if (!(err instanceof AuthExpired) || !stored) throw err
+    forgetAgentKey(cfg.serverUrl, workspaceId)
+    return use(agentClient(cfg, await mintAgentKey(cfg, workspaceId)))
+  }
 }

@@ -157,8 +157,11 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
     expect(await outbox()).toEqual([])
   })
 
-  it('propose sends the Proposal in the Suggestion create shape', async () => {
-    await act('propose', { anchorText: 'The lease is 10 minutes.', replacement: 'The lease is 15 minutes.', body: 'Covers slow tools.' })
+  it('propose lands a Proposal the server accepts: a text anchor with its context', async () => {
+    await act('propose', {
+      anchorText: 'is 10 minutes', anchorPrefix: 'The lease ', anchorSuffix: '.',
+      replacement: 'is 15 minutes', body: 'Covers slow tools.',
+    })
 
     const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
     expect(req.body).toEqual({
@@ -167,11 +170,21 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
       proposal: {
         body: 'Covers slow tools.',
         anchorType: 'text',
-        anchorSelectedText: 'The lease is 10 minutes.',
-        replacementBody: 'The lease is 15 minutes.',
+        anchorSelectedText: 'is 10 minutes',
+        anchorPrefix: 'The lease ',
+        anchorSuffix: '.',
+        replacementBody: 'is 15 minutes',
       },
     })
     expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
+  })
+
+  it('propose without the passage\'s context is refused before anything is sent', async () => {
+    const err = await act('propose', { anchorText: 'is 10 minutes', replacement: 'is 15 minutes' }).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/--anchor-prefix/)
+    expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toEqual([])
+    expect(await outbox()).toEqual([])
   })
 
   it('progress, then done, answers the send', async () => {
@@ -298,6 +311,18 @@ describe('discuss wait: linking turns the channel.mjs channel off', () => {
     await waitFor()
 
     expect(readMcp(projectDir).mcpServers).toEqual({ other })
+  })
+
+  it('never edits a .mcp.json above the session\'s git repository', async () => {
+    const repo = path.join(projectDir, 'repo')
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+    vi.mocked(process.cwd).mockReturnValue(repo)
+    writeMcp(projectDir, { margins_channel: channel, other })
+    const before = fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')
+
+    await waitFor()
+
+    expect(fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')).toBe(before)
   })
 
   it('leaves a config without the channel byte-for-byte alone, and creates none', async () => {

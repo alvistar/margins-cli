@@ -2,10 +2,8 @@ import type { ResolvedConfig } from '../../lib/config.js'
 import { formatJson } from '../../lib/output.js'
 import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
 import { openAgentChannelStore, type AgentChannelStore } from '../../lib/agent-channel/store.js'
-import { agentClient, forgetAgentKey, mintAgentKey, readAgentKey } from '../../lib/agent-channel/agent-key.js'
+import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
 import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
-import { AuthExpired } from '../../lib/errors.js'
-import type { SendEventPayload } from '../../lib/agent-channel/protocol.js'
 
 /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
 export type DiscussWaitDeps = Pick<WaitForSendOptions, 'sleep' | 'random' | 'idleTimeoutMs'>
@@ -54,24 +52,6 @@ function turnChannelOff(): void {
 }
 
 /**
- * Hold the agent stream with the Workspace's agent key: the stored one, else one
- * minted now through the login. A 401 to a stored key (revoked, or expired early) mints
- * a new key once and waits again; a 401 to a key minted in this run is the end.
- */
-async function waitWithAgentKey(cfg: ResolvedConfig, workspaceId: string, deps: DiscussWaitDeps): Promise<SendEventPayload> {
-  const stored = readAgentKey(cfg.serverUrl, workspaceId)
-  const key = stored ?? await mintAgentKey(cfg, workspaceId)
-  try {
-    return await waitForSend({ client: agentClient(cfg, key), workspaceId, ...deps })
-  } catch (err) {
-    if (!(err instanceof AuthExpired) || !stored) throw err
-    forgetAgentKey(cfg.serverUrl, workspaceId)
-    const fresh = await mintAgentKey(cfg, workspaceId)
-    return waitForSend({ client: agentClient(cfg, fresh), workspaceId, ...deps })
-  }
-}
-
-/**
  * `margins discuss wait --workspace <id>`: hold the agent stream, claim one send,
  * print its payload, return (exit 0). The harness that ran it in the background
  * wakes the session with the output. The local store records the link and which
@@ -87,7 +67,9 @@ export async function handleDiscussWait(
   await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace))
   turnChannelOff()
 
-  const payload = await waitWithAgentKey(cfg, opts.workspace, deps)
+  // The stream sends the agent key, minted on the first wait in this Workspace.
+  const payload = await withAgentKey(cfg, opts.workspace, (client) =>
+    waitForSend({ client, workspaceId: opts.workspace, ...deps }))
 
   // Print first: the payload is what the session needs; the record is bookkeeping.
   console.log(cfg.json ? formatJson(payload) : payload.prompt)

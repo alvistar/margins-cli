@@ -1,6 +1,7 @@
 import { Command, Option } from '@commander-js/extra-typings'
 import { resolveConfig, type ResolvedConfig } from './lib/config.js'
-import { AuthMissing } from './lib/errors.js'
+import { AuthMissing, ValidationError } from './lib/errors.js'
+import type { AgentAction } from './lib/agent-channel/protocol.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
@@ -454,12 +455,11 @@ discussCmd
  * `reply` and `resolve` act on a Discussion as the person, as before.
  */
 async function runAgentAction(
-  action: 'reply' | 'propose' | 'progress' | 'resolve' | 'done',
+  action: AgentAction,
   opts: { send?: string; attempt?: string },
   cmd: Parameters<typeof getConfig>[0],
 ): Promise<void> {
   if (!opts.send || !opts.attempt) {
-    const { ValidationError } = await import('./lib/errors.js')
     throw new ValidationError(`${action} on a send needs --send <id> and --attempt <n> (the send's \`wait\` output names both).`)
   }
   const cfg = getConfig(cmd)
@@ -479,9 +479,11 @@ discussCmd
   .option('--send <id>', SEND_HELP)
   .option('--attempt <n>', ATTEMPT_HELP)
   .action(async (discussionId, opts, cmd) => {
-    if (opts.send || opts.attempt) return runAgentAction('reply', opts, cmd)
+    if (opts.send || opts.attempt) {
+      if (discussionId) throw new ValidationError('reply takes a <discussion-id> or --send, not both: a send names its own thread.')
+      return runAgentAction('reply', opts, cmd)
+    }
     if (!discussionId) {
-      const { ValidationError } = await import('./lib/errors.js')
       throw new ValidationError('reply needs a <discussion-id>, or --send <id> --attempt <n>.')
     }
     const cfg = getConfig(cmd)
@@ -497,9 +499,11 @@ discussCmd
   .option('--send <id>', SEND_HELP)
   .option('--attempt <n>', ATTEMPT_HELP)
   .action(async (discussionId, opts, cmd) => {
-    if (opts.send || opts.attempt) return runAgentAction('resolve', opts, cmd)
+    if (opts.send || opts.attempt) {
+      if (discussionId) throw new ValidationError('resolve takes a <discussion-id> or --send, not both: a send names its own thread.')
+      return runAgentAction('resolve', opts, cmd)
+    }
     if (!discussionId) {
-      const { ValidationError } = await import('./lib/errors.js')
       throw new ValidationError('resolve needs a <discussion-id>, or --send <id> --attempt <n>.')
     }
     const cfg = getConfig(cmd)
@@ -513,8 +517,10 @@ discussCmd
   .requiredOption('--send <id>', SEND_HELP)
   .requiredOption('--attempt <n>', ATTEMPT_HELP)
   .requiredOption('--replacement <text>', 'The new text for the passage (empty proposes deleting it)')
-  .option('--anchor-text <text>', 'The exact passage the Proposal replaces')
-  .option('--anchor-heading <heading>', 'The heading the Proposal anchors to')
+  .requiredOption('--anchor-text <text>', 'The exact passage the Proposal replaces')
+  .requiredOption('--anchor-prefix <text>', 'The words just before the passage, copied from the document')
+  .requiredOption('--anchor-suffix <text>', 'The words just after the passage, copied from the document')
+  .option('--anchor-heading <heading>', 'The heading of the passage\'s section')
   .option('--body <body>', 'Why: the rationale shown with the Proposal')
   .option('--workspace <id>', SEND_WORKSPACE_HELP)
   .action(async (opts, cmd) => runAgentAction('propose', opts, cmd))

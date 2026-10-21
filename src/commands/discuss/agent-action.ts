@@ -17,11 +17,31 @@ export interface AgentActionOpts {
   summary?: string
   /** `done`: an optional note. */
   note?: string
-  /** `propose`: the passage the Proposal replaces, or the heading it anchors to. */
+  /**
+   * `propose`: the exact passage the Proposal replaces, with the text just before and
+   * just after it, which the server needs to place it (a Proposal without its context
+   * can never resolve, so the server refuses it); optionally its section heading.
+   */
   anchorText?: string
+  anchorPrefix?: string
+  anchorSuffix?: string
   anchorHeading?: string
   /** `propose`: the new text; empty proposes deleting the passage. */
   replacement?: string
+}
+
+/**
+ * The Suggestion create shape of the discussions API (`DiscussionCreateSchema`, `kind`
+ * taken as `suggestion` by the propose route): a text anchor with its context.
+ */
+interface ProposalCreate {
+  body: string
+  anchorType: 'text'
+  anchorSelectedText: string
+  anchorPrefix: string
+  anchorSuffix: string
+  anchorHeadingText?: string
+  replacementBody: string
 }
 
 function parseAttempt(raw: string): number {
@@ -46,19 +66,21 @@ function actionBody(action: AgentAction, opts: AgentActionOpts): AgentActionRequ
       return opts.note ? { text: opts.note } : {}
     case 'propose': {
       if (opts.replacement === undefined) throw new ValidationError('propose needs --replacement <text> (empty to delete the passage).')
-      if (!opts.anchorText && !opts.anchorHeading) {
-        throw new ValidationError('propose needs --anchor-text <passage> or --anchor-heading <heading>.')
+      if (!opts.anchorText) throw new ValidationError('propose needs --anchor-text <passage>: the exact text it replaces.')
+      if (!opts.anchorPrefix?.trim() || !opts.anchorSuffix?.trim()) {
+        throw new ValidationError(
+          'propose needs --anchor-prefix <text> and --anchor-suffix <text>: the words just before and just after the passage, copied from the document.',
+        )
       }
-      const proposal: Record<string, string> = { body: opts.body ?? '' }
-      if (opts.anchorText) {
-        proposal['anchorType'] = 'text'
-        proposal['anchorSelectedText'] = opts.anchorText
-        if (opts.anchorHeading) proposal['anchorHeadingText'] = opts.anchorHeading
-      } else {
-        proposal['anchorType'] = 'heading'
-        proposal['anchorHeadingText'] = opts.anchorHeading!
+      const proposal: ProposalCreate = {
+        body: opts.body ?? '',
+        anchorType: 'text',
+        anchorSelectedText: opts.anchorText,
+        anchorPrefix: opts.anchorPrefix,
+        anchorSuffix: opts.anchorSuffix,
+        ...(opts.anchorHeading ? { anchorHeadingText: opts.anchorHeading } : {}),
+        replacementBody: opts.replacement,
       }
-      proposal['replacementBody'] = opts.replacement
       return { ...(opts.body ? { text: opts.body } : {}), proposal }
     }
   }
