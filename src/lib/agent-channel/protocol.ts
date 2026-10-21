@@ -59,8 +59,15 @@ export type SendFailedReason = (typeof SEND_FAILED_REASON)[keyof typeof SEND_FAI
 
 /** A claim lasts this long from the claim or from the last accepted write (D5). */
 export const CLAIM_LEASE_MS = 10 * 60 * 1000;
-/** The lease expiry that moves a send to `failed` instead of back to `requested` (D5). */
+/** The counted lease expiry (a claim with an action on it) that moves a send to `failed` (D5). */
 export const MAX_LEASE_EXPIRIES = 3;
+/**
+ * The lapsed claim with no action on it that moves a send to `failed` (O2 cap, owner
+ * 2026-10-21). Separate from `MAX_LEASE_EXPIRIES` and looser, so two flaky connections never
+ * fail a send, yet a payload that crashes every session before its first action stops being
+ * claimed again forever.
+ */
+export const MAX_IDLE_LEASE_EXPIRIES = 5;
 
 // ── Agent actions ───────────────────────────────────────────────────────────
 
@@ -192,6 +199,8 @@ export interface SendRecord {
   leaseExpiresAt: number | null;
   /** How many claims ended by lease expiry with at least one accepted action (O2). */
   expiries: number;
+  /** How many claims ended by lease expiry with no accepted action (O2 cap). */
+  idleExpiries: number;
   /** Whether the current claim has had an accepted action; a lapse without one is not counted (O2). */
   acted: boolean;
   failedReason: SendFailedReason | null;
@@ -224,22 +233,27 @@ export type SendOutcome =
   | { kind: "observed" };
 
 export function newSendRecord(): SendRecord {
-  return { state: "requested", attempt: 0, leaseExpiresAt: null, expiries: 0, acted: false, failedReason: null, results: {} };
+  return { state: "requested", attempt: 0, leaseExpiresAt: null, expiries: 0, idleExpiries: 0, acted: false, failedReason: null, results: {} };
 }
 
 /**
  * A lapsed lease, settled: back to `requested`, or `failed` on the last allowed expiry.
  * Every event settles first, so no write is judged against a lease that has already ended.
- * A claim that lapses with no accepted action on it is not counted (O2): a stream that
- * dropped before its payload arrived did no work that could have failed.
+ * A claim that lapses with no accepted action on it is not counted toward the 3 (O2): a
+ * stream that dropped before its payload arrived did no work that could have failed. It
+ * counts toward a cap of its own instead, 5 (O2 cap), so such a send does not loop forever.
  */
 function settleExpiry(send: SendRecord, now: number): SendRecord {
   if (send.state !== "claimed" || send.leaseExpiresAt === null || send.leaseExpiresAt > now) return send;
   const expiries = send.expiries + (send.acted ? 1 : 0);
-  if (expiries >= MAX_LEASE_EXPIRIES) {
-    return { ...send, state: "failed", leaseExpiresAt: null, expiries, acted: false, failedReason: SEND_FAILED_REASON.leaseExpired };
+  const idleExpiries = send.idleExpiries + (send.acted ? 0 : 1);
+  if (expiries >= MAX_LEASE_EXPIRIES || idleExpiries >= MAX_IDLE_LEASE_EXPIRIES) {
+    return {
+      ...send, state: "failed", leaseExpiresAt: null, expiries, idleExpiries, acted: false,
+      failedReason: SEND_FAILED_REASON.leaseExpired,
+    };
   }
-  return { ...send, state: "requested", leaseExpiresAt: null, expiries, acted: false };
+  return { ...send, state: "requested", leaseExpiresAt: null, expiries, idleExpiries, acted: false };
 }
 
 /**

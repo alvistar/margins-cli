@@ -1,8 +1,11 @@
 import type { ResolvedConfig } from '../../lib/config.js'
-import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
 import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
 import { openAgentChannelStore, type AgentChannelStore } from '../../lib/agent-channel/store.js'
+import { agentClient, forgetAgentKey, mintAgentKey, readAgentKey } from '../../lib/agent-channel/agent-key.js'
+import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
+import { AuthExpired } from '../../lib/errors.js'
+import type { SendEventPayload } from '../../lib/agent-channel/protocol.js'
 
 /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
 export type DiscussWaitDeps = Pick<WaitForSendOptions, 'sleep' | 'random' | 'idleTimeoutMs'>
@@ -33,10 +36,47 @@ async function withStore(action: string, write: (store: AgentChannelStore) => vo
 }
 
 /**
+ * Linking turns the old `channel.mjs` channel off, so a comment without a send never
+ * reaches this session (D18 #10). A config it cannot read is left alone, with a warning.
+ */
+function turnChannelOff(): void {
+  try {
+    const removal = removeChannelServer(process.cwd())
+    if (removal) {
+      process.stderr.write(
+        `margins: linked: removed ${removal.removed.join(', ')} (channel.mjs) from ${removal.file}; ` +
+        'comments without a send no longer reach this session. Restart Claude Code if it is running with that channel.\n',
+      )
+    }
+  } catch (err) {
+    process.stderr.write(`margins: could not check the MCP config for the channel.mjs channel: ${(err as Error).message}\n`)
+  }
+}
+
+/**
+ * Hold the agent stream with the Workspace's agent key: the stored one, else one
+ * minted now through the login. A 401 to a stored key (revoked, or expired early) mints
+ * a new key once and waits again; a 401 to a key minted in this run is the end.
+ */
+async function waitWithAgentKey(cfg: ResolvedConfig, workspaceId: string, deps: DiscussWaitDeps): Promise<SendEventPayload> {
+  const stored = readAgentKey(cfg.serverUrl, workspaceId)
+  const key = stored ?? await mintAgentKey(cfg, workspaceId)
+  try {
+    return await waitForSend({ client: agentClient(cfg, key), workspaceId, ...deps })
+  } catch (err) {
+    if (!(err instanceof AuthExpired) || !stored) throw err
+    forgetAgentKey(cfg.serverUrl, workspaceId)
+    const fresh = await mintAgentKey(cfg, workspaceId)
+    return waitForSend({ client: agentClient(cfg, fresh), workspaceId, ...deps })
+  }
+}
+
+/**
  * `margins discuss wait --workspace <id>`: hold the agent stream, claim one send,
  * print its payload, return (exit 0). The harness that ran it in the background
  * wakes the session with the output. The local store records the link and which
- * session holds the send (machine state only, no secrets).
+ * session holds the send (machine state only, no secrets); the agent key lives in
+ * the credential store (`agent-key.ts`).
  */
 export async function handleDiscussWait(
   cfg: ResolvedConfig,
@@ -45,8 +85,9 @@ export async function handleDiscussWait(
 ): Promise<void> {
   const sessionId = localSessionId(opts.session)
   await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace))
+  turnChannelOff()
 
-  const payload = await waitForSend({ client: createApiClient(cfg), workspaceId: opts.workspace, ...deps })
+  const payload = await waitWithAgentKey(cfg, opts.workspace, deps)
 
   // Print first: the payload is what the session needs; the record is bookkeeping.
   console.log(cfg.json ? formatJson(payload) : payload.prompt)
