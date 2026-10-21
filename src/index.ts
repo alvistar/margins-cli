@@ -470,6 +470,17 @@ discussCmd
     await handleDiscussResolve(cfg, discussionId, opts)
   })
 
+discussCmd
+  .command('wait')
+  .description('Wait for one send to your agent: claim it, print its payload, exit')
+  .requiredOption('--workspace <id>', 'Workspace id (the reader\'s "Link a session" line prints it)')
+  .option('--session <id>', 'Local session id to record (default: the Claude Code session)')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleDiscussWait } = await import('./commands/discuss/wait.js')
+    await handleDiscussWait(cfg, opts)
+  })
+
 // ─── completions subcommand ───────────────────────────────────────────────────
 
 program
