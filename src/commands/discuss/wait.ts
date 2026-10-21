@@ -1,15 +1,11 @@
 import type { ResolvedConfig } from '../../lib/config.js'
-import { resolveBearer } from '../../lib/api-client.js'
+import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
-import { waitForSend } from '../../lib/agent-channel/wait.js'
-import { openAgentChannelStore } from '../../lib/agent-channel/store.js'
+import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
+import { openAgentChannelStore, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 
-export interface DiscussWaitDeps {
-  /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
-  sleep?: (ms: number) => Promise<void>
-  random?: () => number
-  idleTimeoutMs?: number
-}
+/** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
+export type DiscussWaitDeps = Pick<WaitForSendOptions, 'sleep' | 'random' | 'idleTimeoutMs'>
 
 /**
  * The local session this `wait` runs for: `--session`, else the Claude Code session
@@ -17,6 +13,23 @@ export interface DiscussWaitDeps {
  */
 function localSessionId(explicit: string | undefined): string {
   return explicit ?? process.env['CLAUDE_CODE_SESSION_ID'] ?? `ppid-${process.ppid}`
+}
+
+/**
+ * The local store is bookkeeping: a locked or unavailable store must never cost the
+ * session a send the server has already claimed for it. Each write warns and goes on.
+ */
+async function withStore(action: string, write: (store: AgentChannelStore) => void): Promise<void> {
+  let store: AgentChannelStore | undefined
+  try {
+    store = await openAgentChannelStore()
+    write(store)
+  } catch (err) {
+    const reason = (err as { userMessage?: string }).userMessage ?? (err as Error).message
+    process.stderr.write(`margins: local store: could not ${action}: ${reason}\n`)
+  } finally {
+    store?.close()
+  }
 }
 
 /**
@@ -31,32 +44,19 @@ export async function handleDiscussWait(
   deps: DiscussWaitDeps = {},
 ): Promise<void> {
   const sessionId = localSessionId(opts.session)
-  const store = await openAgentChannelStore()
-  try {
-    store.linkSession(sessionId, opts.workspace)
+  await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace))
 
-    const payload = await waitForSend({
-      serverUrl: cfg.serverUrl,
-      workspaceId: opts.workspace,
-      bearer: () => resolveBearer(cfg),
-      ...deps,
-    })
+  const payload = await waitForSend({ client: createApiClient(cfg), workspaceId: opts.workspace, ...deps })
 
-    store.holdSend({
-      sendId: payload.send.id,
-      attempt: payload.send.attempt,
-      workspaceId: payload.send.workspaceId,
-      discussionId: payload.send.discussionId,
-      sessionId,
-      leaseExpiresAt: payload.send.leaseExpiresAt,
-    })
+  // Print first: the payload is what the session needs; the record is bookkeeping.
+  console.log(cfg.json ? formatJson(payload) : payload.prompt)
 
-    if (cfg.json) {
-      console.log(formatJson(payload))
-      return
-    }
-    console.log(payload.prompt)
-  } finally {
-    store.close()
-  }
+  await withStore('record the held send', (store) => store.holdSend({
+    sendId: payload.send.id,
+    attempt: payload.send.attempt,
+    workspaceId: payload.send.workspaceId,
+    discussionId: payload.send.discussionId,
+    sessionId,
+    leaseExpiresAt: payload.send.leaseExpiresAt,
+  }))
 }

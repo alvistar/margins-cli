@@ -17,6 +17,7 @@ import { getConfigDir } from '../config.js'
 import { MarginsError } from '../errors.js'
 
 const STORE_BASENAME = 'agent-channel.sqlite'
+const BUSY_TIMEOUT_MS = 2_000
 
 export interface LinkedSession {
   sessionId: string
@@ -87,6 +88,8 @@ export async function openAgentChannelStore(dir: string = getConfigDir()): Promi
   }
   fs.mkdirSync(dir, { recursive: true })
   const db: DatabaseSync = new sqlite.DatabaseSync(path.join(dir, STORE_BASENAME))
+  // Another `wait` may be writing: wait briefly for its lock rather than fail at once.
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
   db.exec(SCHEMA)
 
   return {

@@ -40,6 +40,12 @@ export interface ApiClient {
   delete(path: string): Promise<unknown>
   /** Upload raw binary data (for CAS blob uploads). Returns parsed JSON response. */
   putRaw(path: string, data: Buffer, contentType: string, headers?: ExtraHeaders): Promise<unknown>
+  /**
+   * Open a long-lived `GET` for Server-Sent Events. No timeout, no status mapping
+   * (the caller reads the status; only a 401 throws AuthExpired, after the OIDC
+   * re-mint). A network failure rejects with the fetch error itself.
+   */
+  openStream(path: string, signal: AbortSignal): Promise<Response>
 }
 
 // ─── Token refresh ────────────────────────────────────────────────────────────
@@ -98,6 +104,12 @@ async function refreshAccessToken(cfg: ResolvedConfig): Promise<string> {
     accessTokenExpiresAt,
     ...(result.refresh_token ? { refreshToken: result.refresh_token } : {}),
   })
+  // And in this process's config: a long-lived client (`discuss wait` reconnects for
+  // hours) would otherwise refresh again on every request with a refresh token that
+  // Keycloak's rotation has already revoked.
+  cfg.apiKey = newAccessToken
+  cfg.accessTokenExpiresAt = accessTokenExpiresAt
+  if (result.refresh_token) cfg.refreshToken = result.refresh_token
 
   return newAccessToken
 }
@@ -106,7 +118,7 @@ async function refreshAccessToken(cfg: ResolvedConfig): Promise<string> {
  * Returns the current access token, refreshing it first if it's expired or close
  * to expiry. Falls back to the stored apiKey if no Keycloak session is present.
  */
-export async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
+async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
   // Only attempt refresh if we have both a refresh token AND an expiry timestamp.
   // If accessTokenExpiresAt is set but refreshToken is missing, fall through to
   // using the raw apiKey (or empty string) — don't crash.
@@ -455,7 +467,26 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
     return parseBody(response)
   }
 
+  async function openStream(path: string, signal: AbortSignal): Promise<Response> {
+    const url = buildUrl(path)
+    return sendWithOidcRemint(async () => {
+      const bearer = await resolveRequestBearer()
+      log(`GET ${url} (stream, key: ${maskKey(bearer)})`)
+      const sent = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${bearer}`,
+          Accept: 'text/event-stream',
+          'X-Margins-Client': CLIENT_HEADER,
+        },
+        signal,
+      })
+      log(`→ ${sent.status}`)
+      return sent
+    })
+  }
+
   return {
+    openStream,
     get: (path, query) => doFetch('GET', path, query),
     post: (path, body, headers) => doFetch('POST', path, undefined, body, headers),
     put: (path, body) => doFetch('PUT', path, undefined, body),

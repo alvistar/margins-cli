@@ -11,9 +11,9 @@
  * every 5 minutes, and a drop must not wake the session). Only a refusal that a retry
  * cannot change (401, 403, 404, another 4xx, an unknown protocol) ends it with an error.
  */
-import { CLI_VERSION } from '../version.js'
+import type { ApiClient } from '../api-client.js'
 import {
-  AuthExpired, ForbiddenError, NotFoundError, ResponseParseError, ServerError, ValidationError,
+  AuthExpired, ForbiddenError, MarginsError, NotFoundError, ResponseParseError, ServerError, ValidationError,
 } from '../errors.js'
 import {
   AGENT_CHANNEL_ERROR,
@@ -35,10 +35,9 @@ const RETRY_AFTER_JITTER_MS = 5_000
 const DEFAULT_IDLE_TIMEOUT_MS = 3 * AGENT_STREAM_HEARTBEAT_MS
 
 export interface WaitForSendOptions {
-  serverUrl: string
+  /** Its `openStream` resolves the bearer per connection (OIDC first, then the login, refreshed). */
+  client: Pick<ApiClient, 'openStream'>
   workspaceId: string
-  /** Resolved again for each connection, so a refreshed login is picked up. */
-  bearer: () => Promise<string>
   sleep?: (ms: number) => Promise<void>
   /** Jitter source in [0, 1). */
   random?: () => number
@@ -75,7 +74,6 @@ export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPa
 
 async function connectOnce(opts: WaitForSendOptions): Promise<Attempt> {
   const path = AGENT_CHANNEL_PATHS.stream(opts.workspaceId)
-  const url = `${opts.serverUrl.replace(/\/$/, '')}${path}`
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const controller = new AbortController()
   let idle: ReturnType<typeof setTimeout> | undefined
@@ -89,15 +87,11 @@ async function connectOnce(opts: WaitForSendOptions): Promise<Attempt> {
     armIdle()
     let response: Response
     try {
-      response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${await opts.bearer()}`,
-          Accept: 'text/event-stream',
-          'X-Margins-Client': `margins-cli/${CLI_VERSION}`,
-        },
-        signal: controller.signal,
-      })
-    } catch {
+      response = await opts.client.openStream(path, controller.signal)
+    } catch (err) {
+      // A login that cannot be refreshed (AuthExpired) or any other refusal of ours
+      // will not change on a retry; a network failure or the idle abort will.
+      if (err instanceof MarginsError) throw err
       return { kind: 'dropped', admitted }
     }
 
@@ -128,13 +122,16 @@ async function refusal(response: Response, path: string): Promise<Attempt> {
   const code = typeof body?.error === 'string' ? body.error : undefined
   const message = typeof body?.message === 'string' ? body.message : undefined
 
-  if (response.status === AGENT_CHANNEL_ERROR.agentShareFull.status || response.status === AGENT_CHANNEL_ERROR.serverFull.status) {
-    const floor = response.status === AGENT_CHANNEL_ERROR.agentShareFull.status
+  // Branch on the code, never on the status alone (PROTOCOL.md "Errors"): a proxy's own
+  // 503 during a restart is a drop, not a full server.
+  if (code === AGENT_CHANNEL_ERROR.agentShareFull.code || code === AGENT_CHANNEL_ERROR.serverFull.code) {
+    const floor = code === AGENT_CHANNEL_ERROR.agentShareFull.code
       ? AGENT_STREAM_RETRY_AFTER_S.agentShareFull
       : AGENT_STREAM_RETRY_AFTER_S.serverFull
     return { kind: 'retry-after', seconds: Math.max(floor, parseRetryAfter(response.headers.get('Retry-After'))) }
   }
   if (response.status === 401) throw new AuthExpired()
+  if (response.status === 429) return { kind: 'dropped', admitted: false }
   if (response.status === 403) throw new ForbiddenError(path, code, message)
   if (response.status === 404) throw new NotFoundError(path, code)
   if (response.status >= 400 && response.status < 500) throw new ServerError(response.status, code, message)

@@ -37,6 +37,9 @@ function recordingSleep(onSleep?: (ms: number, n: number) => Promise<void> | voi
   const delays: number[] = []
   const sleep = async (ms: number) => {
     delays.push(ms)
+    // Yield to the event loop, so a wait that loops forever still lets a test time out.
+    await new Promise((resolve) => setImmediate(resolve))
+    if (delays.length > 50) throw new Error('wait looped past 50 reconnects')
     await onSleep?.(ms, delays.length)
   }
   return { delays, sleep }
@@ -123,6 +126,24 @@ describe('discuss wait', () => {
     expect(delays[2]).toBeGreaterThan(delays[1]!)
     expect(delays[1]).toBeGreaterThan(delays[0]!)
     expect(s.requests).toHaveLength(2)
+    expect(logs.join('\n')).toContain('send snd_1, attempt 1')
+  })
+
+  it('keeps a stream open while heartbeats arrive inside the window', async () => {
+    server = await startFakeAgentServer({
+      workspaceId: WS,
+      script: [{ kind: 'hold', heartbeatMs: 20, endAfterMs: 400 }, { kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }],
+    })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+    const { delays, sleep } = recordingSleep()
+
+    // The idle window (100 ms) is far shorter than the stream (400 ms): only the heartbeats keep it.
+    await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, idleTimeoutMs: 100 })
+
+    expect(server.requests).toHaveLength(2)
+    // The first stream lasted until the server ended it, not one idle window.
+    expect(server.requests[1]!.at - server.requests[0]!.at).toBeGreaterThanOrEqual(350)
+    expect(delays).toHaveLength(1)
     expect(logs.join('\n')).toContain('send snd_1, attempt 1')
   })
 
@@ -221,5 +242,126 @@ describe('discuss wait: the local store', () => {
     } finally {
       store.close()
     }
+  })
+})
+
+describe('discuss wait: review fixes', () => {
+  it('authenticates the stream with MARGINS_OIDC_TOKEN, as every other request does', async () => {
+    vi.stubEnv('MARGINS_OIDC_TOKEN', 'oidc_synthetic_token')
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+
+    await handleDiscussWait({ ...cfg(server.url), apiKey: undefined }, { workspace: WS, session: 'sess-a' }, recordingSleep())
+
+    expect(server.requests[0]!.authorization).toBe('Bearer oidc_synthetic_token')
+  })
+
+  it('refreshes an expired login once, and reconnects with the rotated token', async () => {
+    const issuer = 'https://keycloak.example.com/realms/margins'
+    const tokenEndpoint = `${issuer}/protocol/openid-connect/token`
+    let validRefresh = 'refresh_1'
+    let refreshes = 0
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith(`${issuer}/.well-known/`)) {
+        return new Response(JSON.stringify({ issuer, token_endpoint: tokenEndpoint }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === tokenEndpoint) {
+        refreshes++
+        const sent = new URLSearchParams(String(init?.body)).get('refresh_token')
+        // Keycloak with refresh-token rotation: an old refresh token is revoked.
+        if (sent !== validRefresh) {
+          return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+        }
+        validRefresh = `refresh_${refreshes + 1}`
+        return new Response(JSON.stringify({ access_token: `access_${refreshes}`, expires_in: 300, token_type: 'Bearer', refresh_token: validRefresh }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return realFetch(input, init)
+    })
+    server = await startFakeAgentServer({
+      workspaceId: WS,
+      script: [{ kind: 'drop' }, { kind: 'drop' }, { kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }],
+    })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+
+    await handleDiscussWait({
+      ...cfg(server.url),
+      apiKey: 'access_0',
+      refreshToken: 'refresh_1',
+      accessTokenExpiresAt: Date.now() - 1000,
+      keycloakIssuer: issuer,
+      keycloakClientId: 'margins-cli',
+    }, { workspace: WS, session: 'sess-a' }, recordingSleep())
+
+    expect(refreshes).toBe(1)
+    expect(server.requests.map((r) => r.authorization)).toEqual(['Bearer access_1', 'Bearer access_1', 'Bearer access_1'])
+  })
+
+  it('ends with AuthExpired when the login cannot be refreshed, instead of reconnecting forever', async () => {
+    const issuer = 'https://keycloak.example.com/realms/margins'
+    const tokenEndpoint = `${issuer}/protocol/openid-connect/token`
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith(`${issuer}/.well-known/`)) {
+        return new Response(JSON.stringify({ issuer, token_endpoint: tokenEndpoint }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url === tokenEndpoint) {
+        return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      return realFetch(input, init)
+    })
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+    const { delays, sleep } = recordingSleep()
+
+    const err = await handleDiscussWait({
+      ...cfg(server.url),
+      apiKey: 'access_0',
+      refreshToken: 'refresh_revoked',
+      accessTokenExpiresAt: Date.now() - 1000,
+      keycloakIssuer: issuer,
+      keycloakClientId: 'margins-cli',
+    }, { workspace: WS, session: 'sess-a' }, { sleep }).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/auth login/)
+    expect(delays).toHaveLength(0)
+    expect(server.requests).toHaveLength(0)
+  })
+
+  it('prints the claimed send even when the local store is locked by another process', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const { openAgentChannelStore } = await import('../../src/lib/agent-channel/store.js')
+    ;(await openAgentChannelStore()).close()
+    const locker = new DatabaseSync(path.join(configDir, 'agent-channel.sqlite'))
+    locker.exec('BEGIN EXCLUSIVE')
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+      const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+
+      await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, recordingSleep())
+
+      expect(logs.join('\n')).toContain('send snd_1, attempt 1')
+      expect(errSpy.mock.calls.map((c) => String(c[0])).join('')).toMatch(/local store/)
+    } finally {
+      locker.exec('ROLLBACK')
+      locker.close()
+    }
+  })
+
+  it.each([429, 503])('a %i without the protocol code (a proxy) reconnects on the short backoff, not Retry-After', async (status) => {
+    server = await startFakeAgentServer({
+      workspaceId: WS,
+      script: [{ kind: 'status', status, code: '' }, { kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }],
+    })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+    const { delays, sleep } = recordingSleep()
+
+    await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, random: () => 0.5 })
+
+    expect(delays).toHaveLength(1)
+    expect(delays[0]).toBeLessThanOrEqual(1_000)
   })
 })
