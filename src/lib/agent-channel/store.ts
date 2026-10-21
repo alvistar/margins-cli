@@ -7,7 +7,8 @@
  * actions sent but not yet answered (PROTOCOL.md "Idempotency": the key and the
  * request, so a resend after a lost response is the same request). Never a
  * credential (the agent key lives in the credential store, `agent-key.ts`), never
- * the prompt or anything else a person wrote. It lives beside the global config
+ * the prompt or a comment; the only text it keeps is an outbox entry's own request
+ * body (the agent's reply or Proposal), until the server answers it. It lives beside the global config
  * (`agent-channel.sqlite` in `getConfigDir()`).
  *
  * `node:sqlite` is loaded on open, not at import, so a Node without it fails only
@@ -69,8 +70,12 @@ export interface AgentChannelStore {
   queueAction(entry: Omit<OutboxEntry, 'createdAt'>): void
   /** The action was answered: its entry goes. */
   settleAction(idempotencyKey: string): void
-  /** The send is closed or superseded: no entry of it can ever land. */
-  dropSend(sendId: string): void
+  /**
+   * No entry of the send can land any more: every entry when it is closed, or those of
+   * `throughAttempt` and older when that attempt was superseded (a newer attempt's
+   * entries still can).
+   */
+  dropSend(sendId: string, throughAttempt?: number): void
   outbox(): OutboxEntry[]
   close(): void
 }
@@ -79,7 +84,7 @@ export class SqliteUnavailableError extends MarginsError {
   constructor() {
     super(
       `node:sqlite unavailable in Node ${process.version}`,
-      `margins discuss wait needs Node 22.13+ (you have ${process.version}). Upgrade Node and retry.`,
+      `The agent channel (\`margins discuss wait\` and the actions on a send) needs Node 22.13+ (you have ${process.version}). Upgrade Node and retry.`,
       1,
     )
   }
@@ -197,8 +202,9 @@ export async function openAgentChannelStore(dir: string = getConfigDir()): Promi
     settleAction(idempotencyKey) {
       db.prepare('DELETE FROM outbox WHERE idempotency_key = ?').run(idempotencyKey)
     },
-    dropSend(sendId) {
-      db.prepare('DELETE FROM outbox WHERE send_id = ?').run(sendId)
+    dropSend(sendId, throughAttempt) {
+      if (throughAttempt === undefined) db.prepare('DELETE FROM outbox WHERE send_id = ?').run(sendId)
+      else db.prepare('DELETE FROM outbox WHERE send_id = ? AND attempt <= ?').run(sendId, throughAttempt)
     },
     outbox() {
       return db.prepare(`SELECT ${OUTBOX_COLUMNS} FROM outbox ORDER BY created_at, idempotency_key`).all().map(outboxRow)

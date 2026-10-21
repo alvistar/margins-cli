@@ -289,7 +289,40 @@ describe('discuss wait: linking turns the channel.mjs channel off', () => {
   const readMcp = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, unknown> }
 
   beforeEach(async () => {
+    // The project is a git repository: the link edits only a config inside one.
+    fs.mkdirSync(path.join(projectDir, '.git'))
     server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+  })
+
+  it('never edits a .mcp.json when the session is in no git repository', async () => {
+    fs.rmSync(path.join(projectDir, '.git'), { recursive: true })
+    writeMcp(projectDir, { margins_channel: channel, other })
+    const before = fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')
+
+    await waitFor()
+
+    expect(fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')).toBe(before)
+  })
+
+  it('keeps a server that runs some other channel.mjs', async () => {
+    const bridge = { type: 'stdio', command: 'node', args: ['./tools/channel.mjs'] }
+    writeMcp(projectDir, { bridge, margins_channel: channel })
+
+    await waitFor()
+
+    expect(readMcp(projectDir).mcpServers).toEqual({ bridge })
+  })
+
+  it('leaves the channel on when the link fails before the stream is admitted', async () => {
+    await server!.close()
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'status', status: 403, code: 'FORBIDDEN' }] })
+    writeMcp(projectDir, { margins_channel: channel, other })
+    const before = fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')
+
+    const err = await waitFor().catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(fs.readFileSync(path.join(projectDir, '.mcp.json'), 'utf8')).toBe(before)
   })
 
   it('removes the channel.mjs server from the project MCP config and keeps every other server', async () => {
@@ -335,5 +368,64 @@ describe('discuss wait: linking turns the channel.mjs channel off', () => {
     fs.rmSync(path.join(projectDir, '.mcp.json'))
     await waitFor()
     expect(fs.existsSync(path.join(projectDir, '.mcp.json'))).toBe(false)
+  })
+})
+
+describe('agent actions: review fixes', () => {
+  it('a superseded attempt drops only its own and older outbox entries, never a newer attempt\'s', async () => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS, attempt: 2 }) }] })
+    await waitFor('snd_1', 2)
+    const { openAgentChannelStore } = await import('../../src/lib/agent-channel/store.js')
+    const store = await openAgentChannelStore()
+    // Attempt 2's reply went out and its answer was lost: it waits in the outbox for a resend.
+    store.queueAction({ idempotencyKey: 'reply-attempt-2', sendId: 'snd_1', workspaceId: WS, action: 'reply', attempt: 2, body: '{"attempt":2,"text":"x"}' })
+    store.close()
+
+    const err = await act('reply', { body: 'Old claim.', attempt: '1' }).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/AGENT_SEND_ATTEMPT_SUPERSEDED/)
+    expect((await outbox()).map((e) => e.idempotencyKey)).toEqual(['reply-attempt-2'])
+  })
+
+  it('a send id goes into the request path as one segment: it can never reach another route', async () => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    await waitFor()
+
+    await act('reply', { body: 'x', send: '../../../../keys', workspace: WS }).catch(() => undefined)
+
+    const posts = server.requests.filter((r) => r.method === 'POST')
+    expect(posts.filter((r) => r.path === '/api/keys')).toHaveLength(1)
+    expect(posts.at(-1)!.path).toBe(`/api/workspaces/${WS}/agent-channel/sends/..%2F..%2F..%2F..%2Fkeys/reply`)
+  })
+
+  it('a success answer without the send, attempt and state is not taken: the action stays in the outbox', async () => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    await waitFor()
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/reply')) return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return realFetch(input, init)
+    })
+
+    const err = await act('reply', { body: 'x' }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(logs.join('\n')).not.toMatch(/accepted on send/)
+    expect(await outbox()).toHaveLength(1)
+  })
+
+  it('a key minted in this run and revoked during the wait is minted again once, and the wait goes on', async () => {
+    server = await startFakeAgentServer({
+      workspaceId: WS,
+      script: [{ kind: 'drop' }, { kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }],
+    })
+    const s = server
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+    const sleep = async () => { s.revoke(s.minted[0]!.key); await new Promise((r) => setImmediate(r)) }
+
+    await handleDiscussWait(cfg(s.url), { workspace: WS, session: 'sess-a' }, { sleep })
+
+    expect(s.minted).toHaveLength(2)
+    expect(logs.join('\n')).toContain('send snd_1, attempt 1')
   })
 })

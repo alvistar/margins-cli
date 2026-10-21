@@ -116,20 +116,20 @@ function agentClient(cfg: ResolvedConfig, key: StoredAgentKey): ApiClient {
 
 /**
  * Run `use` with a client that sends the Workspace's agent key: the stored one, else
- * one minted now through the login. A 401 to a stored key (revoked, or expired early)
- * mints a new key once and runs `use` again; a 401 to a key minted in this run is the end.
+ * one minted now through the login. A 401 to the key (revoked, or expired early; a
+ * `wait` can hold one for hours) mints a new key once and runs `use` again; a second
+ * 401 is the end.
  */
 export async function withAgentKey<T>(
   cfg: ResolvedConfig,
   workspaceId: string,
   use: (client: ApiClient) => Promise<T>,
 ): Promise<T> {
-  const stored = readAgentKey(cfg.serverUrl, workspaceId)
-  const key = stored ?? await mintAgentKey(cfg, workspaceId)
+  const key = readAgentKey(cfg.serverUrl, workspaceId) ?? await mintAgentKey(cfg, workspaceId)
   try {
     return await use(agentClient(cfg, key))
   } catch (err) {
-    if (!(err instanceof AuthExpired) || !stored) throw err
+    if (!(err instanceof AuthExpired)) throw err
     forgetAgentKey(cfg.serverUrl, workspaceId)
     return use(agentClient(cfg, await mintAgentKey(cfg, workspaceId)))
   }

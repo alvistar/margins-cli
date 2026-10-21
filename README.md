@@ -511,9 +511,11 @@ margins discuss create my-repo \
 | `--anchor-heading <heading>` | no | Anchor the discussion to a heading |
 | `--anchor-text <text>` | no | Anchor the discussion to a text selection |
 
-#### `discuss reply <discussion-id>`
+#### `discuss reply [discussion-id]`
 
-Post a reply to an existing discussion.
+Post a reply to an existing discussion. With `--send <id> --attempt <n>` instead of a
+discussion id, a linked session replies in the thread of the send `discuss wait` claimed
+(see [Answering a send](#answering-a-send)).
 
 ```sh
 margins discuss reply d_abc123 --body "Fixed in the latest commit."
@@ -525,9 +527,10 @@ margins discuss reply d_abc123 --body "Agreed." --workspace my-repo
 | `--body <body>` | yes | Reply body text |
 | `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`) |
 
-#### `discuss resolve <discussion-id>`
+#### `discuss resolve [discussion-id]`
 
-Mark a discussion as resolved.
+Mark a discussion as resolved. With `--send <id> --attempt <n>` instead of a discussion
+id, a linked session resolves the sent thread, which answers the send.
 
 ```sh
 margins discuss resolve d_abc123
@@ -564,6 +567,37 @@ credential and no comment text. Needs Node 22.13+.
 |---|---|---|
 | `--workspace <id>` | yes | Workspace id |
 | `--session <id>` | no | Local session id to record (default: the Claude Code session) |
+
+#### Answering a send
+
+The payload `discuss wait` prints names the send id and attempt, and the commands with
+both filled in. Each action sends the attempt, an `Idempotency-Key` and the Workspace's
+agent key (minted by the first `wait` through your `margins auth login`, kept owner-only
+in `agent-keys.json` beside the global config). An action whose answer is lost stays in
+the local outbox: run the same command again and it resends under the same key, so the
+server never writes it twice. A send that is closed, or held by a newer attempt, answers
+`AGENT_SEND_CLOSED` or `AGENT_SEND_ATTEMPT_SUPERSEDED`: stop acting on it.
+
+```sh
+margins discuss reply --send snd_abc --attempt 1 --body "Ten minutes covers one tool call."
+margins discuss progress --send snd_abc --attempt 1 --text "reading GLOSSARY.md"
+margins discuss propose --send snd_abc --attempt 1 \
+  --anchor-text "is 10 minutes" --anchor-prefix "The lease " --anchor-suffix "." \
+  --replacement "is 15 minutes" --body "Covers slow tools."
+margins discuss done --send snd_abc --attempt 1 --note "Answered in the thread."
+margins discuss resolve --send snd_abc --attempt 1 --summary "Settled: 10 minutes."
+```
+
+| Command | Flags |
+|---|---|
+| `reply --send` | `--body <text>` (required) |
+| `progress` | `--text <line>` (required); renews the claim |
+| `propose` | `--anchor-text`, `--anchor-prefix`, `--anchor-suffix` (the exact passage and the words just before and after it), `--replacement <text>` (empty deletes the passage), all required; `--anchor-heading`, `--body <rationale>` |
+| `done` | `--note <text>`; answers the send without resolving the thread |
+| `resolve --send` | `--summary <text>`; resolves the thread, which answers the send |
+
+Every action takes `--send <id>` and `--attempt <n>` (required) and `--workspace <id>`
+(default: the Workspace `discuss wait` recorded for the send). Needs Node 22.13+.
 
 ---
 

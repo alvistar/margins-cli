@@ -1,7 +1,7 @@
 import type { ResolvedConfig } from '../../lib/config.js'
 import { formatJson } from '../../lib/output.js'
 import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
-import { openAgentChannelStore, type AgentChannelStore } from '../../lib/agent-channel/store.js'
+import { openAgentChannelStore, SqliteUnavailableError, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
 import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
 
@@ -17,15 +17,22 @@ function localSessionId(explicit: string | undefined): string {
 }
 
 /**
- * The local store is bookkeeping: a locked or unavailable store must never cost the
- * session a send the server has already claimed for it. Each write warns and goes on.
+ * The local store is bookkeeping: a locked store must never cost the session a send the
+ * server has already claimed for it, so each write warns and goes on. A Node without
+ * `node:sqlite` is different: no action could answer a send it claims (the outbox needs
+ * the store), so the first write, before the stream, stops the wait instead.
  */
-async function withStore(action: string, write: (store: AgentChannelStore) => void): Promise<void> {
+async function withStore(
+  action: string,
+  write: (store: AgentChannelStore) => void,
+  { requireSqlite = false }: { requireSqlite?: boolean } = {},
+): Promise<void> {
   let store: AgentChannelStore | undefined
   try {
     store = await openAgentChannelStore()
     write(store)
   } catch (err) {
+    if (requireSqlite && err instanceof SqliteUnavailableError) throw err
     const reason = (err as { userMessage?: string }).userMessage ?? (err as Error).message
     process.stderr.write(`margins: local store: could not ${action}: ${reason}\n`)
   } finally {
@@ -35,7 +42,9 @@ async function withStore(action: string, write: (store: AgentChannelStore) => vo
 
 /**
  * Linking turns the old `channel.mjs` channel off, so a comment without a send never
- * reaches this session (D18 #10). A config it cannot read is left alone, with a warning.
+ * reaches this session (D18 #10). It runs once the stream is admitted, so a link that
+ * fails (no key, wrong Workspace) leaves the old channel on. A config it cannot read is
+ * left alone, with a warning.
  */
 function turnChannelOff(): void {
   try {
@@ -64,12 +73,11 @@ export async function handleDiscussWait(
   deps: DiscussWaitDeps = {},
 ): Promise<void> {
   const sessionId = localSessionId(opts.session)
-  await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace))
-  turnChannelOff()
+  await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace), { requireSqlite: true })
 
   // The stream sends the agent key, minted on the first wait in this Workspace.
   const payload = await withAgentKey(cfg, opts.workspace, (client) =>
-    waitForSend({ client, workspaceId: opts.workspace, ...deps }))
+    waitForSend({ client, workspaceId: opts.workspace, ...deps, onAdmitted: turnChannelOff }))
 
   // Print first: the payload is what the session needs; the record is bookkeeping.
   console.log(cfg.json ? formatJson(payload) : payload.prompt)

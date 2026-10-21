@@ -16,7 +16,8 @@ import { randomUUID } from 'node:crypto'
 import type { ResolvedConfig } from '../config.js'
 import type { ApiClient } from '../api-client.js'
 import {
-  AuthExpired, ConflictError, MarginsError, NetworkError, NotFoundError, ServerError, TimeoutError, ValidationError,
+  AuthExpired, ConflictError, MarginsError, NetworkError, NotFoundError, ResponseParseError, ServerError, TimeoutError,
+  ValidationError,
 } from '../errors.js'
 import { withAgentKey } from './agent-key.js'
 import {
@@ -74,6 +75,7 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 /** A failure after which the request may have landed or not: resend it with the same key. */
 function isLostResponse(err: unknown): err is MarginsError {
   return err instanceof NetworkError
+    || err instanceof ResponseParseError
     || err instanceof TimeoutError
     || (err instanceof ServerError && err.status >= 500)
 }
@@ -81,6 +83,18 @@ function isLostResponse(err: unknown): err is MarginsError {
 function refusalCode(err: unknown): string | undefined {
   if (err instanceof ConflictError || err instanceof NotFoundError || err instanceof ServerError) return err.code
   return undefined
+}
+
+/**
+ * A success answer that does not name the send, attempt and state proves nothing: it
+ * fails as unreadable, a lost response, and the request stays in the outbox.
+ */
+function parseAnswer(raw: unknown): ActionResponseBody {
+  const a = raw as Partial<ActionResponseBody> | null
+  if (!a || typeof a.sendId !== 'string' || !Number.isSafeInteger(a.attempt) || typeof a.state !== 'string') {
+    throw new ResponseParseError()
+  }
+  return a as ActionResponseBody
 }
 
 /** The outbox is the protocol's idempotency: an unusable store fails the action. */
@@ -125,11 +139,12 @@ export async function sendAgentAction(
     return fresh
   })
 
-  const path = AGENT_CHANNEL_PATHS.action(entry.workspaceId, req.sendId, req.action)
+  // Each id is one path segment: a `/` or `..` in it must never reach another route.
+  const path = AGENT_CHANNEL_PATHS.action(encodeURIComponent(entry.workspaceId), encodeURIComponent(req.sendId), req.action)
   const post = async (client: ApiClient): Promise<ActionResponseBody> => {
     for (let sends = 1; ; sends++) {
       try {
-        return await client.post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }) as ActionResponseBody
+        return parseAnswer(await client.post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }))
       } catch (err) {
         if (!isLostResponse(err) || sends >= MAX_SENDS) throw err
         await sleep(RESEND_BASE_MS * 2 ** (sends - 1))
@@ -147,8 +162,13 @@ export async function sendAgentAction(
     // request may yet land, so it stays in the outbox for the same command to resend.
     if (isLostResponse(err) || err instanceof AuthExpired) throw new ActionLeftInOutboxError(req.action, req.sendId, err)
     const code = refusalCode(err)
-    if (code === AGENT_CHANNEL_ERROR.attemptSuperseded.code || code === AGENT_CHANNEL_ERROR.sendClosed.code) {
+    if (code === AGENT_CHANNEL_ERROR.sendClosed.code) {
       await inOutbox((store) => store.dropSend(req.sendId))
+      throw new SendNoLongerHeldError(req.sendId, code)
+    }
+    if (code === AGENT_CHANNEL_ERROR.attemptSuperseded.code) {
+      // A newer attempt (another session's) may have entries of its own waiting to resend.
+      await inOutbox((store) => store.dropSend(req.sendId, req.attempt))
       throw new SendNoLongerHeldError(req.sendId, code)
     }
     // Any other refusal changed nothing (only accepted actions are stored), and the

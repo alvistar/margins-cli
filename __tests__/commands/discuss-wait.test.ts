@@ -172,7 +172,9 @@ describe('discuss wait', () => {
 
     expect(err).toBeInstanceOf(Error)
     expect((err as { userMessage?: string }).userMessage).toMatch(message)
-    expect(server.streamRequests).toHaveLength(1)
+    // A 401 mints the agent key again once (it may have been revoked mid-wait), then ends.
+    expect(server.streamRequests).toHaveLength(status === 401 ? 2 : 1)
+    expect(server.minted).toHaveLength(status === 401 ? 2 : 1)
     expect(delays).toHaveLength(0)
   })
 
@@ -366,5 +368,28 @@ describe('discuss wait: review fixes', () => {
 
     expect(delays).toHaveLength(1)
     expect(delays[0]).toBeLessThanOrEqual(1_000)
+  })
+})
+
+describe('discuss wait without node:sqlite', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/lib/agent-channel/store.js')
+    vi.resetModules()
+  })
+
+  it('stops before the stream, so it never claims a send no action could answer', async () => {
+    vi.resetModules()
+    vi.doMock('../../src/lib/agent-channel/store.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/lib/agent-channel/store.js')>()
+      return { ...actual, openAgentChannelStore: async () => { throw new actual.SqliteUnavailableError() } }
+    })
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+
+    const err = await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, recordingSleep()).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/Node 22\.13/)
+    expect(server.streamRequests).toHaveLength(0)
   })
 })
