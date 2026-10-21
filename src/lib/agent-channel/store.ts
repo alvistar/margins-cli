@@ -72,10 +72,10 @@ export interface AgentChannelStore {
   settleAction(idempotencyKey: string): void
   /**
    * No entry of the send can land any more: every entry when it is closed, or those of
-   * `throughAttempt` and older when that attempt was superseded (a newer attempt's
-   * entries still can).
+   * `attempt` alone when that attempt was refused as superseded (the attempt that holds
+   * the send may still have entries to resend).
    */
-  dropSend(sendId: string, throughAttempt?: number): void
+  dropSend(sendId: string, attempt?: number): void
   outbox(): OutboxEntry[]
   close(): void
 }
@@ -202,9 +202,9 @@ export async function openAgentChannelStore(dir: string = getConfigDir()): Promi
     settleAction(idempotencyKey) {
       db.prepare('DELETE FROM outbox WHERE idempotency_key = ?').run(idempotencyKey)
     },
-    dropSend(sendId, throughAttempt) {
-      if (throughAttempt === undefined) db.prepare('DELETE FROM outbox WHERE send_id = ?').run(sendId)
-      else db.prepare('DELETE FROM outbox WHERE send_id = ? AND attempt <= ?').run(sendId, throughAttempt)
+    dropSend(sendId, attempt) {
+      if (attempt === undefined) db.prepare('DELETE FROM outbox WHERE send_id = ?').run(sendId)
+      else db.prepare('DELETE FROM outbox WHERE send_id = ? AND attempt = ?').run(sendId, attempt)
     },
     outbox() {
       return db.prepare(`SELECT ${OUTBOX_COLUMNS} FROM outbox ORDER BY created_at, idempotency_key`).all().map(outboxRow)

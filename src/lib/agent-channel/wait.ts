@@ -42,7 +42,7 @@ export interface WaitForSendOptions {
   /** Jitter source in [0, 1). */
   random?: () => number
   idleTimeoutMs?: number
-  /** Called once, when a stream first passes admission (its first event arrives). */
+  /** Called once, when a stream first passes admission: a heartbeat, or a send it can read. */
   onAdmitted?: () => void
 }
 
@@ -62,8 +62,9 @@ export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPa
 
   for (;;) {
     const attempt = await connectOnce(opts, () => {
-      onAdmitted?.()
+      const admittedNow = onAdmitted
       onAdmitted = undefined
+      admittedNow?.()
     })
     if (attempt.kind === 'send') return attempt.payload
     if (attempt.kind === 'retry-after') {
@@ -79,7 +80,7 @@ export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPa
 }
 
 async function connectOnce(opts: WaitForSendOptions, admit: () => void): Promise<Attempt> {
-  const path = AGENT_CHANNEL_PATHS.stream(encodeURIComponent(opts.workspaceId))
+  const path = AGENT_CHANNEL_PATHS.stream(opts.workspaceId)
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const controller = new AbortController()
   let idle: ReturnType<typeof setTimeout> | undefined
@@ -106,11 +107,13 @@ async function connectOnce(opts: WaitForSendOptions, admit: () => void): Promise
     try {
       for await (const event of readSseEvents(response.body)) {
         armIdle()
-        admit()
         if (event.event === AGENT_STREAM_EVENT.heartbeat) {
           admitted = true
+          admit()
         } else if (event.event === AGENT_STREAM_EVENT.send) {
-          return { kind: 'send', payload: parseSendEvent(event.data) }
+          const payload = parseSendEvent(event.data)
+          admit()
+          return { kind: 'send', payload }
         }
         // Any other event name is ignored (PROTOCOL.md).
       }

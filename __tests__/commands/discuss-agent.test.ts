@@ -37,6 +37,7 @@ afterEach(async () => {
   server = undefined
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   fs.rmSync(configDir, { recursive: true, force: true })
   fs.rmSync(projectDir, { recursive: true, force: true })
 })
@@ -387,15 +388,14 @@ describe('agent actions: review fixes', () => {
     expect((await outbox()).map((e) => e.idempotencyKey)).toEqual(['reply-attempt-2'])
   })
 
-  it('a send id goes into the request path as one segment: it can never reach another route', async () => {
+  it('a send id with a path in it never reaches another route', async () => {
     server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
     await waitFor()
 
     await act('reply', { body: 'x', send: '../../../../keys', workspace: WS }).catch(() => undefined)
 
     const posts = server.requests.filter((r) => r.method === 'POST')
-    expect(posts.filter((r) => r.path === '/api/keys')).toHaveLength(1)
-    expect(posts.at(-1)!.path).toBe(`/api/workspaces/${WS}/agent-channel/sends/..%2F..%2F..%2F..%2Fkeys/reply`)
+    expect(posts.map((r) => r.path)).toEqual(['/api/keys'])
   })
 
   it('a success answer without the send, attempt and state is not taken: the action stays in the outbox', async () => {
@@ -427,5 +427,40 @@ describe('agent actions: review fixes', () => {
 
     expect(s.minted).toHaveLength(2)
     expect(logs.join('\n')).toContain('send snd_1, attempt 1')
+  })
+})
+
+describe('agent actions and wait: fix-diff review', () => {
+  it('a wrong, higher --attempt drops no entry of the attempt that holds the send', async () => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    await waitFor()
+    server.loseResponses(100)
+    await act('progress', { text: 'thinking' }).catch(() => undefined)
+    server.loseResponses(0)
+
+    const err = await act('reply', { body: 'x', attempt: '99' }).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/AGENT_SEND_ATTEMPT_SUPERSEDED/)
+    expect((await outbox()).map((e) => [e.action, e.attempt])).toEqual([['progress', 1]])
+  })
+
+  it.each(['..', '.', 'snd 1', 'a/b'])('refuses the send id %j before anything is sent', async (send) => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    await waitFor()
+
+    const err = await act('reply', { body: 'x', send, workspace: WS }).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/--send/)
+    expect(server.requests.filter((r) => r.path.endsWith('/reply'))).toEqual([])
+  })
+
+  it('wait refuses a Workspace id that is not a plain id before anything is sent', async () => {
+    server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
+    const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
+
+    const err = await handleDiscussWait(cfg(server.url), { workspace: '..', session: 'sess-a' }, noSleep).catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/--workspace/)
+    expect(server.requests).toEqual([])
   })
 })

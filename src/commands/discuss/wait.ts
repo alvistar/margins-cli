@@ -4,6 +4,7 @@ import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wa
 import { openAgentChannelStore, SqliteUnavailableError, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
 import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
+import { assertPlainId } from '../../lib/agent-channel/actions.js'
 
 /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
 export type DiscussWaitDeps = Pick<WaitForSendOptions, 'sleep' | 'random' | 'idleTimeoutMs'>
@@ -72,6 +73,7 @@ export async function handleDiscussWait(
   opts: { workspace: string; session?: string },
   deps: DiscussWaitDeps = {},
 ): Promise<void> {
+  assertPlainId(opts.workspace, '--workspace')
   const sessionId = localSessionId(opts.session)
   await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace), { requireSqlite: true })
 

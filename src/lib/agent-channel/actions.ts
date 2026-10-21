@@ -86,15 +86,25 @@ function refusalCode(err: unknown): string | undefined {
 }
 
 /**
- * A success answer that does not name the send, attempt and state proves nothing: it
- * fails as unreadable, a lost response, and the request stays in the outbox.
+ * A success answer that does not name this send and attempt, and a state, proves
+ * nothing: it fails as unreadable, a lost response, and the request stays in the outbox.
  */
-function parseAnswer(raw: unknown): ActionResponseBody {
+function parseAnswer(raw: unknown, req: AgentActionRequest): ActionResponseBody {
   const a = raw as Partial<ActionResponseBody> | null
-  if (!a || typeof a.sendId !== 'string' || !Number.isSafeInteger(a.attempt) || typeof a.state !== 'string') {
+  if (!a || a.sendId !== req.sendId || a.attempt !== req.attempt || typeof a.state !== 'string') {
     throw new ResponseParseError()
   }
   return a as ActionResponseBody
+}
+
+/** The ids the server issues (PROTOCOL.md: a plain id). Anything else could leave its path segment. */
+const PLAIN_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/** Refuse an id from a flag that is not a plain id, before it reaches a request path. */
+export function assertPlainId(value: string, flag: string): void {
+  if (!PLAIN_ID.test(value)) {
+    throw new ValidationError(`${flag} must be a plain id (letters, digits, \`_\`, \`-\`; got "${value}").`)
+  }
 }
 
 /** The outbox is the protocol's idempotency: an unusable store fails the action. */
@@ -113,6 +123,8 @@ export async function sendAgentAction(
   deps: AgentActionDeps = {},
 ): Promise<ActionResponseBody> {
   const sleep = deps.sleep ?? defaultSleep
+  assertPlainId(req.sendId, '--send')
+  if (req.workspaceId !== undefined) assertPlainId(req.workspaceId, '--workspace')
   const requestBody: ActionRequestBody = { attempt: req.attempt, ...req.body }
   const bodyJson = JSON.stringify(requestBody)
 
@@ -139,12 +151,11 @@ export async function sendAgentAction(
     return fresh
   })
 
-  // Each id is one path segment: a `/` or `..` in it must never reach another route.
-  const path = AGENT_CHANNEL_PATHS.action(encodeURIComponent(entry.workspaceId), encodeURIComponent(req.sendId), req.action)
+  const path = AGENT_CHANNEL_PATHS.action(entry.workspaceId, req.sendId, req.action)
   const post = async (client: ApiClient): Promise<ActionResponseBody> => {
     for (let sends = 1; ; sends++) {
       try {
-        return parseAnswer(await client.post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }))
+        return parseAnswer(await client.post(path, requestBody, { [IDEMPOTENCY_KEY_HEADER]: entry.idempotencyKey }), req)
       } catch (err) {
         if (!isLostResponse(err) || sends >= MAX_SENDS) throw err
         await sleep(RESEND_BASE_MS * 2 ** (sends - 1))
@@ -167,7 +178,8 @@ export async function sendAgentAction(
       throw new SendNoLongerHeldError(req.sendId, code)
     }
     if (code === AGENT_CHANNEL_ERROR.attemptSuperseded.code) {
-      // A newer attempt (another session's) may have entries of its own waiting to resend.
+      // Only this attempt's entries are dead: the attempt that holds the send (another
+      // session's, or this one under a mistyped --attempt) may have entries to resend.
       await inOutbox((store) => store.dropSend(req.sendId, req.attempt))
       throw new SendNoLongerHeldError(req.sendId, code)
     }
