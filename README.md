@@ -540,6 +540,31 @@ margins discuss resolve d_abc123 --workspace my-repo
 | `--summary <summary>` | no | Short description of how the issue was resolved |
 | `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`) |
 
+#### `discuss wait --workspace <id>`
+
+Wait for one send to your agent. A writer sends a thread to their agent from the
+reader; a Claude Code session runs this command in the background. It holds the
+agent stream, claims the first send of your account in the Workspace, prints its
+payload (send id, attempt, thread, file, quoted passage, and the commands with the
+ids filled in), and exits 0. The session wakes with the payload and runs `wait`
+again when it has finished.
+
+```sh
+margins discuss wait --workspace ws_abc123          # the reader's "Link a session" line prints it
+margins discuss wait --workspace ws_abc123 --json   # the raw send event
+```
+
+A dropped connection, a server restart or a full server (`Retry-After`) never ends
+the wait: it reconnects in the same process with jittered backoff. A local SQLite
+store (`agent-channel.sqlite` beside the global config) records which local session
+linked to which Workspace and which session holds which send. It holds no
+credential and no comment text. Needs Node 22.13+.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--workspace <id>` | yes | Workspace id |
+| `--session <id>` | no | Local session id to record (default: the Claude Code session) |
+
 ---
 
 ### `stop`

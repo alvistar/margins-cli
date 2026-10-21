@@ -106,7 +106,7 @@ async function refreshAccessToken(cfg: ResolvedConfig): Promise<string> {
  * Returns the current access token, refreshing it first if it's expired or close
  * to expiry. Falls back to the stored apiKey if no Keycloak session is present.
  */
-async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
+export async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
   // Only attempt refresh if we have both a refresh token AND an expiry timestamp.
   // If accessTokenExpiresAt is set but refreshToken is missing, fall through to
   // using the raw apiKey (or empty string) — don't crash.

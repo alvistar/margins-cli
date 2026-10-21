@@ -47,7 +47,7 @@ src/
   commands/
     auth/               # login (Keycloak OAuth PKCE), logout, whoami
     config/             # set-key, set-url, show
-    discuss/            # list, create, reply, resolve
+    discuss/            # list, create, reply, resolve, wait (agent stream: claim one send)
     workspace/          # list, create, open, sync, push (push = CAS sync)
     install.ts          # Credentialless onboarding: workspace + OIDC binding + workflow PR
     audit.ts            # Sync-coverage report (missing/stale/drift/over-cap; --org, --csv)
@@ -58,6 +58,7 @@ src/
   completions/
     dynamic.js          # Runtime completions (workspace slugs, discussion IDs)
   lib/
+    agent-channel/      # protocol.ts (verbatim copy of the server's), SSE reader, `wait` reconnect loop, SQLite store (no secrets)
     api-client.ts       # HTTP client; bearer resolver prefers OIDC over API key
     auth-env.ts         # hasOidcAuth() — OIDC token / mintable-env detection for the auth gate
     cas-sync.ts         # Content-addressable push protocol (manifest diff + blob upload)
