@@ -53,10 +53,10 @@ describe('discuss wait', () => {
 
     await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, recordingSleep())
 
-    expect(server.requests).toHaveLength(1)
-    expect(server.requests[0]!.path).toBe(`/api/workspaces/${WS}/agent-channel/stream`)
-    expect(server.requests[0]!.authorization).toBe(`Bearer ${KEY}`)
-    expect(server.requests[0]!.accept).toBe('text/event-stream')
+    expect(server.streamRequests).toHaveLength(1)
+    expect(server.streamRequests[0]!.path).toBe(`/api/workspaces/${WS}/agent-channel/stream`)
+    expect(server.streamRequests[0]!.authorization).toBe(`Bearer ${server.minted[0]!.key}`)
+    expect(server.streamRequests[0]!.accept).toBe('text/event-stream')
     const out = logs.join('\n')
     expect(out).toContain('send snd_42, attempt 2')
     expect(out).toContain('margins discuss reply --send snd_42 --attempt 2')
@@ -81,7 +81,7 @@ describe('discuss wait', () => {
 
     await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, random: () => 0.5 })
 
-    expect(server.requests).toHaveLength(3)
+    expect(server.streamRequests).toHaveLength(3)
     expect(delays).toHaveLength(2)
     expect(delays[0]).toBeGreaterThan(60_000)
     expect(delays[1]).toBeGreaterThan(30_000)
@@ -99,7 +99,7 @@ describe('discuss wait', () => {
 
     await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, random: () => 0.5 })
 
-    expect(server.requests).toHaveLength(4)
+    expect(server.streamRequests).toHaveLength(4)
     expect(delays).toHaveLength(3)
     // Each drop came after admission, so the backoff starts over: jittered, below the base.
     for (const d of delays) expect(d).toBeGreaterThan(0)
@@ -117,7 +117,7 @@ describe('discuss wait', () => {
     })
 
     const waiting = handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, random: () => 0.5 })
-    await vi.waitFor(() => expect(s.requests).toHaveLength(1))
+    await vi.waitFor(() => expect(s.streamRequests).toHaveLength(1))
     await s.stop()
     await waiting
 
@@ -125,7 +125,7 @@ describe('discuss wait', () => {
     expect(delays).toHaveLength(3)
     expect(delays[2]).toBeGreaterThan(delays[1]!)
     expect(delays[1]).toBeGreaterThan(delays[0]!)
-    expect(s.requests).toHaveLength(2)
+    expect(s.streamRequests).toHaveLength(2)
     expect(logs.join('\n')).toContain('send snd_1, attempt 1')
   })
 
@@ -140,9 +140,9 @@ describe('discuss wait', () => {
     // The idle window (100 ms) is far shorter than the stream (400 ms): only the heartbeats keep it.
     await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, idleTimeoutMs: 100 })
 
-    expect(server.requests).toHaveLength(2)
+    expect(server.streamRequests).toHaveLength(2)
     // The first stream lasted until the server ended it, not one idle window.
-    expect(server.requests[1]!.at - server.requests[0]!.at).toBeGreaterThanOrEqual(350)
+    expect(server.streamRequests[1]!.at - server.streamRequests[0]!.at).toBeGreaterThanOrEqual(350)
     expect(delays).toHaveLength(1)
     expect(logs.join('\n')).toContain('send snd_1, attempt 1')
   })
@@ -155,7 +155,7 @@ describe('discuss wait', () => {
 
     await handleDiscussWait(cfg(server.url), { workspace: WS, session: 'sess-a' }, { sleep, random: () => 0.5, idleTimeoutMs: 100 })
 
-    expect(server.requests).toHaveLength(2)
+    expect(server.streamRequests).toHaveLength(2)
     expect(delays).toHaveLength(1)
   })
 
@@ -172,7 +172,7 @@ describe('discuss wait', () => {
 
     expect(err).toBeInstanceOf(Error)
     expect((err as { userMessage?: string }).userMessage).toMatch(message)
-    expect(server.requests).toHaveLength(1)
+    expect(server.streamRequests).toHaveLength(1)
     expect(delays).toHaveLength(0)
   })
 
@@ -246,17 +246,18 @@ describe('discuss wait: the local store', () => {
 })
 
 describe('discuss wait: review fixes', () => {
-  it('authenticates the stream with MARGINS_OIDC_TOKEN, as every other request does', async () => {
+  it('mints the agent key with MARGINS_OIDC_TOKEN as the login, and streams with the key only', async () => {
     vi.stubEnv('MARGINS_OIDC_TOKEN', 'oidc_synthetic_token')
     server = await startFakeAgentServer({ workspaceId: WS, script: [{ kind: 'deliver', payload: sendPayload({ workspaceId: WS }) }] })
     const { handleDiscussWait } = await import('../../src/commands/discuss/wait.js')
 
     await handleDiscussWait({ ...cfg(server.url), apiKey: undefined }, { workspace: WS, session: 'sess-a' }, recordingSleep())
 
-    expect(server.requests[0]!.authorization).toBe('Bearer oidc_synthetic_token')
+    expect(server.requests.find((r) => r.path === '/api/keys')!.authorization).toBe('Bearer oidc_synthetic_token')
+    expect(server.streamRequests.map((r) => r.authorization)).toEqual([`Bearer ${server.minted[0]!.key}`])
   })
 
-  it('refreshes an expired login once, and reconnects with the rotated token', async () => {
+  it('refreshes an expired login once to mint the agent key, and reconnects with the key', async () => {
     const issuer = 'https://keycloak.example.com/realms/margins'
     const tokenEndpoint = `${issuer}/protocol/openid-connect/token`
     let validRefresh = 'refresh_1'
@@ -295,7 +296,9 @@ describe('discuss wait: review fixes', () => {
     }, { workspace: WS, session: 'sess-a' }, recordingSleep())
 
     expect(refreshes).toBe(1)
-    expect(server.requests.map((r) => r.authorization)).toEqual(['Bearer access_1', 'Bearer access_1', 'Bearer access_1'])
+    expect(server.requests.find((r) => r.path === '/api/keys')!.authorization).toBe('Bearer access_1')
+    const agentKey = `Bearer ${server.minted[0]!.key}`
+    expect(server.streamRequests.map((r) => r.authorization)).toEqual([agentKey, agentKey, agentKey])
   })
 
   it('ends with AuthExpired when the login cannot be refreshed, instead of reconnecting forever', async () => {

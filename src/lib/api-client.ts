@@ -133,7 +133,16 @@ async function resolveBearer(cfg: ResolvedConfig): Promise<string> {
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-export function createApiClient(config: ResolvedConfig): ApiClient {
+export interface ApiClientOptions {
+  /**
+   * Send this bearer on every request, and nothing else: no OIDC token, no login
+   * refresh, no OIDC re-mint. The agent channel acts with its agent key only, so a
+   * session's ambient login never answers a send (PROTOCOL.md "The agent key").
+   */
+  fixedBearer?: string
+}
+
+export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOptions = {}): ApiClient {
   // OIDC token re-minted mid-session (GitHub Actions). Takes precedence over
   // the env var so a re-mint sticks for the rest of the push.
   let mintedOidcToken: string | undefined
@@ -190,6 +199,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
    * Actions token) takes precedence over Keycloak/api-key resolution.
    */
   async function resolveRequestBearer(): Promise<string> {
+    if (clientOpts.fixedBearer !== undefined) return clientOpts.fixedBearer
     const oidc = currentOidcToken()
     if (oidc) {
       registerActionsMask(oidc)
@@ -330,7 +340,7 @@ export function createApiClient(config: ResolvedConfig): ApiClient {
    */
   async function sendWithOidcRemint(send: () => Promise<Response>): Promise<Response> {
     let response = await send()
-    if (response.status === 401 && canRemintOidc()) {
+    if (response.status === 401 && clientOpts.fixedBearer === undefined && canRemintOidc()) {
       await remintOidcToken()
       response = await send()
     }
