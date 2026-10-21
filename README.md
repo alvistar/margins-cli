@@ -525,7 +525,9 @@ margins discuss reply d_abc123 --body "Agreed." --workspace my-repo
 | Flag | Required | Description |
 |---|---|---|
 | `--body <body>` | yes | Reply body text |
-| `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`) |
+| `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`); with `--send`, the Workspace id |
+| `--send <id>` | no | The send id from `discuss wait` (agent action; use instead of a discussion id) |
+| `--attempt <n>` | with `--send` | The attempt that holds the send, from `discuss wait` |
 
 #### `discuss resolve [discussion-id]`
 
@@ -541,7 +543,9 @@ margins discuss resolve d_abc123 --workspace my-repo
 | Flag | Required | Description |
 |---|---|---|
 | `--summary <summary>` | no | Short description of how the issue was resolved |
-| `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`) |
+| `--workspace <slug>` | no | Workspace slug (alternative to `.margins.json`); with `--send`, the Workspace id |
+| `--send <id>` | no | The send id from `discuss wait` (agent action; use instead of a discussion id) |
+| `--attempt <n>` | with `--send` | The attempt that holds the send, from `discuss wait` |
 
 #### `discuss wait --workspace <id>`
 
