@@ -4,7 +4,45 @@ All notable changes to margins-cli will be documented in this file.
 
 ## [Unreleased]
 
-Nothing yet.
+A Claude Code session can now take a thread a writer sends to their agent, and answer
+it: phase 1 of "send a thread to an agent" (alvistar/margins#289). It needs the server
+side of the same phase, and Node 22.13+.
+
+### Added
+
+- **`margins discuss wait --workspace <id>`** waits for one thread sent to your agent,
+  prints its payload (send id, attempt, thread, file, quoted passage, and the commands
+  with the ids filled in) and exits 0. Run it in the background; the session wakes with
+  the payload.
+- **The wait does not end on a dropped connection, a server restart or a full server.**
+  It reconnects in the same process with jittered backoff and honours `Retry-After`.
+- **A linked session answers its send.** `margins discuss reply|resolve --send <id>
+  --attempt <n>` and the new `discuss propose`, `progress` and `done` act on the send
+  that `wait` claimed. An action whose answer is lost stays in a local outbox. Run the
+  same command again and it resends under the same idempotency key, so nothing lands
+  twice.
+- **The first `discuss wait` in a Workspace mints its agent key** through your `margins
+  auth login`. It keeps the key owner-only in `agent-keys.json` beside `config.json`.
+  The stream and every action use only that key. A key revoked during a long wait is
+  minted again once.
+- **A local SQLite store** (`agent-channel.sqlite` beside the global config) records
+  linked sessions, which session holds which send, and the outbox. It holds no
+  credential and no comment text. On a Node without `node:sqlite`, `wait` stops before
+  it claims anything and names the upgrade.
+- **A Proposal can target the start or the end of a document.** `discuss propose`
+  accepts an empty `--anchor-prefix` or `--anchor-suffix` (`""`) and sends it as an
+  empty string, so a passage with nothing before or after it can be proposed on.
+  `--anchor-text` stays required. The server reads an empty side as the document's
+  edge from alvistar/margins#308 (#38).
+
+### Changed
+
+- **Linking turns the old `channel.mjs` channel off.** Once the stream is admitted,
+  `wait` removes it from the nearest `.mcp.json` inside the session's git repository,
+  so a comment without a send never reaches the agent. A config outside the repository,
+  or a session outside any repository, is left alone.
+- **`discuss reply` and `discuss resolve` take the discussion id as optional.** Give
+  either a `<discussion-id>` (as before) or `--send <id> --attempt <n>`, not both.
 
 ## [0.23.0] - 2026-10-09
 

@@ -1,6 +1,7 @@
 import { Command, Option } from '@commander-js/extra-typings'
 import { resolveConfig, type ResolvedConfig } from './lib/config.js'
-import { AuthMissing } from './lib/errors.js'
+import { AuthMissing, ValidationError } from './lib/errors.js'
+import type { AgentAction } from './lib/agent-channel/protocol.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
@@ -448,26 +449,109 @@ discussCmd
     await handleDiscussCreate(cfg, slug, opts)
   })
 
+/**
+ * `--send <id> --attempt <n>`: an agent action on the send `discuss wait` claimed
+ * (PROTOCOL.md "Action requests and answers"), sent with the agent key. Without it,
+ * `reply` and `resolve` act on a Discussion as the person, as before.
+ */
+async function runAgentAction(
+  action: AgentAction,
+  opts: { send?: string; attempt?: string },
+  cmd: Parameters<typeof getConfig>[0],
+): Promise<void> {
+  if (!opts.send || !opts.attempt) {
+    throw new ValidationError(`${action} on a send needs --send <id> and --attempt <n> (the send's \`wait\` output names both).`)
+  }
+  const cfg = getConfig(cmd)
+  const { handleAgentAction } = await import('./commands/discuss/agent-action.js')
+  await handleAgentAction(cfg, action, { ...opts, send: opts.send, attempt: opts.attempt })
+}
+
+const SEND_HELP = 'The send id, from `discuss wait` (agent action)'
+const ATTEMPT_HELP = 'The attempt that holds the send, from `discuss wait`'
+const SEND_WORKSPACE_HELP = 'Workspace id (agent action; default: the one `discuss wait` recorded)'
+
 discussCmd
-  .command('reply <discussion-id>')
-  .description('Reply to a discussion')
+  .command('reply [discussion-id]')
+  .description('Reply to a discussion, or (with --send) in the thread of a send to your agent')
   .requiredOption('--body <body>', 'Reply body')
-  .option('--workspace <slug>', 'Workspace slug')
+  .option('--workspace <slug>', 'Workspace slug (with --send: the Workspace id)')
+  .option('--send <id>', SEND_HELP)
+  .option('--attempt <n>', ATTEMPT_HELP)
   .action(async (discussionId, opts, cmd) => {
+    if (opts.send || opts.attempt) {
+      if (discussionId) throw new ValidationError('reply takes a <discussion-id> or --send, not both: a send names its own thread.')
+      return runAgentAction('reply', opts, cmd)
+    }
+    if (!discussionId) {
+      throw new ValidationError('reply needs a <discussion-id>, or --send <id> --attempt <n>.')
+    }
     const cfg = getConfig(cmd)
     const { handleDiscussReply } = await import('./commands/discuss/reply.js')
     await handleDiscussReply(cfg, discussionId, opts)
   })
 
 discussCmd
-  .command('resolve <discussion-id>')
-  .description('Resolve a discussion')
+  .command('resolve [discussion-id]')
+  .description('Resolve a discussion, or (with --send) the thread of a send to your agent, which answers the send')
   .option('--summary <summary>', 'Resolution summary')
-  .option('--workspace <slug>', 'Workspace slug')
+  .option('--workspace <slug>', 'Workspace slug (with --send: the Workspace id)')
+  .option('--send <id>', SEND_HELP)
+  .option('--attempt <n>', ATTEMPT_HELP)
   .action(async (discussionId, opts, cmd) => {
+    if (opts.send || opts.attempt) {
+      if (discussionId) throw new ValidationError('resolve takes a <discussion-id> or --send, not both: a send names its own thread.')
+      return runAgentAction('resolve', opts, cmd)
+    }
+    if (!discussionId) {
+      throw new ValidationError('resolve needs a <discussion-id>, or --send <id> --attempt <n>.')
+    }
     const cfg = getConfig(cmd)
     const { handleDiscussResolve } = await import('./commands/discuss/resolve.js')
     await handleDiscussResolve(cfg, discussionId, opts)
+  })
+
+discussCmd
+  .command('propose')
+  .description('Propose a change to the sent thread\'s document (a Proposal), on a send to your agent')
+  .requiredOption('--send <id>', SEND_HELP)
+  .requiredOption('--attempt <n>', ATTEMPT_HELP)
+  .requiredOption('--replacement <text>', 'The new text for the passage (empty proposes deleting it)')
+  .requiredOption('--anchor-text <text>', 'The exact passage the Proposal replaces')
+  .requiredOption('--anchor-prefix <text>', 'The words just before the passage, copied from the document ("" at its start)')
+  .requiredOption('--anchor-suffix <text>', 'The words just after the passage, copied from the document ("" at its end)')
+  .option('--anchor-heading <heading>', 'The heading of the passage\'s section')
+  .option('--body <body>', 'Why: the rationale shown with the Proposal')
+  .option('--workspace <id>', SEND_WORKSPACE_HELP)
+  .action(async (opts, cmd) => runAgentAction('propose', opts, cmd))
+
+discussCmd
+  .command('progress')
+  .description('Show what your agent is doing on a send ("reading GLOSSARY.md"); renews the claim')
+  .requiredOption('--send <id>', SEND_HELP)
+  .requiredOption('--attempt <n>', ATTEMPT_HELP)
+  .requiredOption('--text <line>', 'The progress line')
+  .option('--workspace <id>', SEND_WORKSPACE_HELP)
+  .action(async (opts, cmd) => runAgentAction('progress', opts, cmd))
+
+discussCmd
+  .command('done')
+  .description('Mark a send to your agent done, without resolving the thread')
+  .requiredOption('--send <id>', SEND_HELP)
+  .requiredOption('--attempt <n>', ATTEMPT_HELP)
+  .option('--note <text>', 'An optional closing note')
+  .option('--workspace <id>', SEND_WORKSPACE_HELP)
+  .action(async (opts, cmd) => runAgentAction('done', opts, cmd))
+
+discussCmd
+  .command('wait')
+  .description('Wait for one send to your agent: claim it, print its payload, exit')
+  .requiredOption('--workspace <id>', 'Workspace id (the reader\'s "Link a session" line prints it)')
+  .option('--session <id>', 'Local session id to record (default: the Claude Code session)')
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleDiscussWait } = await import('./commands/discuss/wait.js')
+    await handleDiscussWait(cfg, opts)
   })
 
 // ─── completions subcommand ───────────────────────────────────────────────────
