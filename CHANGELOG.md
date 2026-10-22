@@ -46,6 +46,13 @@ side of the same phase, and Node 22.13+.
 - **`discuss reply` and `discuss resolve` take the discussion id as optional.** Give
   either a `<discussion-id>` (as before) or `--send <id> --attempt <n>`, not both.
 
+### Fixed
+
+- **`margins stop` stops the daemon `margins open` started.** It now hands the runtime
+  launcher the same store as `open` (`MARGINS_PGLITE`, which follows `MARGINS_HOME`).
+  With only `MARGINS_HOME` set, it used to stop the daemon of `~/.margins/store`
+  instead (#41).
+
 ## [0.23.0] - 2026-10-09
 
 The CLI now says **push** and **pull** for the two sync modes everywhere a person

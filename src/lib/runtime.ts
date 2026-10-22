@@ -533,6 +533,10 @@ export function stopDaemon(): StopResult {
     encoding: 'utf8',
     // MANDATORY. A wedged launcher would otherwise hang `margins stop` forever.
     timeout: 30_000,
+    // The store, exactly as `open` pins it (#41): the launcher's own default is a hardcoded
+    // `~/.margins/store` that ignores MARGINS_HOME, so without this an isolated home would
+    // stop the daemon of a different store than the one `open` started.
+    env: { ...process.env, MARGINS_PGLITE: storeDir() },
   })
 
   // A launcher that could not answer is a FAILURE, never an absence. Reading only stdout
