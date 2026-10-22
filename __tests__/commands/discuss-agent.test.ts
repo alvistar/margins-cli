@@ -208,8 +208,27 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
     })
 
     const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
-    expect((req.body as { proposal: Record<string, unknown> }).proposal).toMatchObject({ anchorPrefix: '', anchorSuffix: ' is 10 minutes.' })
+    expect(req.body).toEqual({
+      attempt: 1,
+      proposal: {
+        body: '',
+        anchorType: 'text',
+        anchorSelectedText: 'The lease',
+        anchorPrefix: '',
+        anchorSuffix: ' is 10 minutes.',
+        replacementBody: 'The claim',
+      },
+    })
     expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
+  })
+
+  it('propose with both sides empty reaches the server, which refuses it', async () => {
+    const err = await act('propose', { anchorText: 'The lease', anchorPrefix: '', anchorSuffix: '', replacement: 'The claim' })
+      .catch((e: unknown) => e)
+
+    expect(String((err as { userMessage?: string }).userMessage ?? err)).toMatch(/surrounding context/)
+    expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toHaveLength(1)
+    expect(server!.accepted).toEqual([])
   })
 
   it('propose with an empty passage is refused before anything is sent', async () => {

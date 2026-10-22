@@ -69,6 +69,7 @@ function actionBody(action: AgentAction, opts: AgentActionOpts): AgentActionRequ
     case 'propose': {
       if (opts.replacement === undefined) throw new ValidationError('propose needs --replacement <text> (empty to delete the passage).')
       if (!opts.anchorText) throw new ValidationError('propose needs --anchor-text <passage>: the exact text it replaces.')
+      // Only a missing flag is refused here: which empty context can resolve is the server's rule.
       if (opts.anchorPrefix === undefined || opts.anchorSuffix === undefined) {
         throw new ValidationError(
           'propose needs --anchor-prefix <text> and --anchor-suffix <text>: the words just before and just after the passage, copied from the document (empty at its start or end).',
