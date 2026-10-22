@@ -129,6 +129,14 @@ describe('auth gate with no credential (#40)', () => {
     const list = await cli(['discuss', 'list', 'some-slug'], server.url)
     expect(list.status).toBe(1)
     expect(list.stderr).toMatch(REFUSED)
+
+    // `reply` and `resolve` on a Discussion (no --send) act as the person, not the agent:
+    // the login stays required for them, even with a Light daemon on the port.
+    for (const args of [['discuss', 'reply', 'd_1', '--body', 'x'], ['discuss', 'resolve', 'd_1']]) {
+      const r = await cli(args, server.url)
+      expect(r.status).toBe(1)
+      expect(r.stderr).toMatch(REFUSED)
+    }
     expect(server.requests).toEqual([])
   }, 60_000)
 })

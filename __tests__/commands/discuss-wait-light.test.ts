@@ -153,3 +153,24 @@ describe('discuss wait: agent key mint against the cloud', () => {
     expect(mints(server).map((r) => [r.path, r.marginsToken])).toEqual([['/api/keys', undefined]])
   })
 })
+
+describe('liveDaemonAt: the capability token goes to a loopback http URL only', () => {
+  it('names the daemon at every loopback spelling of its port', async () => {
+    publishDaemon({ port: 45678, token: LOCAL_TOKEN })
+    const { liveDaemonAt } = await import('../../src/lib/runtime.js')
+
+    for (const url of ['http://127.0.0.1:45678', 'http://localhost:45678', 'http://[::1]:45678']) {
+      expect(liveDaemonAt(url)).toEqual({ port: 45678, token: LOCAL_TOKEN })
+    }
+  })
+
+  it.each([
+    ['another host', 'http://example.invalid:45678'],
+    ['https on loopback', 'https://127.0.0.1:45678'],
+  ])('ignores %s, even with a live record on that port', async (_name, url) => {
+    publishDaemon({ port: 45678, token: LOCAL_TOKEN })
+    const { liveDaemonAt } = await import('../../src/lib/runtime.js')
+
+    expect(liveDaemonAt(url)).toBeNull()
+  })
+})

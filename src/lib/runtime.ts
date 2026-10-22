@@ -330,9 +330,10 @@ function liveDaemonRecords(): DaemonRecord[] {
   const records: DaemonRecord[] = []
   const daemonsDir = path.join(marginsHome(), 'daemons')
   try {
-    // Bounded: this runs before every automatic prune, and a stuffed directory would stall
-    // the CLI on a synchronous read loop. Two daemons is the designed maximum; 256 records
-    // and 64KB apiece is far past any real configuration.
+    // Bounded: this runs before every automatic prune, on the agent channel's auth gate and
+    // on every agent key mint, and a stuffed directory would stall the CLI on a synchronous
+    // read loop. Two daemons is the designed maximum; 256 records and 64KB apiece is far
+    // past any real configuration.
     for (const name of fs.readdirSync(daemonsDir).slice(0, 256)) {
       if (!name.endsWith('.json')) continue
       try {
