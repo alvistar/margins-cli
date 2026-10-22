@@ -2,11 +2,13 @@
 
 All notable changes to margins-cli will be documented in this file.
 
-## [Unreleased]
+## [0.24.0] - 2026-10-22
 
 A Claude Code session can now take a thread a writer sends to their agent, and answer
-it: phase 1 of "send a thread to an agent" (alvistar/margins#289). It needs the server
-side of the same phase, and Node 22.13+.
+it: phase 1 of "send a thread to an agent" (alvistar/margins#289). The agent channel
+needs a server with the same phase: alvistar/margins web with spec #289 (cloud), or the
+Margins Light runtime 0.24.0 or later. It also needs Node 22.13+ (`node:sqlite`). Ships
+#37, #45 and #47.
 
 ### Added
 
