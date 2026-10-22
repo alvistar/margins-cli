@@ -48,6 +48,11 @@ side of the same phase, and Node 22.13+.
 
 ### Fixed
 
+- **Margins Light needs no login for the agent channel or `stop`.** Against a live Light
+  daemon (found from its discovery record, as for the mint in #39), `discuss wait`,
+  `discuss reply|resolve --send`, `propose`, `progress` and `done` now run with no
+  `margins auth login` and no API key. `margins stop` never needs one: it talks to no
+  server. Against the cloud the auth check is unchanged (#40).
 - **`margins stop` stops the daemon `margins open` started.** It now hands the runtime
   launcher the same store as `open` (`MARGINS_PGLITE`, which follows `MARGINS_HOME`).
   With only `MARGINS_HOME` set, it used to stop the daemon of `~/.margins/store`

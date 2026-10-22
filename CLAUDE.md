@@ -91,8 +91,10 @@ a stored/flag/env API key **or** an OIDC token (`hasOidcAuth()` in `lib/auth-env
 checks `MARGINS_OIDC_TOKEN` or the mintable `ACTIONS_ID_TOKEN_REQUEST_*` pair). The
 request-layer bearer resolver then prefers the OIDC token over the API key when both
 are present. Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `auth`,
-`install-hook`, `audit`) skip the gate — `audit` is exempt so it can run in gh-only
-mode; `workspace unsync` is exempt as a local-only subcommand.
+`install-hook`, `audit`, `open`, `runtime`, `stop`) skip the gate — `audit` is exempt so
+it can run in gh-only mode; `workspace unsync` is exempt as a local-only subcommand. The
+agent channel (`discuss wait`, the agent actions) also passes with no credential when
+`liveDaemonAt` finds a live Light daemon at the server URL (#40).
 
 One request carries neither: the agent key mint against a Margins Light daemon
 (`agent-key.ts`) sends the daemon's capability token in `x-margins-token` and no
