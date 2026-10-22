@@ -22,7 +22,7 @@ vi.mock('node:child_process', async (orig) => ({
   spawnSync,
 }))
 
-const { stopDaemon } = await import('../src/lib/runtime.js')
+const { stopDaemon, storeDir } = await import('../src/lib/runtime.js')
 const { handleStop } = await import('../src/commands/stop.js')
 
 let home: string
@@ -35,6 +35,7 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
   delete process.env['MARGINS_HOME']
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
 })
 
 /** A cached runtime, complete enough for listRuntimes() and the launcher path to resolve. */
@@ -84,6 +85,20 @@ describe('stopDaemon delegates to the runtime launcher', () => {
       [newest, 'stop', '--json'],
       expect.objectContaining({ encoding: 'utf8', timeout: 30_000 }),
     )
+  })
+
+  // #41: the launcher's own default store is a hardcoded `~/.margins/store` that ignores
+  // MARGINS_HOME. `open` pins MARGINS_PGLITE to `storeDir()`; a `stop` that does not would,
+  // with only MARGINS_HOME set, stop the daemon of a different store than `open` started.
+  it('hands the launcher the store `open` uses, with only MARGINS_HOME set (#41)', () => {
+    vi.stubEnv('MARGINS_PGLITE', undefined)
+    installRuntime('0.15.0')
+    launcherSaid('{"outcome":"not-running","running":false,"pid":null,"port":null,"forced":false}')
+    stopDaemon()
+    const opts = spawnSync.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv }
+    expect(storeDir()).toBe(path.join(home, 'store'))
+    expect(opts.env?.['MARGINS_PGLITE']).toBe(storeDir())
+    expect(opts.env?.['MARGINS_HOME']).toBe(home)
   })
 
   it('translates a stopped verdict, carrying the pid the launcher reported', () => {

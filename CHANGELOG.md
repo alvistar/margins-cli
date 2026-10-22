@@ -22,9 +22,11 @@ side of the same phase, and Node 22.13+.
   same command again and it resends under the same idempotency key, so nothing lands
   twice.
 - **The first `discuss wait` in a Workspace mints its agent key** through your `margins
-  auth login`. It keeps the key owner-only in `agent-keys.json` beside `config.json`.
-  The stream and every action use only that key. A key revoked during a long wait is
-  minted again once.
+  auth login`. Against Margins Light or the desktop app it mints through the daemon's
+  capability token instead (`POST /api/local/agent-keys`), found from the daemon's
+  discovery record, with no API key on the request (#39). It keeps the key owner-only
+  in `agent-keys.json` beside `config.json`. The stream and every action use only that
+  key. A key revoked during a long wait is minted again once, the same way.
 - **A local SQLite store** (`agent-channel.sqlite` beside the global config) records
   linked sessions, which session holds which send, and the outbox. It holds no
   credential and no comment text. On a Node without `node:sqlite`, `wait` stops before
@@ -43,6 +45,18 @@ side of the same phase, and Node 22.13+.
   or a session outside any repository, is left alone.
 - **`discuss reply` and `discuss resolve` take the discussion id as optional.** Give
   either a `<discussion-id>` (as before) or `--send <id> --attempt <n>`, not both.
+
+### Fixed
+
+- **Margins Light needs no login for the agent channel or `stop`.** Against a live Light
+  daemon (found from its discovery record, as for the mint in #39), `discuss wait`,
+  `discuss reply|resolve --send`, `propose`, `progress` and `done` now run with no
+  `margins auth login` and no API key. `margins stop` never needs one: it talks to no
+  server. Against the cloud the auth check is unchanged (#40).
+- **`margins stop` stops the daemon `margins open` started.** It now hands the runtime
+  launcher the same store as `open` (`MARGINS_PGLITE`, which follows `MARGINS_HOME`).
+  With only `MARGINS_HOME` set, it used to stop the daemon of `~/.margins/store`
+  instead (#41).
 
 ## [0.23.0] - 2026-10-09
 

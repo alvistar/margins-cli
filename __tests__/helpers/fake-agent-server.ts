@@ -8,6 +8,10 @@
  *   admission refuses, when the connection drops and when a send arrives.
  * - `POST /api/keys` with `{ agent: { workspaceId } }`: mints an agent key, behind a
  *   login (an agent key is refused with 403 `KEY_CANNOT_MANAGE_KEYS`).
+ * - With `light`, the published Margins Light runtime instead: no `/api/keys` (404), and
+ *   `POST /api/local/agent-keys { workspaceId, label?, expiresAt? }` mints behind the
+ *   daemon's capability token in `x-margins-token`; a Bearer that is an API key is refused
+ *   with 403 `KEY_CANNOT_MANAGE_KEYS`, a wrong or absent token with 403 `FORBIDDEN_TOKEN`.
  * - `POST /api/workspaces/{w}/agent-channel/sends/{s}/{action}`: judged by the
  *   protocol's own reference model (`applySendEvent`), so the fake fences, replays and
  *   refuses as the server does. A delivered send is claimed through the same model.
@@ -51,6 +55,8 @@ export interface StreamRequest {
   authorization: string | undefined
   accept: string | undefined
   idempotencyKey: string | undefined
+  /** The `x-margins-token` header (the Light daemon's capability token). */
+  marginsToken: string | undefined
   /** The JSON body of a POST, parsed. */
   body?: Record<string, unknown>
   /** When the request arrived (ms since epoch). */
@@ -142,7 +148,12 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
-export async function startFakeAgentServer(opts: { workspaceId: string; script?: StreamStep[] }): Promise<FakeAgentServer> {
+export async function startFakeAgentServer(opts: {
+  workspaceId: string
+  script?: StreamStep[]
+  /** Answer as the published Margins Light runtime, whose capability token is `token`. */
+  light?: { token: string }
+}): Promise<FakeAgentServer> {
   const script = opts.script ?? [{ kind: 'hold' }]
   const requests: StreamRequest[] = []
   const minted: MintedKey[] = []
@@ -174,6 +185,33 @@ export async function startFakeAgentServer(opts: { workspaceId: string; script?:
       id: `key_${n}`,
       key: `mrgn_agent_synthetic_${n}`,
       workspaceId: agent.workspaceId,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    }
+    minted.push(key)
+    json(res, 201, { data: { ...key, label: body['label'] ?? null, role: 'comment', actions: [...AGENT_ACTIONS] } })
+  }
+
+  /** `POST /api/local/agent-keys` as `margins/src/app/api/local/agent-keys/route.ts` answers it. */
+  const handleLocalMint = (req: http.IncomingMessage, res: http.ServerResponse, body: Record<string, unknown>, token: string) => {
+    if (req.headers['x-margins-token'] !== token) {
+      json(res, 403, { error: 'FORBIDDEN_TOKEN', message: 'Missing or invalid capability token.' })
+      return
+    }
+    // resolveLocalUser: a Bearer that is neither the capability token nor a JWT is read as a key.
+    const bearer = bearerOf(req)
+    if (bearer && bearer !== token) {
+      json(res, 403, { error: 'KEY_CANNOT_MANAGE_KEYS', message: 'API keys cannot create or manage API keys.' })
+      return
+    }
+    if (typeof body['workspaceId'] !== 'string' || body['workspaceId'].length === 0) {
+      json(res, 400, { error: 'VALIDATION_ERROR', message: 'workspaceId is required.' })
+      return
+    }
+    const n = minted.length + 1
+    const key: MintedKey = {
+      id: `key_${n}`,
+      key: `mrgn_agent_synthetic_${n}`,
+      workspaceId: body['workspaceId'],
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     }
     minted.push(key)
@@ -252,10 +290,15 @@ export async function startFakeAgentServer(opts: { workspaceId: string; script?:
       authorization: req.headers.authorization,
       accept: req.headers.accept,
       idempotencyKey: req.headers[IDEMPOTENCY_KEY_HEADER.toLowerCase()] as string | undefined,
+      marginsToken: req.headers['x-margins-token'] as string | undefined,
       ...(body ? { body } : {}),
       at: Date.now(),
     })
-    if (req.method === 'POST' && req.url === '/api/keys') {
+    if (opts.light && req.method === 'POST' && req.url === '/api/local/agent-keys') {
+      handleLocalMint(req, res, body ?? {}, opts.light.token)
+      return
+    }
+    if (!opts.light && req.method === 'POST' && req.url === '/api/keys') {
       handleMint(req, res, body ?? {})
       return
     }

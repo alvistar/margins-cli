@@ -303,6 +303,89 @@ export function compareVersionsDesc(a: string, b: string): number {
 // dir it is serving from, and we must never prune/clean that version while its PID is alive.
 const DISCOVERY_MARKER = 'margins-daemon'
 
+/** The fields of a daemon's discovery record the CLI reads (margins/scripts/lib/daemon.mjs). */
+interface DaemonRecord {
+  pid: number
+  port?: unknown
+  token?: unknown
+  runtimeDir?: unknown
+}
+
+/** A record that is ours (the marker) and whose PID is alive, else null. */
+function parseLiveRecord(raw: string): DaemonRecord | null {
+  let rec: Omit<DaemonRecord, 'pid'> & { marker?: unknown; pid?: unknown }
+  try {
+    rec = JSON.parse(raw)
+  } catch {
+    return null // unreadable or corrupt names no owner
+  }
+  if (rec?.marker !== DISCOVERY_MARKER) return null
+  const pid = Number(rec.pid)
+  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return null
+  return { ...rec, pid }
+}
+
+/** The live per-store records, `~/.margins/daemons/<storeKey>.json` (runtime 0.15.0+). */
+function liveDaemonRecords(): DaemonRecord[] {
+  const records: DaemonRecord[] = []
+  const daemonsDir = path.join(marginsHome(), 'daemons')
+  try {
+    // Bounded: this runs before every automatic prune, on the agent channel's auth gate and
+    // on every agent key mint, and a stuffed directory would stall the CLI on a synchronous
+    // read loop. Two daemons is the designed maximum; 256 records and 64KB apiece is far
+    // past any real configuration.
+    for (const name of fs.readdirSync(daemonsDir).slice(0, 256)) {
+      if (!name.endsWith('.json')) continue
+      try {
+        const file = path.join(daemonsDir, name)
+        if (fs.statSync(file).size > 64 * 1024) continue
+        const rec = parseLiveRecord(fs.readFileSync(file, 'utf8'))
+        if (rec) records.push(rec)
+      } catch {
+        // vanished mid-scan, or a subdirectory: it names no daemon either way
+      }
+    }
+  } catch {
+    // no daemons dir — either no 0.15.0+ daemon has ever run, or the home is empty
+  }
+  return records
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/** A live Margins Light daemon serving `serverUrl`: its port and capability token. */
+export interface LiveDaemon {
+  port: number
+  /** Absent when the record carries none (a daemon that cannot take a mutating request). */
+  token: string | undefined
+}
+
+/**
+ * The live Margins Light daemon at `serverUrl`, or null when none is: the URL must be a
+ * loopback one AND a live discovery record must name its port. The record decides, not
+ * the URL (a loopback URL can be the dev web server, a tunnel, anything); the loopback
+ * check stops the daemon's capability token from ever going to another host.
+ *
+ * Only the per-store records: the pre-0.15.0 `daemon.json` names a runtime that has no
+ * agent channel, and reading it here would be the fail-open attach `liveRuntimeDirs`
+ * warns about.
+ */
+export function liveDaemonAt(serverUrl: string): LiveDaemon | null {
+  let url: URL
+  try {
+    url = new URL(serverUrl)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname)) return null
+  const port = Number(url.port || 80)
+  for (const rec of liveDaemonRecords()) {
+    if (Number(rec.port) !== port) continue
+    return { port, token: typeof rec.token === 'string' && rec.token ? rec.token : undefined }
+  }
+  return null
+}
+
 /**
  * Every runtime dir a currently-live daemon booted from.
  *
@@ -320,43 +403,17 @@ const DISCOVERY_MARKER = 'margins-daemon'
  */
 export function liveRuntimeDirs(): string[] {
   const dirs = new Set<string>()
-  const consider = (raw: string) => {
-    let rec: { marker?: string; pid?: unknown; runtimeDir?: unknown }
-    try {
-      rec = JSON.parse(raw)
-    } catch {
-      return // unreadable or corrupt names no owner
-    }
-    if (rec?.marker !== DISCOVERY_MARKER || typeof rec.runtimeDir !== 'string') return
-    const pid = Number(rec.pid)
-    if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return
-    dirs.add(rec.runtimeDir)
+  const consider = (rec: DaemonRecord | null) => {
+    if (rec && typeof rec.runtimeDir === 'string') dirs.add(rec.runtimeDir)
   }
 
   // Per-store records (runtime 0.15.0+).
-  const daemonsDir = path.join(marginsHome(), 'daemons')
-  try {
-    // Bounded: this runs before every automatic prune, and a stuffed directory would stall
-    // the CLI on a synchronous read loop. Two daemons is the designed maximum; 256 records
-    // and 64KB apiece is far past any real configuration.
-    for (const name of fs.readdirSync(daemonsDir).slice(0, 256)) {
-      if (!name.endsWith('.json')) continue
-      try {
-        const file = path.join(daemonsDir, name)
-        if (fs.statSync(file).size > 64 * 1024) continue
-        consider(fs.readFileSync(file, 'utf8'))
-      } catch {
-        // vanished mid-scan, or a subdirectory: it protects nothing either way
-      }
-    }
-  } catch {
-    // no daemons dir — either no 0.15.0+ daemon has ever run, or the home is empty
-  }
+  for (const rec of liveDaemonRecords()) consider(rec)
 
   // The pre-0.15.0 global file. Still read because a cached older runtime can be serving
   // right now, and prune must not delete the dir it is running from.
   try {
-    consider(fs.readFileSync(path.join(marginsHome(), 'daemon.json'), 'utf8'))
+    consider(parseLiveRecord(fs.readFileSync(path.join(marginsHome(), 'daemon.json'), 'utf8')))
   } catch {
     // absent is the normal case once every daemon is 0.15.0+
   }
@@ -477,6 +534,10 @@ export function stopDaemon(): StopResult {
     encoding: 'utf8',
     // MANDATORY. A wedged launcher would otherwise hang `margins stop` forever.
     timeout: 30_000,
+    // The store, exactly as `open` pins it (#41): the launcher's own default is a hardcoded
+    // `~/.margins/store` that ignores MARGINS_HOME, so without this an isolated home would
+    // stop the daemon of a different store than the one `open` started.
+    env: { ...process.env, MARGINS_PGLITE: storeDir() },
   })
 
   // A launcher that could not answer is a FAILURE, never an absence. Reading only stdout

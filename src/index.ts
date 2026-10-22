@@ -5,6 +5,7 @@ import type { AgentAction } from './lib/agent-channel/protocol.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
+import { liveDaemonAt } from './lib/runtime.js'
 import { reportPendingSyncFailures } from './lib/sync-failure-record.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
@@ -27,7 +28,20 @@ export const program = new Command()
 // credentials it still reports missing/stale-pin/over-cap (drift is skipped).
 // 'open' is exempt: `margins open ./folder` (Margins Light, local) needs no Margins-server auth;
 // the hosted `open <slug>` path surfaces a 401 from the API if credentials are absent.
-const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit', 'open', 'runtime'])
+// 'stop' is exempt: it hands the local daemon to the runtime launcher and talks to no server (#40).
+const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'install-hook', 'audit', 'open', 'runtime', 'stop'])
+// The agent channel under `discuss`: `wait`, the actions, and `reply`/`resolve` with --send.
+// Against a live Margins Light daemon none needs a login or an API key: the agent key is
+// minted on the daemon's capability token (#39), and every request after that sends only it.
+const AGENT_CHANNEL_SUBCOMMANDS = new Set(['wait', 'propose', 'progress', 'done'])
+
+function isAgentChannel(rootName: string, actionCommand: { name(): string; opts(): Record<string, unknown> }): boolean {
+  if (rootName !== 'discuss') return false
+  const name = actionCommand.name()
+  if (AGENT_CHANNEL_SUBCOMMANDS.has(name)) return true
+  const opts = actionCommand.opts()
+  return (name === 'reply' || name === 'resolve') && Boolean(opts['send'] || opts['attempt'])
+}
 // Subcommands the root-level auth gate must not stop.
 //
 // 'unsync' is local-only and needs no server auth at all.
@@ -72,7 +86,10 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
     noColor: !(globalOpts.color as boolean | undefined ?? true),
   })
 
-  if (!cfg.apiKey && !hasOidcAuth()) {
+  // A Light-only person has no credential at all (#40). The discovery record decides that
+  // the target is a Light daemon, as it does for the mint (#39); the cloud gate is unchanged.
+  const lightAgentChannel = (): boolean => isAgentChannel(rootName, actionCommand) && liveDaemonAt(cfg.serverUrl) !== null
+  if (!cfg.apiKey && !hasOidcAuth() && !lightAgentChannel()) {
     const err = new AuthMissing()
     process.stderr.write(formatError(err, cfg.json) + '\n')
     process.exit(1)
