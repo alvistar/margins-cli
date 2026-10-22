@@ -180,6 +180,65 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
     expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
   })
 
+  it('propose on a passage at the end of the document sends its empty suffix as an empty string', async () => {
+    await act('propose', {
+      anchorText: 'is 10 minutes.', anchorPrefix: 'The lease ', anchorSuffix: '',
+      replacement: 'is 15 minutes.',
+    })
+
+    const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
+    expect(req.body).toEqual({
+      attempt: 1,
+      proposal: {
+        body: '',
+        anchorType: 'text',
+        anchorSelectedText: 'is 10 minutes.',
+        anchorPrefix: 'The lease ',
+        anchorSuffix: '',
+        replacementBody: 'is 15 minutes.',
+      },
+    })
+    expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
+  })
+
+  it('propose on a passage at the start of the document sends its empty prefix as an empty string', async () => {
+    await act('propose', {
+      anchorText: 'The lease', anchorPrefix: '', anchorSuffix: ' is 10 minutes.',
+      replacement: 'The claim',
+    })
+
+    const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
+    expect(req.body).toEqual({
+      attempt: 1,
+      proposal: {
+        body: '',
+        anchorType: 'text',
+        anchorSelectedText: 'The lease',
+        anchorPrefix: '',
+        anchorSuffix: ' is 10 minutes.',
+        replacementBody: 'The claim',
+      },
+    })
+    expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
+  })
+
+  it('propose with both sides empty reaches the server, which refuses it', async () => {
+    const err = await act('propose', { anchorText: 'The lease', anchorPrefix: '', anchorSuffix: '', replacement: 'The claim' })
+      .catch((e: unknown) => e)
+
+    expect(String((err as { userMessage?: string }).userMessage ?? err)).toMatch(/surrounding context/)
+    expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toHaveLength(1)
+    expect(server!.accepted).toEqual([])
+  })
+
+  it('propose with an empty passage is refused before anything is sent', async () => {
+    const err = await act('propose', { anchorText: '', anchorPrefix: 'The lease ', anchorSuffix: '', replacement: 'x' })
+      .catch((e: unknown) => e)
+
+    expect((err as { userMessage?: string }).userMessage).toMatch(/--anchor-text/)
+    expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toEqual([])
+  })
+
   it('propose without the passage\'s context is refused before anything is sent', async () => {
     const err = await act('propose', { anchorText: 'is 10 minutes', replacement: 'is 15 minutes' }).catch((e: unknown) => e)
 

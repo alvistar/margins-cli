@@ -20,7 +20,9 @@ export interface AgentActionOpts {
   /**
    * `propose`: the exact passage the Proposal replaces, with the text just before and
    * just after it, which the server needs to place it (a Proposal without its context
-   * can never resolve, so the server refuses it); optionally its section heading.
+   * can never resolve, so the server refuses it); optionally its section heading. The
+   * prefix is empty for a passage at the start of the document, the suffix for one at
+   * the end (#38): sent as empty strings, never left out.
    */
   anchorText?: string
   anchorPrefix?: string
@@ -67,9 +69,10 @@ function actionBody(action: AgentAction, opts: AgentActionOpts): AgentActionRequ
     case 'propose': {
       if (opts.replacement === undefined) throw new ValidationError('propose needs --replacement <text> (empty to delete the passage).')
       if (!opts.anchorText) throw new ValidationError('propose needs --anchor-text <passage>: the exact text it replaces.')
-      if (!opts.anchorPrefix?.trim() || !opts.anchorSuffix?.trim()) {
+      // Only a missing flag is refused here: which empty context can resolve is the server's rule.
+      if (opts.anchorPrefix === undefined || opts.anchorSuffix === undefined) {
         throw new ValidationError(
-          'propose needs --anchor-prefix <text> and --anchor-suffix <text>: the words just before and just after the passage, copied from the document.',
+          'propose needs --anchor-prefix <text> and --anchor-suffix <text>: the words just before and just after the passage, copied from the document (empty at its start or end).',
         )
       }
       const proposal: ProposalCreate = {
