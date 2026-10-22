@@ -3,10 +3,16 @@
  * D3; server alvistar/margins#293).
  *
  * One key per (server, Workspace): role `comment`, the agent actions only, an expiry
- * (30 days when the CLI names none). The first `wait` in a Workspace mints it with
- * `POST /api/keys { agent: { workspaceId } }` through the person's existing login
- * (human auth: a key never mints a key), and every agent-channel request after that
- * sends it instead of the login.
+ * (30 days when the CLI names none). The first `wait` in a Workspace mints it, and every
+ * agent-channel request after that sends it instead of the login. Where it is minted
+ * depends on the server (#39):
+ *
+ * - the cloud: `POST /api/keys { agent: { workspaceId } }` through the person's existing
+ *   login (human auth: a key never mints a key);
+ * - a Margins Light daemon (a live discovery record names the server's loopback port):
+ *   `POST /api/local/agent-keys { workspaceId }` with the daemon's capability token in
+ *   `x-margins-token` and no `Authorization`, since Light has no `/api/keys` and refuses
+ *   a mint that presents an API key.
  *
  * The key is a credential, so it lives in the CLI credential store beside
  * `config.json` (`agent-keys.json`, owner-only), never in the agent channel's SQLite
@@ -19,6 +25,7 @@ import type { ResolvedConfig } from '../config.js'
 import { getConfigDir } from '../config.js'
 import { createApiClient, type ApiClient } from '../api-client.js'
 import { AuthExpired, ForbiddenError, MarginsError, ResponseParseError } from '../errors.js'
+import { liveDaemonAt, type LiveDaemon } from '../runtime.js'
 
 const KEYS_BASENAME = 'agent-keys.json'
 /** A key this close to its expiry is minted again rather than used. */
@@ -36,10 +43,23 @@ export interface StoredAgentKey {
 type KeyFile = Record<string, StoredAgentKey>
 
 export class AgentKeyMintRefused extends MarginsError {
-  constructor(reason: string) {
+  constructor(reason: string, light = false) {
     super(
       `Agent key mint refused: ${reason}`,
-      `Margins refused to mint the agent key (${reason}). The agent key is minted through your login: run \`margins auth login\` (an API key cannot mint one), and check you can write in this Workspace.`,
+      light
+        ? `The Margins Light daemon refused to mint the agent key (${reason}). It mints on its capability token: run \`margins stop\`, then \`margins open\` again, and check this Workspace is in Margins Light.`
+        : `Margins refused to mint the agent key (${reason}). The agent key is minted through your login: run \`margins auth login\` (an API key cannot mint one), and check you can write in this Workspace.`,
+      1,
+    )
+  }
+}
+
+/** A live Light daemon whose discovery record carries no capability token. */
+export class LightDaemonTokenMissing extends MarginsError {
+  constructor(port: number) {
+    super(
+      `Margins Light daemon on port ${port} has no capability token`,
+      `The Margins Light daemon on port ${port} published no capability token, so it cannot mint the agent key. Run \`margins stop\`, then \`margins open\` again.`,
       1,
     )
   }
@@ -88,14 +108,27 @@ export function forgetAgentKey(serverUrl: string, workspaceId: string): void {
   writeKeyFile(file)
 }
 
-/** Mint a new agent key through the login in `cfg` and store it. */
+/** `POST /api/local/agent-keys` on the daemon's capability token, with no `Authorization`. */
+function mintOnLight(cfg: ResolvedConfig, daemon: LiveDaemon, workspaceId: string, label: string): Promise<unknown> {
+  if (!daemon.token) throw new LightDaemonTokenMissing(daemon.port)
+  const client = createApiClient(cfg, { fixedBearer: null })
+  return client.post('/api/local/agent-keys', { workspaceId, label }, { 'x-margins-token': daemon.token })
+}
+
+/**
+ * Mint a new agent key and store it: on a Margins Light daemon through its capability
+ * token, else through the login in `cfg`.
+ */
 export async function mintAgentKey(cfg: ResolvedConfig, workspaceId: string): Promise<StoredAgentKey> {
-  const login: ApiClient = createApiClient(cfg)
+  const label = `margins-cli on ${os.hostname()}`
+  const daemon = liveDaemonAt(cfg.serverUrl)
   let minted: unknown
   try {
-    minted = await login.post('/api/keys', { agent: { workspaceId }, label: `margins-cli on ${os.hostname()}` })
+    minted = daemon
+      ? await mintOnLight(cfg, daemon, workspaceId, label)
+      : await createApiClient(cfg).post('/api/keys', { agent: { workspaceId }, label })
   } catch (err) {
-    if (err instanceof ForbiddenError) throw new AgentKeyMintRefused(err.code ?? 'forbidden')
+    if (err instanceof ForbiddenError) throw new AgentKeyMintRefused(err.code ?? 'forbidden', daemon !== null)
     throw err
   }
   const m = minted as Partial<StoredAgentKey> | null
@@ -116,7 +149,8 @@ function agentClient(cfg: ResolvedConfig, key: StoredAgentKey): ApiClient {
 
 /**
  * Run `use` with a client that sends the Workspace's agent key: the stored one, else
- * one minted now through the login. A 401 to the key (revoked, or expired early; a
+ * one minted now (`mintAgentKey`: the daemon's capability token on Margins Light, else
+ * the login). A 401 to the key (revoked, or expired early; a
  * `wait` can hold one for hours) mints a new key once and runs `use` again; a second
  * 401 is the end.
  */

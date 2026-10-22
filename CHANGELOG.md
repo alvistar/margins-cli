@@ -22,9 +22,11 @@ side of the same phase, and Node 22.13+.
   same command again and it resends under the same idempotency key, so nothing lands
   twice.
 - **The first `discuss wait` in a Workspace mints its agent key** through your `margins
-  auth login`. It keeps the key owner-only in `agent-keys.json` beside `config.json`.
-  The stream and every action use only that key. A key revoked during a long wait is
-  minted again once.
+  auth login`. Against Margins Light or the desktop app it mints through the daemon's
+  capability token instead (`POST /api/local/agent-keys`), found from the daemon's
+  discovery record, with no API key on the request (#39). It keeps the key owner-only
+  in `agent-keys.json` beside `config.json`. The stream and every action use only that
+  key. A key revoked during a long wait is minted again once, the same way.
 - **A local SQLite store** (`agent-channel.sqlite` beside the global config) records
   linked sessions, which session holds which send, and the outbox. It holds no
   credential and no comment text. On a Node without `node:sqlite`, `wait` stops before

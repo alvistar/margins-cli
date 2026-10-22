@@ -138,8 +138,16 @@ export interface ApiClientOptions {
    * Send this bearer on every request, and nothing else: no OIDC token, no login
    * refresh, no OIDC re-mint. The agent channel acts with its agent key only, so a
    * session's ambient login never answers a send (PROTOCOL.md "The agent key").
+   *
+   * `null` sends no `Authorization` at all: the Margins Light daemon mints an agent key
+   * on its capability token alone and refuses a request that presents an API key.
    */
-  fixedBearer?: string
+  fixedBearer?: string | null
+}
+
+/** The `Authorization` header for `bearer`; none for `null` (`fixedBearer: null`). */
+function authorization(bearer: string | null): { Authorization?: string } {
+  return bearer === null ? {} : { Authorization: `Bearer ${bearer}` }
 }
 
 export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOptions = {}): ApiClient {
@@ -198,7 +206,7 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
    * Resolve the bearer for a request. MARGINS_OIDC_TOKEN (or a re-minted
    * Actions token) takes precedence over Keycloak/api-key resolution.
    */
-  async function resolveRequestBearer(): Promise<string> {
+  async function resolveRequestBearer(): Promise<string | null> {
     if (clientOpts.fixedBearer !== undefined) return clientOpts.fixedBearer
     const oidc = currentOidcToken()
     if (oidc) {
@@ -410,12 +418,12 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
       response = await sendWithOidcRemint(async () => {
         // Resolve bearer — OIDC env token wins; otherwise Keycloak/api-key
         const bearer = await resolveRequestBearer()
-        log(`${method} ${url} (key: ${maskKey(bearer)})`)
+        log(`${method} ${url} (key: ${maskKey(bearer ?? undefined)})`)
         const sent = await fetchWithTimeout(url, {
           method,
           headers: {
             ...(extraHeaders ?? {}),
-            Authorization: `Bearer ${bearer}`,
+            ...authorization(bearer),
             Accept: 'application/json',
             'X-Margins-Client': CLIENT_HEADER,
             ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -457,12 +465,12 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
 
     const response = await sendWithOidcRemint(async () => {
       const bearer = await resolveRequestBearer()
-      log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer)})`)
+      log(`${method} ${url} (${data.length} bytes, key: ${maskKey(bearer ?? undefined)})`)
       const sent = await fetchWithTimeout(url, {
         method,
         headers: {
           ...(extraHeaders ?? {}),
-          Authorization: `Bearer ${bearer}`,
+          ...authorization(bearer),
           Accept: 'application/json',
           'X-Margins-Client': CLIENT_HEADER,
           'Content-Type': contentType,
@@ -481,10 +489,10 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
     const url = buildUrl(path)
     return sendWithOidcRemint(async () => {
       const bearer = await resolveRequestBearer()
-      log(`GET ${url} (stream, key: ${maskKey(bearer)})`)
+      log(`GET ${url} (stream, key: ${maskKey(bearer ?? undefined)})`)
       const sent = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${bearer}`,
+          ...authorization(bearer),
           Accept: 'text/event-stream',
           'X-Margins-Client': CLIENT_HEADER,
         },

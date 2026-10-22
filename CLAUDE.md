@@ -94,6 +94,11 @@ are present. Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `a
 `install-hook`, `audit`) skip the gate — `audit` is exempt so it can run in gh-only
 mode; `workspace unsync` is exempt as a local-only subcommand.
 
+One request carries neither: the agent key mint against a Margins Light daemon
+(`agent-key.ts`) sends the daemon's capability token in `x-margins-token` and no
+`Authorization` (`fixedBearer: null`). It is chosen when a live discovery record in
+`~/.margins/daemons/` names the server URL's loopback port (`liveDaemonAt` in `runtime.ts`).
+
 ## Claude Code plugin
 
 The Claude Code plugin that wraps this CLI (skills `margins`, `margins-read`,
