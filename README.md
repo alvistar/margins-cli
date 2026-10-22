@@ -577,7 +577,9 @@ credential and no comment text. Needs Node 22.13+.
 The payload `discuss wait` prints names the send id and attempt, and the commands with
 both filled in. Each action sends the attempt, an `Idempotency-Key` and the Workspace's
 agent key (minted by the first `wait` through your `margins auth login`, kept owner-only
-in `agent-keys.json` beside the global config). An action whose answer is lost stays in
+in `agent-keys.json` beside the global config). Against Margins Light or the desktop app,
+`wait` mints it on the local daemon's capability token instead, found from the daemon's
+discovery record, so `wait` and every action run with no login and no API key. An action whose answer is lost stays in
 the local outbox: run the same command again and it resends under the same key, so the
 server never writes it twice. A send that is closed, or held by a newer attempt, answers
 `AGENT_SEND_CLOSED` or `AGENT_SEND_ATTEMPT_SUPERSEDED`: stop acting on it.
@@ -615,6 +617,9 @@ lock it holds.
 margins stop
 margins stop --json   # → { "stopped": true, "pid": 1234, "reason": "stopped" }
 ```
+
+It needs no login, and it stops the daemon of the same store `margins open` uses
+(`MARGINS_PGLITE`, which follows `MARGINS_HOME`).
 
 The command does not look for the daemon itself — it asks the cached runtime's own
 launcher to stop it, so it stays correct as the runtime's discovery format changes.
