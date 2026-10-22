@@ -29,6 +29,11 @@ side of the same phase, and Node 22.13+.
   linked sessions, which session holds which send, and the outbox. It holds no
   credential and no comment text. On a Node without `node:sqlite`, `wait` stops before
   it claims anything and names the upgrade.
+- **A Proposal can target the start or the end of a document.** `discuss propose`
+  accepts an empty `--anchor-prefix` or `--anchor-suffix` (`""`) and sends it as an
+  empty string, so a passage with nothing before or after it can be proposed on.
+  `--anchor-text` stays required. The server reads an empty side as the document's
+  edge from alvistar/margins#308 (#38).
 
 ### Changed
 
