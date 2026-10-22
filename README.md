@@ -596,7 +596,7 @@ margins discuss resolve --send snd_abc --attempt 1 --summary "Settled: 10 minute
 |---|---|
 | `reply --send` | `--body <text>` (required) |
 | `progress` | `--text <line>` (required); renews the claim |
-| `propose` | `--anchor-text`, `--anchor-prefix`, `--anchor-suffix` (the exact passage and the words just before and after it), `--replacement <text>` (empty deletes the passage), all required; `--anchor-heading`, `--body <rationale>` |
+| `propose` | `--anchor-text`, `--anchor-prefix`, `--anchor-suffix` (the exact passage and the words just before and after it; the prefix or suffix is `""` for a passage at the start or end of the document), `--replacement <text>` (empty deletes the passage), all required; `--anchor-heading`, `--body <rationale>` |
 | `done` | `--note <text>`; answers the send without resolving the thread |
 | `resolve --send` | `--summary <text>`; resolves the thread, which answers the send |
 

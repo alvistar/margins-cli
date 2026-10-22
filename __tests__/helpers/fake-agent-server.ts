@@ -130,7 +130,12 @@ function proposalRefusal(raw: unknown): string | undefined {
   if (typeof p['replacementBody'] !== 'string') return 'A suggestion needs a replacement'
   if (p['anchorType'] !== 'text') return 'A suggestion needs a text selection'
   const filled = (k: string) => typeof p[k] === 'string' && (p[k] as string).trim() !== ''
-  if (!filled('anchorPrefix') || !filled('anchorSuffix')) return 'A suggestion needs surrounding context'
+  // Assumed server contract (#38, with alvistar/margins#308): both are strings, and one may be
+  // empty for a passage at the start or the end of the document, never both.
+  const given = (k: string) => typeof p[k] === 'string'
+  if (!given('anchorPrefix') || !given('anchorSuffix') || (!filled('anchorPrefix') && !filled('anchorSuffix'))) {
+    return 'A suggestion needs surrounding context'
+  }
   if (p['send'] !== undefined || p['clientRef'] !== undefined) return 'An agent Proposal has no `send` or `clientRef`.'
   return undefined
 }
