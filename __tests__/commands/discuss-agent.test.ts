@@ -222,13 +222,19 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
     expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
   })
 
-  it('propose with both sides empty reaches the server, which refuses it', async () => {
-    const err = await act('propose', { anchorText: 'The lease', anchorPrefix: '', anchorSuffix: '', replacement: 'The claim' })
-      .catch((e: unknown) => e)
+  it('propose with both sides empty sends both as empty strings: the server decides whether the passage places', async () => {
+    await act('propose', { anchorText: 'The lease', anchorPrefix: '', anchorSuffix: '', replacement: 'The claim' })
 
-    expect(String((err as { userMessage?: string }).userMessage ?? err)).toMatch(/surrounding context/)
-    expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toHaveLength(1)
-    expect(server!.accepted).toEqual([])
+    const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
+    expect(req.body).toMatchObject({ proposal: { anchorPrefix: '', anchorSuffix: '' } })
+    expect(server!.accepted.map((a) => a.action)).toEqual(['propose'])
+  })
+
+  it('propose sends a whitespace-only context as given, untrimmed', async () => {
+    await act('propose', { anchorText: 'The lease', anchorPrefix: '  ', anchorSuffix: '\n', replacement: 'The claim' })
+
+    const req = server!.requests.find((r) => r.method === 'POST' && r.path.endsWith('/propose'))!
+    expect(req.body).toMatchObject({ proposal: { anchorPrefix: '  ', anchorSuffix: '\n' } })
   })
 
   it('propose with an empty passage is refused before anything is sent', async () => {
@@ -239,8 +245,12 @@ describe('discuss reply | propose | progress | resolve | done on a claimed send'
     expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toEqual([])
   })
 
-  it('propose without the passage\'s context is refused before anything is sent', async () => {
-    const err = await act('propose', { anchorText: 'is 10 minutes', replacement: 'is 15 minutes' }).catch((e: unknown) => e)
+  it.each([
+    ['both flags', {}],
+    ['--anchor-suffix', { anchorPrefix: 'The lease ' }],
+    ['--anchor-prefix', { anchorSuffix: ' minutes.' }],
+  ])('propose without %s is refused before anything is sent', async (_missing, context) => {
+    const err = await act('propose', { anchorText: 'is 10 minutes', replacement: 'is 15 minutes', ...context }).catch((e: unknown) => e)
 
     expect((err as { userMessage?: string }).userMessage).toMatch(/--anchor-prefix/)
     expect(server!.requests.filter((r) => r.path.endsWith('/propose'))).toEqual([])

@@ -19,10 +19,10 @@ export interface AgentActionOpts {
   note?: string
   /**
    * `propose`: the exact passage the Proposal replaces, with the text just before and
-   * just after it, which the server needs to place it (a Proposal without its context
-   * can never resolve, so the server refuses it); optionally its section heading. The
-   * prefix is empty for a passage at the start of the document, the suffix for one at
-   * the end (#38): sent as empty strings, never left out.
+   * just after it, which the server needs to place it; optionally its section heading.
+   * The prefix is empty for a passage at the start of the document, the suffix for one
+   * at the end (#38): sent as empty strings, never left out. Which empty context still
+   * places the passage is the server's rule.
    */
   anchorText?: string
   anchorPrefix?: string

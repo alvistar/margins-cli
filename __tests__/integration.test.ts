@@ -53,3 +53,20 @@ describe('CLI binary smoke tests', () => {
     expect(result.status).toBe(0)
   })
 })
+
+describe('discuss propose: empty anchor context on the command line (#38)', () => {
+  // An unreachable server: the command fails after option parsing, never against a real host.
+  const env = { MARGINS_SERVER_URL: 'http://127.0.0.1:9', MARGINS_API_KEY: 'mk_test' }
+  const base = ['discuss', 'propose', '--send', 'snd_1', '--attempt', '1', '--workspace', 'ws_1', '--replacement', 'x', '--anchor-text', 't']
+
+  it('accepts an empty --anchor-prefix and --anchor-suffix', () => {
+    const result = run([...base, '--anchor-prefix', '', '--anchor-suffix', ''], env)
+    expect(result.stderr).not.toMatch(/required option/)
+  })
+
+  it('still refuses a missing --anchor-prefix', () => {
+    const result = run([...base, '--anchor-suffix', ''], env)
+    expect(result.stderr).toMatch(/required option '--anchor-prefix <text>' not specified/)
+    expect(result.status).not.toBe(0)
+  })
+})
