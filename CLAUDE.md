@@ -109,3 +109,7 @@ The Claude Code plugin that wraps this CLI (skills `margins`, `margins-read`,
 Install it from there; this repo ships the npm CLI only.
 
 These skills are designed to be installed into Claude Code via the plugin system.
+
+## No production requests
+
+Every command that talks to a Margins server names a local one explicitly (`MARGINS_SERVER_URL` or `--server-url`). Left on its default, the CLI reaches production: on 2026-10-22 a ship's smoke probe sent an agent-key mint there. No request of any kind goes to margins.thealvistar.com from an agent session unless the owner asks for that probe in this session. The hard stop is the owner's `.claude/settings.local.json`, copied into every worktree by `.worktreeinclude`.
