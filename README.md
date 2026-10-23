@@ -724,6 +724,24 @@ margins: an earlier background sync did not reach Margins.
 
 Only the latest failure per project is kept — it is replaced, not appended.
 
+The same failure also waits for your next `git push` (or commit, with `--on commit`):
+it is mirrored into `<git-dir>/margins-sync-failed.txt` (inside `.git`, so never in
+`git status`), and the hook prints it before it starts the next sync:
+
+```
+margins: the last background sync did not reach Margins.
+  main — <why it failed> (2026-07-19T12:00:00.000Z)
+  The next sync runs in the background; this notice clears once a sync succeeds.
+```
+
+It clears only once a sync of the failed branches succeeds; a `margins` command that
+reported the record does not clear it. Hooks installed by an earlier CLI do not print it; re-run
+`margins install-hook --force`.
+
+A path the server refuses (an older server, or Margins Light, rejects names with a
+space or a non-ASCII letter) does not fail the branch: the sync leaves that path out,
+sends the rest, and names each skipped path with the server's reason.
+
 In CI there is no next command and no surviving filesystem, so no record is
 written: `margins workspace hook-sync` **exits non-zero** and names the cause in
 the job log instead. A CI runner is detected from `CI` / `GITHUB_ACTIONS` /
@@ -753,6 +771,8 @@ fail silently on every push until you create it.
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
 refs=$(cat)
+notice="$(git rev-parse --absolute-git-dir 2>/dev/null)/margins-sync-failed.txt"
+[ -s "$notice" ] && cat "$notice" >&2
 margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 ```
@@ -960,6 +980,26 @@ Example `.margins.json`:
 > credentials. For project-scoped API keys + server URL, use a `.margins/` directory
 > at the project root containing `config.json` and set `MARGINS_CONFIG_DIR` to point
 > at it. Add `.margins/` to `.gitignore` since it contains credentials.
+
+---
+
+## Excluding files (`.marginsignore`)
+
+A `.marginsignore` file at the repository root keeps files out of every push-mode sync
+(`workspace push`, `sync`, the git hooks). It uses `.gitignore` syntax: `*`, `**`, `?`,
+a trailing `/` for a directory, a leading `/` to anchor to the root, `!` to re-include,
+and `#` for comments. `node_modules/`, `.git/` and dotfiles are always ignored.
+
+```gitignore
+# drafts stay local
+drafts/
+**/*.private.md
+!notes/keep.private.md
+```
+
+In `committed` content mode the file is read from the commit being synced, not from
+disk, so an edit to `.marginsignore` takes effect once you commit it. In `working-tree`
+mode it is read from disk.
 
 ---
 

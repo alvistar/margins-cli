@@ -26,6 +26,12 @@ All notable changes to margins-cli will be documented in this file.
   sync of the failed branches succeeds. Hooks
   installed before this release do not print it: run `margins install-hook --force`.
 
+### Documentation
+
+- **README: `.marginsignore`.** A new section names the file (repository root,
+  `.gitignore` syntax, read from the commit in `committed` mode), and the `install-hook`
+  section describes the failure notice and the skipped refused paths.
+
 ## [0.24.0] - 2026-10-22
 
 A Claude Code session can now take a thread a writer sends to their agent, and answer
