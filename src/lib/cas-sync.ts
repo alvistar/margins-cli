@@ -45,13 +45,14 @@ export const MAX_REFUSED_PATH_RETRIES = 50
 const INVALID_PATH_MESSAGE = /^Invalid file path: (.+)$/s
 
 /**
- * `s` with its control and bidi characters escaped. A path is the user's own
- * name and reaches a terminal raw: a newline (or U+2028/2029) would forge a
- * line, a U+202E or a directional mark would reorder it, an escape sequence
- * would drive the terminal.
+ * `s` with its control, bidi and invisible characters escaped. A path is the
+ * user's own name and reaches a terminal raw: a newline (or U+2028/2029) would
+ * forge a line, a U+202E or a directional mark would reorder it, an escape
+ * sequence would drive the terminal, and a zero-width character would make two
+ * different names look the same.
  */
 export function printable(s: string): string {
-  return s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]/g, (c) =>
     c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
 

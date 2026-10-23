@@ -200,7 +200,7 @@ export function formatSyncFailureReport(records: SyncFailureRecord[]): string {
   const lines = [
     'margins: an earlier background sync did not reach Margins.',
     ...records.map((r) =>
-      `  ${printable(r.dir)} — ${printable(r.branches.join(', '))} — ${printable(r.cause)} (${r.at})`),
+      `  ${printable(r.dir)} — ${printable(r.branches.join(', '))} — ${printable(r.cause)} (${printable(r.at)})`),
     '  Git was not blocked at the time, so nothing said so. Fix the cause and push again.',
   ]
   return lines.join('\n') + '\n'
@@ -467,7 +467,7 @@ function parseSkips(v: unknown): BranchSkips | undefined {
 function formatSyncFailureNotice(failures: Map<string, BranchFailure>): string {
   const lines = ['margins: the last background sync did not reach Margins.']
   for (const [branch, { cause, at }] of failures) {
-    lines.push(`  ${printable(branch)} — ${printable(cause)} (${at})`)
+    lines.push(`  ${printable(branch)} — ${printable(cause)} (${printable(at)})`)
   }
   lines.push('  The next sync runs in the background; this notice clears once a sync of the branch succeeds.')
   return lines.join('\n') + '\n'
@@ -478,7 +478,7 @@ function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
   const lines = ['margins: the last background sync left files out of Margins.']
   for (const [branch, { refused, heldBack, at }] of skips) {
     for (const r of refused) {
-      lines.push(`  ${printable(branch)}: ${printable(r.path)} — the server refused it: ${printable(r.reason)} (${at})`)
+      lines.push(`  ${printable(branch)}: ${printable(r.path)} — the server refused it: ${printable(r.reason)} (${printable(at)})`)
     }
     if (heldBack && heldBack.length > 0) {
       lines.push(`  ${printable(branch)}: ${heldBack.length} deletion(s) held back until those paths are fixed: ${heldBack.map(printable).join(', ')}`)
@@ -488,14 +488,29 @@ function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
   return lines.join('\n') + '\n'
 }
 
-/** `dir`'s git directory and local branch names, or undefined outside a git repository. */
+/**
+ * `dir`'s git directory and the branch names that still exist there, or
+ * undefined outside a git repository. A pre-push sync is named after the
+ * REMOTE ref (`git push origin feat:release` syncs `release`), so a name counts
+ * while a local branch or a remote-tracking ref (`refs/remotes/<remote>/<name>`)
+ * carries it.
+ */
 function gitLayout(dir: string): { gitDir: string; branches: Set<string> } | undefined {
   try {
     const git = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO })
     const gitDir = git(['rev-parse', '--absolute-git-dir']).trim()
     if (!gitDir) return undefined
-    const branches = git(['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads'])
-    return { gitDir, branches: new Set(branches.split('\n').filter(Boolean)) }
+    const refs = git(['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'])
+    const branches = new Set<string>()
+    for (const ref of refs.split('\n')) {
+      if (ref.startsWith('refs/heads/')) branches.add(ref.slice('refs/heads/'.length))
+      else if (ref.startsWith('refs/remotes/')) {
+        const rest = ref.slice('refs/remotes/'.length)
+        const slash = rest.indexOf('/')
+        if (slash > 0) branches.add(rest.slice(slash + 1))
+      }
+    }
+    return { gitDir, branches }
   } catch {
     return undefined
   }
@@ -541,9 +556,9 @@ interface BranchNotice<E> {
 /**
  * Fold one hook invocation into a per-branch notice. This run speaks for the
  * branches it attempted and for no others. A stored branch that no longer
- * exists locally gets no later sync to clear its lines, so it is dropped;
- * a branch this run just settled stays even without a local ref of that name
- * (a push to a differently named remote branch, a detached commit).
+ * exists (no local branch, no remote-tracking ref) gets no later sync to clear
+ * its lines, so it is dropped; a branch this run just settled stays even
+ * without a ref of that name.
  */
 function settleBranchNotice<E>(
   layout: { gitDir: string; branches: Set<string> },

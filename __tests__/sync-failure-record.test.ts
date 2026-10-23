@@ -397,6 +397,7 @@ describe('escaping what a person reads', () => {
   it('escapes directional marks and Unicode line separators', async () => {
     const { printable } = await import('../src/lib/cas-sync.js')
     expect(printable('a‎b‏c؜d e f')).toBe('a\\u200eb\\u200fc\\u061cd\\u2028e\\u2029f')
+    expect(printable('a​b﻿c⁠d')).toBe('a\\u200bb\\ufeffc\\u2060d')
   })
 })
 
@@ -483,6 +484,18 @@ describe('the hook notices — settled per branch, never by a foreground report'
 
     expect(notice(SYNC_SKIP_NOTICE)).toContain('pages: docs/a b.md')
     expect(notice(SYNC_FAILURE_NOTICE)).toContain('site — boom')
+  })
+
+  // Value: protects=a failure of a branch pushed under a remote name (git push origin feat:release) survives another branch's sync; fails_when=the prune drops every name with no refs/heads entry; why_new=fix-diff and adversarial reviews; seam=none; no_claim=a name with neither a local nor a remote-tracking ref (still pruned)
+  it('keeps a remote-named branch in the notice while its remote-tracking ref exists', async () => {
+    const { settleHookSyncOutcome, SYNC_FAILURE_NOTICE } = await import('../src/lib/sync-failure-record.js')
+    gitRepo('main')
+    spawnSync('git', ['update-ref', 'refs/remotes/origin/release', 'HEAD'], { cwd: projectDir })
+    settleHookSyncOutcome(projectDir, [fail('release', 'boom')], { env: {} })
+
+    settleHookSyncOutcome(projectDir, [ok('main')], { env: {} })
+
+    expect(notice(SYNC_FAILURE_NOTICE)).toContain('release — boom')
   })
 
   // Value: protects=the skip notice says which deletions a refusal held back; fails_when=the held-back paths are dropped between handleHookSync and the notice; why_new=D1 added heldBack; seam=none; no_claim=none beyond protects
