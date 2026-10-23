@@ -2,7 +2,12 @@
 
 All notable changes to margins-cli will be documented in this file.
 
-## [Unreleased]
+## [0.24.1] - 2026-10-23
+
+A push no longer fails a whole branch over a path the server refuses: it skips the path,
+names it with the server's reason, and the git hooks print the failure and skip notices
+at the next push. Hooks installed before 0.24.1 do not print the notices: run
+`margins install-hook --force` once per repository. Ships #59.
 
 ### Fixed
 
