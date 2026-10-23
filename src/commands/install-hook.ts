@@ -48,7 +48,8 @@ const PRE_PUSH_HOOK = `#!/bin/sh
 # Margins ahead of the remote.
 refs=$(cat)
 # A background sync that failed left a notice here; say so now, while someone is
-# looking. It clears once a sync succeeds or a margins command has reported it.
+# looking. Only a successful sync clears it; a margins command that reports the
+# failure leaves it in place.
 notice="$(git rev-parse --absolute-git-dir 2>/dev/null)/${SYNC_FAILURE_NOTICE}"
 [ -s "$notice" ] && cat "$notice" >&2
 margins workspace hook-sync --event pre-push --refs "$refs" &
