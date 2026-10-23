@@ -625,6 +625,30 @@ describe('casSync — refused paths', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 
+  // Value: protects=a stored document whose name the server now refuses (alvistar/margins#329) is never left out of a retried manifest, so it is never soft-deleted; fails_when=the retry drops a refused path the branch holds, or the drop of a new path loses the stored one; why_new=the on-branch tests refuse on the first POST only; seam=none; no_claim=server-side soft-delete (alvistar/margins)
+  it('a stored path the server refuses keeps its server entry through every retry', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stored = 'docs/old‮name.md'
+    const storedHash = 'cd'.repeat(32)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: { [stored]: storedHash }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) return refuse400({ message: `Invalid file path: ${spaced}`, invalidPaths: [spaced] })
+      return refuse400({ message: `Invalid file path: ${stored}`, invalidPaths: [stored] })
+    })
+
+    // The user still has the stored file (pull-mode row switched to push) and added a refused new one.
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [
+      { path: stored, content: Buffer.from('stored'), contentType: 'text/markdown' },
+      files()[1]!,
+    ])).rejects.toMatchObject({ userMessage: expect.stringContaining('Invalid file path') })
+
+    const posts = calls.filter((c) => c.method === 'POST')
+      .map((c) => (JSON.parse(c.body!) as { files: Record<string, string> }).files)
+    expect(posts).toHaveLength(2)
+    for (const manifest of posts) expect(manifest).toHaveProperty([stored])
+  })
+
   // Value: protects=a conflict on the re-post after a drop surfaces and stops, and still names the dropped path; fails_when=the retry loop swallows a non-refusal error or repushes; why_new=no test sent a refusal then a 409; seam=none; no_claim=merge-conflict wording (covered above)
   it('a 409 on the re-post after a drop surfaces the conflict and still names the skip', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
