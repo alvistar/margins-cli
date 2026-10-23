@@ -274,6 +274,21 @@ describe('handleHookSync', () => {
     expect(results[0]!.error).toContain('Invalid file path: docs/a b.md')
   })
 
+  it('carries the paths a successful sync skipped into its result', async () => {
+    const { handleHookSync } = await import('../src/commands/workspace/push.js')
+    const refused = [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }]
+    mockCasSync.mockResolvedValue({ added: 1, changed: 0, deleted: 0, uploaded: 1, skipped: 0, refused })
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    const results = await handleHookSync(makeConfig(), {
+      event: 'pre-push',
+      dir: workDir,
+      refs: refLine('main', SHA_A, 'refs/heads/main'),
+    })
+
+    expect(results).toEqual([{ branch: 'main', rev: SHA_A, ok: true, refused }])
+  })
+
   it('reports two distinct causes separately', async () => {
     const { handleHookSync } = await import('../src/commands/workspace/push.js')
     mockCasSync.mockImplementation(async (_c: unknown, _w: unknown, branch: string) => {

@@ -23,7 +23,7 @@ import * as path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { GIT_STDIO } from '../lib/git-branch.js'
 import { parseFileSyncMode, readMarginsJson } from '../lib/sync-mode.js'
-import { SYNC_FAILURE_NOTICE } from '../lib/sync-failure-record.js'
+import { SYNC_FAILURE_NOTICE, SYNC_SKIP_NOTICE } from '../lib/sync-failure-record.js'
 import * as p from '@clack/prompts'
 
 interface InstallHookOpts {
@@ -47,11 +47,14 @@ const PRE_PUSH_HOOK = `#!/bin/sh
 # NOTE: this runs before the remote accepts the push. A rejected push can leave
 # Margins ahead of the remote.
 refs=$(cat)
-# A background sync that failed left a notice here; say so now, while someone is
-# looking. Only a successful sync clears it; a margins command that reports the
-# failure leaves it in place.
-notice="$(git rev-parse --absolute-git-dir 2>/dev/null)/${SYNC_FAILURE_NOTICE}"
-[ -s "$notice" ] && cat "$notice" >&2
+# A background sync that failed, or that left files out, left a notice here; say
+# so now, while someone is looking. Only a successful sync clears the failure
+# notice (a margins command that reports the failure leaves it in place); a sync
+# of the branch that skips nothing clears the skip notice.
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null)
+for notice in "$gitdir/${SYNC_FAILURE_NOTICE}" "$gitdir/${SYNC_SKIP_NOTICE}"; do
+  [ -s "$notice" ] && cat "$notice" >&2
+done
 margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 `
@@ -67,8 +70,10 @@ const POST_COMMIT_HOOK = `#!/bin/sh
 # commit instead of the one that just triggered this hook.
 rev=$(git rev-parse HEAD) || exit 0
 branch=$(git symbolic-ref --short -q HEAD)
-notice="$(git rev-parse --absolute-git-dir 2>/dev/null)/${SYNC_FAILURE_NOTICE}"
-[ -s "$notice" ] && cat "$notice" >&2
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null)
+for notice in "$gitdir/${SYNC_FAILURE_NOTICE}" "$gitdir/${SYNC_SKIP_NOTICE}"; do
+  [ -s "$notice" ] && cat "$notice" >&2
+done
 margins workspace hook-sync --event post-commit --rev "$rev" --branch "$branch" &
 exit 0
 `

@@ -740,7 +740,18 @@ reported the record does not clear it. Hooks installed by an earlier CLI do not 
 
 A path the server refuses (an older server, or Margins Light, rejects names with a
 space or a non-ASCII letter) does not fail the branch: the sync leaves that path out,
-sends the rest, and names each skipped path with the server's reason.
+sends the rest, and names each skipped path with the server's reason. A background
+sync that skipped a path writes `<git-dir>/margins-sync-skipped.txt`, and the hook
+prints it at your next push:
+
+```
+margins: the last background sync left files out of Margins.
+  main: docs/a b.md — the server refused it: Invalid file path: docs/a b.md (2026-07-19T12:00:00.000Z)
+  Rename or remove them; this notice clears once a sync of the branch skips nothing.
+```
+
+A branch's lines clear when a later sync of that branch skips nothing; a failed sync
+leaves them as they were.
 
 In CI there is no next command and no surviving filesystem, so no record is
 written: `margins workspace hook-sync` **exits non-zero** and names the cause in
@@ -771,8 +782,10 @@ fail silently on every push until you create it.
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
 refs=$(cat)
-notice="$(git rev-parse --absolute-git-dir 2>/dev/null)/margins-sync-failed.txt"
-[ -s "$notice" ] && cat "$notice" >&2
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null)
+for notice in "$gitdir/margins-sync-failed.txt" "$gitdir/margins-sync-skipped.txt"; do
+  [ -s "$notice" ] && cat "$notice" >&2
+done
 margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 ```

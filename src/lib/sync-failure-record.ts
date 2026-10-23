@@ -34,6 +34,14 @@
  * command has reported (and so cleared) the record. Unlike the
  * record, the notice follows the repository, not `MARGINS_DATA_DIR`.
  *
+ * A sync that SUCCEEDED can still leave a file out: a path the server refused
+ * is skipped so the rest of the branch syncs. That file is missing on Margins
+ * just as surely, so the hook prints a sibling notice for it
+ * (`<git-dir>/margins-sync-skipped.txt`) under a rule of its own: it names the
+ * skipped paths and the server's reason, and it clears for a branch when a
+ * later sync of that branch skips nothing. A failed sync says nothing about
+ * what it would skip, so it leaves the skip notice as it was.
+ *
  * The record is REPLACED, not appended. A hook that fails on every push for a
  * week should leave one current record, not a log to page through; the useful
  * fact is "your syncs are failing, here is why", and the latest cause is the
@@ -76,6 +84,8 @@ export interface HookSyncOutcome {
   branch: string
   ok: boolean
   error?: string
+  /** Paths a successful sync left out because the server refused them. */
+  refused?: Array<{ path: string; reason: string }>
 }
 
 /**
@@ -170,13 +180,13 @@ function causeByBranchOf(r: SyncFailureRecord): Record<string, string> {
 /** The notice's name inside a repository's git directory. The hook scripts name it too. */
 export const SYNC_FAILURE_NOTICE = 'margins-sync-failed.txt'
 
-/** `<git-dir>/margins-sync-failed.txt` for `dir`, or undefined outside a git repository. */
-function noticePathFor(dir: string): string | undefined {
+/** `<git-dir>/<name>` for `dir`, or undefined outside a git repository. */
+function noticePathFor(dir: string, name: string = SYNC_FAILURE_NOTICE): string | undefined {
   try {
     const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
       cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO,
     }).trim()
-    return gitDir ? path.join(gitDir, SYNC_FAILURE_NOTICE) : undefined
+    return gitDir ? path.join(gitDir, name) : undefined
   } catch {
     return undefined
   }
@@ -450,6 +460,85 @@ function updateSyncFailures(
   })
 }
 
+// ─── The skip notice ─────────────────────────────────────────────────────────
+
+/** The skip notice's name inside a repository's git directory. The hook scripts name it too. */
+export const SYNC_SKIP_NOTICE = 'margins-sync-skipped.txt'
+
+/**
+ * The per-branch skips behind the notice, beside it in the git directory. The
+ * notice is the text the hook prints; this is what lets one branch's clean
+ * sync clear that branch's lines and keep the others'.
+ */
+const SYNC_SKIP_STATE = 'margins-sync-skipped.json'
+
+interface BranchSkips {
+  refused: Array<{ path: string; reason: string }>
+  at: string
+}
+
+/** The stored skips, keyed by branch. A Map, so a branch named `__proto__` is an entry. */
+function readSkipState(file: string): Map<string, BranchSkips> {
+  const out = new Map<string, BranchSkips>()
+  let raw: unknown
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf-8'))
+  } catch {
+    return out
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [branch, v] of Object.entries(raw as Record<string, unknown>)) {
+    const e = v as Partial<BranchSkips> | null
+    if (!e || typeof e.at !== 'string' || !Array.isArray(e.refused)) continue
+    const refused = e.refused.filter((r): r is { path: string; reason: string } =>
+      !!r && typeof r.path === 'string' && typeof r.reason === 'string')
+    if (refused.length > 0) out.set(branch, { refused, at: e.at })
+  }
+  return out
+}
+
+/** The words the hook prints at the next push. */
+export function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
+  const lines = ['margins: the last background sync left files out of Margins.']
+  for (const [branch, { refused, at }] of skips) {
+    for (const r of refused) lines.push(`  ${branch}: ${r.path} — the server refused it: ${r.reason} (${at})`)
+  }
+  lines.push('  Rename or remove them; this notice clears once a sync of the branch skips nothing.')
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * Fold one hook invocation's skips into `dir`'s skip notice, PER BRANCH.
+ *
+ * A successful sync speaks for its branch: its skips replace that branch's
+ * entry, and no skips removes it. A failed sync posted nothing, so it leaves
+ * the branch's entry as it was. Best effort, like the failure notice.
+ */
+function settleSkipNotice(dir: string, results: HookSyncOutcome[], at: string): void {
+  const notice = noticePathFor(dir, SYNC_SKIP_NOTICE)
+  const state = noticePathFor(dir, SYNC_SKIP_STATE)
+  if (!notice || !state) return
+  try {
+    withRecordLock(() => {
+      const skips = readSkipState(state)
+      for (const r of results) {
+        if (!r.ok) continue
+        if (r.refused && r.refused.length > 0) skips.set(r.branch, { refused: r.refused, at })
+        else skips.delete(r.branch)
+      }
+      if (skips.size === 0) {
+        fs.rmSync(notice, { force: true })
+        fs.rmSync(state, { force: true })
+        return
+      }
+      fs.writeFileSync(state, JSON.stringify(Object.fromEntries(skips), null, 2), 'utf-8')
+      fs.writeFileSync(notice, formatSyncSkipNotice(skips), 'utf-8')
+    })
+  } catch {
+    // Best effort — a notice that cannot be written must never fail the hook.
+  }
+}
+
 // ─── Which channel ───────────────────────────────────────────────────────────
 
 const CI_FLAGS = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'TF_BUILD']
@@ -488,6 +577,11 @@ export function settleHookSyncOutcome(
   // would clear a real pending failure that nobody has seen yet.
   if (results.length === 0) return
 
+  const at = (opts.now ?? new Date()).toISOString()
+  // Before the CI throw: a skip is not a failure, and the branches that
+  // succeeded beside a failed one still settle their skips.
+  settleSkipNotice(dir, results, at)
+
   const failed = results.filter((r) => !r.ok)
   const branches = failed.map((r) => r.branch)
   // One line per distinct cause — the failures a hook produces are
@@ -514,6 +608,6 @@ export function settleHookSyncOutcome(
     dir,
     results.map((r) => r.branch),
     failures,
-    (opts.now ?? new Date()).toISOString(),
+    at,
   )
 }

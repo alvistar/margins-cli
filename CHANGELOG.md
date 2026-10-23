@@ -25,6 +25,12 @@ All notable changes to margins-cli will be documented in this file.
   (plain `sh`, no Node startup) before they start the next sync. It clears only once a
   sync of the failed branches succeeds. Hooks
   installed before this release do not print it: run `margins install-hook --force`.
+- **A path a background sync skipped now shows at the next `git push`.** A hook sync
+  that succeeded but left a refused path out said so only on the background process's
+  stderr, so the file was missing on Margins with no word at the push. The skipped
+  paths and the server's reason now go to `<git-dir>/margins-sync-skipped.txt`, which
+  the hooks print beside the failure notice. A branch's lines clear when a later sync of
+  that branch skips nothing; a failed sync leaves them. The failure notice is unchanged.
 
 ### Documentation
 

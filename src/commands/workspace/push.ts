@@ -10,7 +10,7 @@ import { ValidationError, userMessageOf } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import {
   casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
-  resolveContentMode, type CasSyncResult,
+  resolveContentMode, type CasSyncResult, type RefusedPath,
 } from '../../lib/cas-sync.js'
 import { collectForMode, probeSyncSource, skipOversized } from '../../lib/collect-sync-files.js'
 import type { CollectedSyncFiles } from '../../lib/collect-sync-files.js'
@@ -51,7 +51,7 @@ export async function handlePush(
      */
     collect?: CollectForMode
   }
-): Promise<void> {
+): Promise<{ refused: RefusedPath[] }> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
 
@@ -208,6 +208,7 @@ export async function handlePush(
     }
     console.log(line)
   }
+  return { refused }
 }
 
 // ─── Hook orchestration ──────────────────────────────────────────────────────
@@ -231,6 +232,8 @@ export interface HookSyncResult {
   rev: string
   ok: boolean
   error?: string
+  /** Paths a successful sync left out because the server refused them. */
+  refused?: RefusedPath[]
 }
 
 const ZERO_SHA = /^0+$/
@@ -401,9 +404,9 @@ export async function handleHookSync(
   for (const target of targets) {
     const branch = target.branch ?? currentGitBranch(cwd)
     try {
-      await withBranchLock(cwd, branch, () =>
+      const { refused } = await withBranchLock(cwd, branch, () =>
         handlePush(cfg, { dir: cwd, branch, rev: target.rev, collect }))
-      results.push({ branch, rev: target.rev, ok: true })
+      results.push({ branch, rev: target.rev, ok: true, ...(refused.length > 0 ? { refused } : {}) })
     } catch (err) {
       // R17: this branch is done, the next one still runs.
       results.push({ branch, rev: target.rev, ok: false, error: userMessageOf(err) })

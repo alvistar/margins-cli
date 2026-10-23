@@ -608,4 +608,43 @@ describe('pre-push hook — a failed background sync shows at the next push', ()
     expect(pushStderr()).not.toContain('cause X')
   })
 
+  // A sync that SUCCEEDED but left a refused path out is still a file missing
+  // on Margins; the background process said so to a terminal nobody watches.
+  it('prints the paths a successful sync skipped, and stops once a sync of that branch skips nothing', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+
+    const reason = 'Invalid file path: docs/a b.md'
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a b.md', reason }] },
+    ], { env: {} })
+
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    const shown = pushStderr()
+    expect(shown).toContain('docs/a b.md')
+    expect(shown).toContain(reason)
+    expect(shown).not.toContain('did not reach Margins')
+
+    // Another branch's clean sync does not speak for main.
+    settleHookSyncOutcome(tmpDir, [{ branch: 'other', ok: true }], { env: {} })
+    // A failed sync of main says nothing about what it would skip.
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: 'down' }], { env: {} })
+    write(tmpDir, 'a.md', '# three\n')
+    commit(tmpDir, 'third')
+    expect(pushStderr()).toContain(reason)
+
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: true }], { env: {} })
+    write(tmpDir, 'a.md', '# four\n')
+    commit(tmpDir, 'fourth')
+    const after = pushStderr()
+    expect(after).not.toContain('docs/a b.md')
+    // The failure notice keeps its own rule: only a successful sync cleared it.
+    expect(after).not.toContain('did not reach Margins')
+  })
+
 })
