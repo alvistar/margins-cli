@@ -11,12 +11,20 @@ All notable changes to margins-cli will be documented in this file.
   for a name with a space or a non-ASCII letter. The push now drops each refused path,
   re-posts the rest, and names every skipped path with the server's reason on stderr
   (and in `--json` as `refused`). It reads `invalidPaths` from a newer server's 400, or
-  the one path an older server names; it stops after 50 retries. The CLI keeps no copy
+  the one path an older server names; it stops after 50 retries. A refused path the
+  branch already holds is never dropped, since leaving it out would delete it. The CLI keeps no copy
   of the server's path rule, so a server that accepts these names gets them.
 - **A failed sync now says why.** `hook-sync` printed `sync failed for <branch> — Server
   error 400` and recorded the same words; it now shows the server's reason (for example
   `Margins refused the request (400 VALIDATION_ERROR): Invalid file path: …`). The
   GitHub-overlay fallback in `margins sync` and the `audit` error rows had the same drop.
+- **A failed background sync now shows at the next `git push`.** The hook backgrounds
+  its sync, so a failure went to a terminal git had already left, and the record of it
+  surfaced only on the next `margins` command. The failure is now also written to
+  `<git-dir>/margins-sync-failed.txt`, and the pre-push and post-commit hooks print it
+  (plain `sh`, no Node startup) before they start the next sync. It clears only once a
+  sync of the failed branches succeeds. Hooks
+  installed before this release do not print it: run `margins install-hook --force`.
 
 ## [0.24.0] - 2026-10-22
 

@@ -25,6 +25,15 @@
  * gets swept into `git add -A`, and ends up committed. `MARGINS_DATA_DIR`
  * therefore isolates it exactly as it isolates the registry and the hook locks.
  *
+ * A THIRD reader: the installed hook itself. The person who pushes may never run
+ * another `margins` command, so each record is mirrored into a plain-text
+ * NOTICE in the repository's git directory (`<git-dir>/margins-sync-failed.txt`,
+ * never tracked, never in `git status`), and the hook prints it, synchronously
+ * and with no Node startup, before it backgrounds the next sync. The notice
+ * stays until a sync of the failed branches succeeds, even after a foreground
+ * command has reported (and so cleared) the record. Unlike the
+ * record, the notice follows the repository, not `MARGINS_DATA_DIR`.
+ *
  * The record is REPLACED, not appended. A hook that fails on every push for a
  * week should leave one current record, not a log to page through; the useful
  * fact is "your syncs are failing, here is why", and the latest cause is the
@@ -32,7 +41,9 @@
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { registryPath } from './registry.js'
+import { GIT_STDIO } from './git-branch.js'
 import { MarginsError } from './errors.js'
 
 // ─── Shape ───────────────────────────────────────────────────────────────────
@@ -154,8 +165,53 @@ function causeByBranchOf(r: SyncFailureRecord): Record<string, string> {
   return Object.fromEntries(r.branches.map((b) => [b, r.cause]))
 }
 
+// ─── The hook's notice ───────────────────────────────────────────────────────
+
+/** The notice's name inside a repository's git directory. The hook scripts name it too. */
+export const SYNC_FAILURE_NOTICE = 'margins-sync-failed.txt'
+
+/** `<git-dir>/margins-sync-failed.txt` for `dir`, or undefined outside a git repository. */
+function noticePathFor(dir: string): string | undefined {
+  try {
+    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO,
+    }).trim()
+    return gitDir ? path.join(gitDir, SYNC_FAILURE_NOTICE) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The words the hook prints at the next push. */
+export function formatSyncFailureNotice(record: SyncFailureRecord): string {
+  return [
+    'margins: the last background sync did not reach Margins.',
+    `  ${record.branches.join(', ')} — ${record.cause} (${record.at})`,
+    '  The next sync runs in the background; this notice clears once a sync succeeds.',
+  ].join('\n') + '\n'
+}
+
+/**
+ * Make `dir`'s notice match its record: written when one is outstanding,
+ * removed when none is. Best effort — a notice that cannot be written must
+ * never fail the hook or the command that settles it.
+ */
+function syncNotice(dir: string, record: SyncFailureRecord | undefined): void {
+  const file = noticePathFor(dir)
+  if (!file) return
+  try {
+    if (record) fs.writeFileSync(file, formatSyncFailureNotice(record), 'utf-8')
+    else fs.rmSync(file, { force: true })
+  } catch {
+    // Best effort.
+  }
+}
+
 /** Read every record and clear the file — the report-once primitive. */
 export function takeSyncFailureRecords(): SyncFailureRecord[] {
+  // The hook's notice stays: the command that reported the record may be one
+  // nobody reads (an agent session's `discuss wait`), so only a successful
+  // sync of the failed branches removes it.
   const records = readSyncFailureRecords()
   // Cleared unconditionally: a file that failed to parse must not survive to
   // fail again on every future command.
@@ -322,6 +378,7 @@ export function recordSyncFailure(record: SyncFailureRecord): void {
       causeByBranch: record.causeByBranch ?? causeByBranchOf(record),
     }
     writeAll(all)
+    syncNotice(dir, all[dir])
   })
 }
 
@@ -330,6 +387,7 @@ export function clearSyncFailure(dir: string): void {
   withRecordLock(() => {
     const all = currentByDir()
     const key = keyFor(dir)
+    syncNotice(key, undefined)
     if (!(key in all)) return
     delete all[key]
     writeAll(all)
@@ -367,6 +425,7 @@ function updateSyncFailures(
 
     const branches = Object.keys(causes)
     if (branches.length === 0) {
+      syncNotice(key, undefined)
       if (!(key in all)) return
       delete all[key]
       writeAll(all)
@@ -387,6 +446,7 @@ function updateSyncFailures(
       causeByBranch: causes,
     }
     writeAll(all)
+    syncNotice(key, all[key])
   })
 }
 
