@@ -725,33 +725,39 @@ margins: an earlier background sync did not reach Margins.
 Only the latest failure per project is kept — it is replaced, not appended.
 
 The same failure also waits for your next `git push` (or commit, with `--on commit`):
-it is mirrored into `<git-dir>/margins-sync-failed.txt` (inside `.git`, so never in
+it is written to `<git-dir>/margins-sync-failed.txt` (inside `.git`, so never in
 `git status`), and the hook prints it before it starts the next sync:
 
 ```
 margins: the last background sync did not reach Margins.
   main — <why it failed> (2026-07-19T12:00:00.000Z)
-  The next sync runs in the background; this notice clears once a sync succeeds.
+  The next sync runs in the background; this notice clears once a sync of the branch succeeds.
 ```
 
-It clears only once a sync of the failed branches succeeds; a `margins` command that
-reported the record does not clear it. Hooks installed by an earlier CLI do not print it; re-run
+A branch's line clears only once a hook sync of that branch succeeds, or once neither a
+local branch nor a remote-tracking ref carries its name; a `margins` command that reported the record does not clear it, and neither
+does another branch's sync. Hooks installed by an earlier CLI do not print it; re-run
 `margins install-hook --force`.
 
 A path the server refuses (an older server, or Margins Light, rejects names with a
 space or a non-ASCII letter) does not fail the branch: the sync leaves that path out,
-sends the rest, and names each skipped path with the server's reason. A background
+sends the rest, and names each skipped path with the server's reason. Once a path is
+refused, the push also holds back every deletion it would have made: a document you
+renamed to a refused name stays on Margins under its old name, with its discussions,
+instead of being deleted. The held-back deletions land on the first push with no
+refused path. A background
 sync that skipped a path writes `<git-dir>/margins-sync-skipped.txt`, and the hook
 prints it at your next push:
 
 ```
 margins: the last background sync left files out of Margins.
   main: docs/a b.md — the server refused it: Invalid file path: docs/a b.md (2026-07-19T12:00:00.000Z)
+  main: 1 deletion(s) held back until those paths are fixed: docs/a.md
   Rename or remove them; this notice clears once a sync of the branch skips nothing.
 ```
 
 A branch's lines clear when a later hook sync of that branch skips nothing, or once
-the branch is deleted; a failed sync leaves them as they were, and so does a manual
+no local branch or remote-tracking ref carries its name; a failed sync leaves them as they were, and so does a manual
 `margins sync`. Control characters in a path are printed escaped. Hooks installed by
 an earlier CLI do not print it; re-run `margins install-hook --force`.
 

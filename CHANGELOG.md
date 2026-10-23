@@ -12,7 +12,12 @@ All notable changes to margins-cli will be documented in this file.
   re-posts the rest, and names every skipped path with the server's reason on stderr
   (and in `--json` as `refused`). It reads `invalidPaths` from a newer server's 400, or
   the one path an older server names; it stops after 50 retries. A refused path the
-  branch already holds is never dropped, since leaving it out would delete it. The CLI keeps no copy
+  branch already holds is never dropped, since leaving it out would delete it. Once a
+  path is refused, every deletion in that push is held back (kept at the server's
+  version), so a document renamed to a refused name keeps its old name and its
+  discussions instead of being deleted; the deletions land on the first push with no
+  refused path. They are named on stderr, in `--json` (`heldBack`) and in the skip
+  notice. The CLI keeps no copy
   of the server's path rule, so a server that accepts these names gets them.
 - **A failed sync now says why.** `hook-sync` printed `sync failed for <branch> — Server
   error 400` and recorded the same words; it now shows the server's reason (for example
@@ -22,22 +27,25 @@ All notable changes to margins-cli will be documented in this file.
   its sync, so a failure went to a terminal git had already left, and the record of it
   surfaced only on the next `margins` command. The failure is now also written to
   `<git-dir>/margins-sync-failed.txt`, and the pre-push and post-commit hooks print it
-  (plain `sh`, no Node startup) before they start the next sync. It clears only once a
-  sync of the failed branches succeeds. Hooks
+  (plain `sh`, no Node startup) before they start the next sync. A branch's line clears
+  only once a hook sync of that branch succeeds, or once no local branch or
+  remote-tracking ref carries its name; a foreground report of the record and another branch's sync leave it. Hooks
   installed before this release do not print it: run `margins install-hook --force`.
 - **A path a background sync skipped now shows at the next `git push`.** A hook sync
   that succeeded but left a refused path out said so only on the background process's
   stderr, so the file was missing on Margins with no word at the push. The skipped
   paths and the server's reason now go to `<git-dir>/margins-sync-skipped.txt`, which
   the hooks print beside the failure notice, with control characters escaped. A
-  branch's lines clear when a later hook sync of that branch skips nothing, or once the
-  branch is deleted; a failed sync leaves them. The failure notice is unchanged. Hooks
+  branch's lines clear when a later hook sync of that branch skips nothing, or once no
+  local branch or remote-tracking ref carries its name; a failed sync leaves them. Hooks
   installed before this release do not print it: run `margins install-hook --force`.
-- **A refused path is printed escaped.** A TAB, a newline, an escape sequence or a
-  bidi override (U+202E) in a skipped path, or in a failure's cause, reached the
-  terminal raw: it could reorder or forge a line. Every place one is printed (the
-  `Skipped` line, both notices, the hook's `sync failed` line, the foreground report)
-  now shows it as `\t`, `\n` or `\uXXXX`. `--json` was already escaped.
+- **A refused path is printed escaped.** A TAB, a newline, an escape sequence, a
+  bidi override (U+202E), a directional mark or a zero-width character in a skipped
+  path, or in a failure's cause, reached the terminal raw: it could reorder or forge a
+  line, or make two names look the same. Every place one is printed (the `Skipped`
+  line, both notices, the hook's `sync failed` line, the foreground report, the
+  `sync` overlay warning, the `audit` table) now shows it as `\t`, `\n` or `\uXXXX`.
+  `--json` escapes control characters as JSON does; other characters stay as data.
 
 ### Documentation
 
