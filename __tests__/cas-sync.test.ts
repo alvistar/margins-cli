@@ -535,6 +535,25 @@ describe('casSync — refused paths', () => {
     expect(result.refused.map((r) => r.path)).toEqual([spaced, accented])
   })
 
+  it('keys the drop on invalidPaths, not on the error code or the message', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) {
+        return new Response(JSON.stringify({
+          error: 'SOME_OTHER_CODE', message: 'File path is not allowed.', invalidPaths: [spaced],
+        }), { status: 400 })
+      }
+      return apiOk({ added: 2, changed: 0, deleted: 0 })
+    })
+
+    const result = await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files())
+
+    expect(posted(calls)[1]).toEqual(['docs/ok.md', 'docs/perché.md'])
+    expect(result.refused).toEqual([{ path: spaced, reason: 'File path is not allowed.' }])
+  })
+
   it('stops retrying after MAX_REFUSED_PATH_RETRIES, lets the last refusal stand, still names the skips', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const many = Array.from({ length: MAX_REFUSED_PATH_RETRIES + 5 }, (_, i) => ({
