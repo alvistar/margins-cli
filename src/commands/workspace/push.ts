@@ -9,7 +9,7 @@ import { formatJson } from '../../lib/output.js'
 import { ValidationError, userMessageOf } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import {
-  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
+  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag, printable,
   resolveContentMode, type CasSyncResult, type RefusedPath,
 } from '../../lib/cas-sync.js'
 import { collectForMode, probeSyncSource, skipOversized } from '../../lib/collect-sync-files.js'
@@ -362,7 +362,7 @@ function reportHookFailures(results: HookSyncResult[]): void {
     byCause.set(r.error!, branches)
   }
   for (const [cause, branches] of byCause) {
-    process.stderr.write(`margins: sync failed for ${branches.join(', ')} — ${cause}\n`)
+    process.stderr.write(`margins: sync failed for ${printable(branches.join(', '))} — ${printable(cause)}\n`)
   }
 }
 

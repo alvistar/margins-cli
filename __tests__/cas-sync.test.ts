@@ -554,6 +554,27 @@ describe('casSync — refused paths', () => {
     expect(result.refused).toEqual([{ path: spaced, reason: 'File path is not allowed.' }])
   })
 
+  it('names a skipped path on stderr with its control and bidi characters escaped', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const odd = 'docs/tab\there\u202Eevil\nline.md'
+    stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) return refuse400({ message: `Invalid file path: ${odd}`, invalidPaths: [odd] })
+      return apiOk({ added: 1, changed: 0, deleted: 0 })
+    })
+
+    await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [
+      { path: odd, content: Buffer.from('x'), contentType: 'text/markdown' },
+      files()[0]!,
+    ])
+
+    const said = stderr.mock.calls.map((c) => String(c[0])).join('')
+    expect(said).toContain('Skipped docs/tab\\there\\u202eevil\\nline.md')
+    expect(said).not.toMatch(/[\t\u202e]/)
+    expect(said.trimEnd().split('\n')).toHaveLength(1)
+  })
+
   it('stops retrying after MAX_REFUSED_PATH_RETRIES, lets the last refusal stand, still names the skips', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const many = Array.from({ length: MAX_REFUSED_PATH_RETRIES + 5 }, (_, i) => ({

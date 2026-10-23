@@ -39,10 +39,20 @@ export const MAX_REFUSED_PATH_RETRIES = 50
 
 const INVALID_PATH_MESSAGE = /^Invalid file path: (.+)$/s
 
+/**
+ * `s` with its control and bidi-override characters escaped. A path is the
+ * user's own name and reaches a terminal raw: a newline would forge a line, a
+ * U+202E would reorder it, an escape sequence would drive the terminal.
+ */
+export function printable(s: string): string {
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+    c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
 /** One stderr line per refused path, naming the server's reason. */
 export function formatRefusedPaths(refused: RefusedPath[]): string {
   return refused
-    .map((r) => `[margins] Skipped ${r.path} — the server refused it: ${r.reason}\n`)
+    .map((r) => `[margins] Skipped ${printable(r.path)} — the server refused it: ${printable(r.reason)}\n`)
     .join('')
 }
 

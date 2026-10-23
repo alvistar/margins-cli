@@ -675,6 +675,16 @@ describe('pre-push hook — a failed background sync shows at the next push', ()
     const later = pushStderr()
     expect(later).not.toContain('docs/x y.md')
     expect(later).toContain('forged line.md')
+    // A failure's cause can carry a refused path too, in the server's message.
+    expect(later).toContain('did not reach Margins')
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: false, error: 'Invalid file path: docs/\u202Eevil.md' },
+    ], { env: {} })
+    write(tmpDir, 'a.md', '# four\n')
+    commit(tmpDir, 'fourth')
+    const failed = pushStderr()
+    expect(failed).toContain('docs/\\u202eevil.md')
+    expect(failed).not.toContain('\u202e')
   })
 
 })

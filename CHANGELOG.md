@@ -33,6 +33,11 @@ All notable changes to margins-cli will be documented in this file.
   branch's lines clear when a later hook sync of that branch skips nothing, or once the
   branch is deleted; a failed sync leaves them. The failure notice is unchanged. Hooks
   installed before this release do not print it: run `margins install-hook --force`.
+- **A refused path is printed escaped.** A TAB, a newline, an escape sequence or a
+  bidi override (U+202E) in a skipped path, or in a failure's cause, reached the
+  terminal raw: it could reorder or forge a line. Every place one is printed (the
+  `Skipped` line, both notices, the hook's `sync failed` line, the foreground report)
+  now shows it as `\t`, `\n` or `\uXXXX`. `--json` was already escaped.
 
 ### Documentation
 

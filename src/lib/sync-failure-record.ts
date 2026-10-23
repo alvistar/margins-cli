@@ -53,7 +53,7 @@ import { execFileSync } from 'node:child_process'
 import { registryPath } from './registry.js'
 import { GIT_STDIO } from './git-branch.js'
 import { MarginsError } from './errors.js'
-import type { RefusedPath } from './cas-sync.js'
+import { printable, type RefusedPath } from './cas-sync.js'
 
 // ─── Shape ───────────────────────────────────────────────────────────────────
 
@@ -197,7 +197,7 @@ function gitDirFile(dir: string, name: string): string | undefined {
 export function formatSyncFailureNotice(record: SyncFailureRecord): string {
   return [
     'margins: the last background sync did not reach Margins.',
-    `  ${record.branches.join(', ')} — ${record.cause} (${record.at})`,
+    `  ${printable(record.branches.join(', '))} — ${printable(record.cause)} (${record.at})`,
     '  The next sync runs in the background; this notice clears once a sync succeeds.',
   ].join('\n') + '\n'
 }
@@ -240,7 +240,7 @@ export function formatSyncFailureReport(records: SyncFailureRecord[]): string {
   const lines = [
     'margins: an earlier background sync did not reach Margins.',
     ...records.map((r) =>
-      `  ${r.dir} — ${r.branches.join(', ')} — ${r.cause} (${r.at})`),
+      `  ${printable(r.dir)} — ${printable(r.branches.join(', '))} — ${printable(r.cause)} (${r.at})`),
     '  Git was not blocked at the time, so nothing said so. Fix the cause and push again.',
   ]
   return lines.join('\n') + '\n'
@@ -498,16 +498,6 @@ function readSkipState(file: string): Map<string, BranchSkips> {
   return out
 }
 
-/**
- * `s` with its control and bidi-override characters escaped. A path is the
- * user's own name and the hook `cat`s the notice raw: a newline would forge a
- * line of the notice, an escape sequence would reach the terminal.
- */
-function printable(s: string): string {
-  return s.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
-    c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
-}
-
 /** The words the hook prints at the next push. */
 function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
   const lines = ['margins: the last background sync left files out of Margins.']
@@ -633,7 +623,7 @@ export function settleHookSyncOutcome(
 
   if (failed.length > 0 && isNonInteractiveCi(opts.env)) {
     throw new BackgroundSyncFailed(
-      `Margins sync failed for ${branches.join(', ')} in ${dir} — ${cause}\n` +
+      `Margins sync failed for ${printable(branches.join(', '))} in ${printable(dir)} — ${printable(cause)}\n` +
       'Nothing was sent to Margins. This step fails rather than passing quietly: a CI ' +
       'runner has no later `margins` command to report it to, and the container does not ' +
       'outlive the job.',
