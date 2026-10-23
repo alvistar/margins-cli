@@ -85,4 +85,35 @@ describe('handleSync — oversized blobs are skipped, not pushed', () => {
     expect(json.skippedOversized).toBe(1)
     expect(json.oversizedPaths).toEqual(['huge.png'])
   })
+
+  // Value: protects=top-level `margins sync` reports server-refused paths in --json (skippedRefused + refused) and drops them from the manifest; fails_when=handleSync ignores casResult.refused, so a skipped file is silently missing from the JSON a tray/agent reads; why_new=only the oversized skip was driven through handleSync; seam=none; no_claim=the human warn line
+  it('reports a path the server refused in the JSON result, and syncs the rest', async () => {
+    const { ServerError } = await import('../../src/lib/errors.js')
+    fs.writeFileSync(
+      path.join(tmpDir, '.margins.json'),
+      JSON.stringify({ workspace_id: 'ws-1', workspace_slug: 'gh/x/y', default_branch: 'main', syncMode: 'push' }),
+    )
+    fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Hello\n')
+    fs.writeFileSync(path.join(tmpDir, 'a b.md'), '# Spaced\n')
+
+    mockGet.mockResolvedValue({ files: {}, headSha: null })
+    mockPutRaw.mockResolvedValue({ ok: true })
+    mockPost.mockRejectedValueOnce(
+      new ServerError(400, 'VALIDATION_ERROR', 'Invalid file path: a b.md', undefined, ['a b.md']))
+    mockPost.mockResolvedValue({ ok: true })
+
+    const { handleSync } = await import('../../src/commands/sync.js')
+    await handleSync(makeConfig(), { dir: tmpDir })
+
+    const manifests = mockPost.mock.calls.filter((c) => String(c[0]).includes('/sync/manifest'))
+    expect(Object.keys((manifests.at(-1)![1] as { files: Record<string, string> }).files)).toEqual(['README.md'])
+    expect(stderrSpy.mock.calls.map((c) => String(c[0])).join(''))
+      .toContain('Skipped a b.md — the server refused it: Invalid file path: a b.md')
+    const json = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as {
+      status: string; skippedRefused: number; refused: unknown[]
+    }
+    expect(json.status).toBe('synced')
+    expect(json.skippedRefused).toBe(1)
+    expect(json.refused).toEqual([{ path: 'a b.md', reason: 'Invalid file path: a b.md' }])
+  })
 })

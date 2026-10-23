@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { handleInstallHook } from '../src/commands/install-hook.js'
 import { parsePrePushRefs } from '../src/commands/workspace/push.js'
 
@@ -532,4 +532,183 @@ describe('hooks directory resolution', () => {
     expect(err.mock.calls.map((c) => c[0])).toContain('Updated .margins.json: "syncMode": "server" → "pull" — commit it.')
     err.mockRestore()
   })
+})
+
+// ─── A failed background sync shows at the next push ─────────────────────────
+//
+// The hook backgrounds its sync, so a failure lands in a terminal git has
+// already left. The record the failure leaves must reach the person at the
+// moment they are looking: their next `git push`.
+
+describe('pre-push hook — a failed background sync shows at the next push', () => {
+  let dataDir: string
+  let prevDataDir: string | undefined
+  beforeEach(() => {
+    prevDataDir = process.env['MARGINS_DATA_DIR']
+    dataDir = mkdtemp('margins-hook-notice-data-')
+    process.env['MARGINS_DATA_DIR'] = dataDir
+  })
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env['MARGINS_DATA_DIR']
+    else process.env['MARGINS_DATA_DIR'] = prevDataDir
+  })
+
+  /** Push and return what the person sees on stderr. */
+  function pushStderr(): string {
+    const res = spawnSync('git', ['push', '-q', 'origin', 'main'], {
+      cwd: tmpDir, encoding: 'utf-8', env: { ...process.env, ...hookEnv },
+    })
+    expect(res.status).toBe(0)
+    return res.stderr
+  }
+
+  it('prints the cause of the last failure, and stops once a sync succeeds', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+    expect(pushStderr()).not.toContain('did not reach Margins')
+
+    const cause = 'Margins refused the request (400 VALIDATION_ERROR): Invalid file path: docs/a b.md'
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: cause }], { env: {} })
+
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    const shown = pushStderr()
+    expect(shown).toContain('did not reach Margins')
+    expect(shown).toContain(cause)
+
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: true }], { env: {} })
+    write(tmpDir, 'a.md', '# three\n')
+    commit(tmpDir, 'third')
+    expect(pushStderr()).not.toContain('did not reach Margins')
+  })
+
+  it('keeps showing after a foreground command reported it, until a sync succeeds', async () => {
+    const { settleHookSyncOutcome, reportPendingSyncFailures } =
+      await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: 'cause X' }], { env: {} })
+
+    // e.g. an agent session's `discuss wait`, whose stderr no person reads.
+    let reported = ''
+    reportPendingSyncFailures((s) => { reported += s })
+    expect(reported).toContain('cause X')
+    expect(pushStderr()).toContain('cause X')
+
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: true }], { env: {} })
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    expect(pushStderr()).not.toContain('cause X')
+  })
+
+  // A sync that SUCCEEDED but left a refused path out is still a file missing
+  // on Margins; the background process said so to a terminal nobody watches.
+  it('prints the paths a successful sync skipped, and stops once a sync of that branch skips nothing', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+
+    const reason = 'Invalid file path: docs/a b.md'
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a b.md', reason }] },
+    ], { env: {} })
+
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    const shown = pushStderr()
+    expect(shown).toContain('docs/a b.md')
+    expect(shown).toContain(reason)
+    expect(shown).not.toContain('did not reach Margins')
+
+    // Another branch's clean sync does not speak for main.
+    settleHookSyncOutcome(tmpDir, [{ branch: 'other', ok: true }], { env: {} })
+    // A failed sync of main says nothing about what it would skip.
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: 'down' }], { env: {} })
+    write(tmpDir, 'a.md', '# three\n')
+    commit(tmpDir, 'third')
+    expect(pushStderr()).toContain(reason)
+
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: true }], { env: {} })
+    write(tmpDir, 'a.md', '# four\n')
+    commit(tmpDir, 'fourth')
+    const after = pushStderr()
+    expect(after).not.toContain('docs/a b.md')
+    // The failure notice keeps its own rule: only a successful sync cleared it.
+    expect(after).not.toContain('did not reach Margins')
+  })
+
+  it('drops the lines of a branch that no longer exists, and escapes control characters in a path', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+    git(['branch', 'gone'], tmpDir)
+
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'gone', ok: true, refused: [{ path: 'docs/x y.md', reason: 'Invalid file path: docs/x y.md' }] },
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a\nforged line.md', reason: 'bad\u001b[31m' }] },
+    ], { env: {} })
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    const shown = pushStderr()
+    expect(shown).toContain('docs/x y.md')
+    expect(shown).toContain('docs/a\\nforged line.md')
+    expect(shown).not.toContain('\u001b')
+
+    // A deleted (or renamed) branch has no sync left to clear its lines.
+    git(['branch', '-D', 'gone'], tmpDir)
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: 'down' }], { env: {} })
+    write(tmpDir, 'a.md', '# three\n')
+    commit(tmpDir, 'third')
+    const later = pushStderr()
+    expect(later).not.toContain('docs/x y.md')
+    expect(later).toContain('forged line.md')
+    // A failure's cause can carry a refused path too, in the server's message.
+    expect(later).toContain('did not reach Margins')
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: false, error: 'Invalid file path: docs/\u202Eevil.md' },
+    ], { env: {} })
+    write(tmpDir, 'a.md', '# four\n')
+    commit(tmpDir, 'fourth')
+    const failed = pushStderr()
+    expect(failed).toContain('docs/\\u202eevil.md')
+    expect(failed).not.toContain('\u202e')
+  })
+
+  // Value: protects=the post-commit hook (install-hook --on commit) prints both notices too; fails_when=the notice loop is dropped from POST_COMMIT_HOOK or names the wrong file; why_new=every notice test drove the pre-push hook only; seam=none; no_claim=notice wording (covered above)
+  it('the post-commit hook prints the failure and skip notices at the next commit', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({ on: 'commit' })
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }] },
+    ], { env: {} })
+    settleHookSyncOutcome(tmpDir, [{ branch: 'other', ok: false, error: 'cause Y' }], { env: {} })
+
+    write(tmpDir, 'a.md', '# two\n')
+    git(['add', '-A'], tmpDir)
+    const res = spawnSync('git', ['commit', '-q', '-m', 'second'], {
+      cwd: tmpDir, encoding: 'utf-8', env: { ...process.env, ...hookEnv },
+    })
+    expect(res.status).toBe(0)
+    expect(res.stderr).toContain('did not reach Margins')
+    expect(res.stderr).toContain('cause Y')
+    expect(res.stderr).toContain('docs/a b.md \u2014 the server refused it')
+  })
+
 })

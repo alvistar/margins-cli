@@ -11,6 +11,16 @@ export class MarginsError extends Error {
   }
 }
 
+/**
+ * What to tell a person about `err`: a Margins error's `userMessage` (which
+ * carries a 4xx's server reason), else the plain message. `err.message` on a
+ * ServerError is only `Server error 400` — the words that drop the reason.
+ */
+export function userMessageOf(err: unknown): string {
+  if (err instanceof MarginsError) return err.userMessage
+  return err instanceof Error ? err.message : String(err)
+}
+
 // ─── Auth errors ──────────────────────────────────────────────────────────────
 
 export class AuthMissing extends MarginsError {
@@ -69,6 +79,12 @@ export class ServerError extends MarginsError {
     public readonly serverMessage?: string,
     /** Field-level validation details (`withBody` 400s), when the body carried them. */
     public readonly details?: ServerErrorDetail[],
+    /**
+     * Every manifest path a sync route refused (`{ invalidPaths: [...] }` on a
+     * VALIDATION_ERROR 400), when the server lists them. An older server names
+     * one path in `message` instead; `casSync` reads both.
+     */
+    public readonly invalidPaths?: string[],
   ) {
     super(`Server error ${status}`, serverErrorUserMessage(status, code, serverMessage, details), 1)
   }

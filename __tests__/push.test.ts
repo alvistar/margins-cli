@@ -667,4 +667,53 @@ describe('handlePush — result reporting', () => {
     expect(stderrSpy.mock.calls.map((c) => String(c[0])).join(''))
       .toMatch(/auto-merged with a concurrent edit/)
   })
+
+  // Value: protects=a push that skipped a server-refused path says so in --json (skippedRefused + refused) and in the summary line, and returns the skips to the hook; fails_when=handlePush drops casSync's refused list (the hook then never writes the skip notice) or the summary/JSON omit it; why_new=hook-sync tests mock casSync and no test drove handlePush's output with a refusal; seam=none; no_claim=stderr wording (cas-sync.test.ts)
+  it('reports paths the server refused in --json, in the summary line, and in its return value', async () => {
+    const { ServerError } = await import('../src/lib/errors.js')
+    write('README.md', '# Hi\n')
+    write('docs/a b.md', '# Spaced\n')
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const refuseOnce = () => {
+      let refusedOnce = false
+      mockPost.mockImplementation(async (p: string) => {
+        if (p.includes('/sync/manifest') && !refusedOnce) {
+          refusedOnce = true
+          throw new ServerError(400, 'VALIDATION_ERROR', 'Invalid file path: docs/a b.md', undefined, ['docs/a b.md'])
+        }
+        return {}
+      })
+    }
+    const refused = [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }]
+
+    refuseOnce()
+    const ret = await handlePush(makeConfig({ json: true }), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+    expect(ret).toEqual({ refused, heldBack: [] })
+    // uploaded counts blobs transferred: the refused file's blob went up before
+    // the manifest POST was refused, so it is 2 while added (the manifest) is 1.
+    expect(JSON.parse(String(logSpy.mock.calls.at(-1)![0]))).toEqual({
+      added: 1, changed: 0, deleted: 0, uploaded: 2, skipped: 0, merged: false,
+      skippedRefused: 1, refused,
+    })
+
+    calls = []
+    refuseOnce()
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+    expect(String(logSpy.mock.calls.at(-1)![0])).toBe(
+      'Pushed: 1 added, 0 changed, 0 deleted (2 uploaded, 0 unchanged) — 1 path(s) refused by the server skipped')
+
+    // Value: protects=a rename into a refused name reports the held-back deletion in --json, the summary and the return value; fails_when=handlePush drops casSync's heldBack (the hook's notice then never mentions it); why_new=D1 added heldBack; seam=none; no_claim=the manifest content (cas-sync.test.ts)
+    mockGet.mockResolvedValue({ files: { 'old.md': 'ab'.repeat(32) }, headSha: 'f'.repeat(40) })
+    calls = []
+    refuseOnce()
+    const held = await handlePush(makeConfig({ json: true }), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+    expect(held).toEqual({ refused, heldBack: ['old.md'] })
+    expect(JSON.parse(String(logSpy.mock.calls.at(-1)![0]))).toMatchObject({
+      deleted: 0, skippedRefused: 1, heldBackDeletions: 1, heldBack: ['old.md'],
+    })
+    calls = []
+    refuseOnce()
+    await handlePush(makeConfig(), { workspace: 'ws-1', dir: tmpDir, branch: 'main' })
+    expect(String(logSpy.mock.calls.at(-1)![0])).toContain('— 1 deletion(s) held back')
+  })
 })

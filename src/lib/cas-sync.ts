@@ -17,6 +17,65 @@ export interface CasSyncResult {
   uploaded: number   // blobs actually transferred
   skipped: number    // blobs already on server
   merged: boolean    // server 3-way-merged this push with a concurrent edit
+  /** Paths the server refused, left out of this push, each with the server's reason. */
+  refused: RefusedPath[]
+  /**
+   * Server paths this push would have deleted but kept, because it refused a
+   * path: a refused rename must not delete the original. Sorted.
+   */
+  heldBack: string[]
+}
+
+/** A path the server would not accept in a manifest, and why. */
+export interface RefusedPath {
+  path: string
+  reason: string
+}
+
+/**
+ * How many times one push re-posts its manifest after a refused path. A server
+ * that lists every refused path (`invalidPaths`) needs one retry; an older one
+ * names a single path per 400, so this cap is also the most refused paths one
+ * push can skip on such a server. Past it the last refusal stands: a tree with
+ * more names than this to skip wants a `.marginsignore` (or a newer server),
+ * not fifty more round trips.
+ */
+export const MAX_REFUSED_PATH_RETRIES = 50
+
+const INVALID_PATH_MESSAGE = /^Invalid file path: (.+)$/s
+
+/**
+ * `s` with its control, bidi and invisible characters escaped. A path is the
+ * user's own name and reaches a terminal raw: a newline (or U+2028/2029) would
+ * forge a line, a U+202E or a directional mark would reorder it, an escape
+ * sequence would drive the terminal, and a zero-width character would make two
+ * different names look the same.
+ */
+export function printable(s: string): string {
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]/g, (c) =>
+    c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
+/** One stderr line per refused path, naming the server's reason, then one for the held-back deletions. */
+export function formatRefusedPaths(refused: RefusedPath[], heldBack: string[] = []): string {
+  return refused
+    .map((r) => `[margins] Skipped ${printable(r.path)} — the server refused it: ${printable(r.reason)}\n`)
+    .join('') + (heldBack.length > 0
+    ? `[margins] Held back ${heldBack.length} deletion(s) until the refused paths are fixed: ` +
+      `${heldBack.map(printable).join(', ')}\n`
+    : '')
+}
+
+/**
+ * The manifest paths a 400 refused, or `[]` when the error is not such a
+ * refusal. A new server lists them all in `invalidPaths`; an old one names one
+ * path in its message as `Invalid file path: <path>`.
+ */
+function refusedPathsOf(err: unknown): string[] {
+  if (!(err instanceof ServerError) || err.status !== 400) return []
+  if (err.invalidPaths && err.invalidPaths.length > 0) return err.invalidPaths
+  const named = err.serverMessage ? INVALID_PATH_MESSAGE.exec(err.serverMessage) : null
+  return named ? [named[1]!] : []
 }
 
 /**
@@ -311,6 +370,34 @@ export interface CasSyncOptions {
   gitProvenance?: GitProvenance
 }
 
+/** Map a manifest POST failure to what the user is told (never returns). */
+function mapPostError(err: unknown): never {
+  // A server-side merge conflict: name the conflicting files + next step and
+  // STOP. (R1/R2/R3, KTD2)
+  if (err instanceof MergeConflictError) {
+    throw new MergeConflictError(
+      err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
+    )
+  }
+  // ANY other 409 also surfaces-and-stops — we NEVER refetch-and-repush
+  // (that would clobber a concurrent writer). Post-PR2 the server only emits
+  // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
+  // user must reconcile, not an overwrite.
+  // A branch head an old switch to push left as the pull's git sha (Margins
+  // 0.77.1+). Re-pushing reads the same head, so the generic advice below
+  // would loop; the server's text names the one-time repair.
+  if (err instanceof ConflictError && err.code === 'PUSH_PARENT_PREDATES_SWITCH' && err.serverMessage) {
+    throw new ConflictError(err.serverMessage, err.code, err.serverMessage)
+  }
+  if (err instanceof ConflictError) {
+    throw new ConflictError(
+      'Your push conflicted with the server and was not applied. ' +
+      'Pull the latest, reconcile, and push again.',
+    )
+  }
+  mapSyncError(err)
+}
+
 export async function casSync(
   client: ApiClient,
   workspaceId: string,
@@ -340,17 +427,13 @@ export async function casSync(
   // (wrong cwd, a removed working tree). Refuse it locally — uploading nothing,
   // committing nothing — unless the caller explicitly confirmed. Mirrors the
   // server's SYNC_FULL_DELETE_NOT_CONFIRMED guard so behaviour is identical
-  // whether or not the server is reached.
+  // whether or not the server is reached. (A refused path never empties the
+  // manifest afterwards: the deletions it would cause are held back below.)
   const wouldEmptyBranch =
     Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
   if (wouldEmptyBranch && !opts.confirmFullDelete) {
     throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
   }
-
-  // Determine what changed
-  let added = 0
-  let changed = 0
-  const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
 
   // Collect hashes that need uploading (new or changed content)
   const hashesOnServer = new Set(Object.values(serverFiles))
@@ -358,17 +441,7 @@ export async function casSync(
 
   for (const [filePath, hash] of Object.entries(localFiles)) {
     const serverHash = serverFiles[filePath]
-    if (serverHash === undefined) {
-      added++
-      if (!hashesOnServer.has(hash)) {
-        hashesToUpload.add(hash)
-      }
-    } else if (serverHash !== hash) {
-      changed++
-      if (!hashesOnServer.has(hash)) {
-        hashesToUpload.add(hash)
-      }
-    }
+    if (serverHash !== hash && !hashesOnServer.has(hash)) hashesToUpload.add(hash)
   }
 
   // Step 3: Upload blobs concurrently, each declaring the collected mode
@@ -390,45 +463,72 @@ export async function casSync(
   // localFiles; parentSha is the server's headSha (CAS swap contract). The
   // response carries the clean-auto-merge signal (`merged: true` + the server's
   // merge counts); a plain fast-forward returns just `{ added, changed, deleted }`.
-  const commitSha = syntheticCommitSha(localFiles)
+  //
+  // A path the server refuses (an older server rejects spaces and non-ASCII
+  // letters) is dropped and the manifest re-posted, so one name does not fail
+  // the whole branch; each skip is reported with the server's reason. There is
+  // deliberately no local copy of the server's path rule: a newer server
+  // accepts these names, and only the server knows which rule it runs.
+  //
+  // Once a path is refused, every deletion in the push is held back: the
+  // manifest keeps those server paths at their server hash. A rename into a
+  // refused name would otherwise delete the original (and its discussions)
+  // while its replacement never arrives. The deletions land on the first push
+  // with no refusal.
+  const refused: RefusedPath[] = []
+  const heldBack: string[] = []
   let postResp: unknown
-  try {
-    postResp = await client.post(`${basePath}/manifest`, {
-      branch,
-      commitSha,
-      parentSha: preflight.headSha,
-      files: localFiles,
-      ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
-      // Both fields together or neither — the server 400s a length/format
-      // contradiction, and omitting both is what a working-tree push does.
-      ...(opts.gitProvenance ?? {}),
-    }, declaration)
-  } catch (err) {
-    // A server-side merge conflict: name the conflicting files + next step and
-    // STOP. (R1/R2/R3, KTD2)
-    if (err instanceof MergeConflictError) {
-      throw new MergeConflictError(
-        err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
-      )
+  for (let attempt = 0; ; attempt++) {
+    try {
+      postResp = await client.post(`${basePath}/manifest`, {
+        branch,
+        commitSha: syntheticCommitSha(localFiles),
+        parentSha: preflight.headSha,
+        files: localFiles,
+        ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
+        // Both fields together or neither — the server 400s a length/format
+        // contradiction, and omitting both is what a working-tree push does.
+        ...(opts.gitProvenance ?? {}),
+      }, declaration)
+      break
+    } catch (err) {
+      const named = refusedPathsOf(err).filter((p) => p in localFiles)
+      // The manifest is the whole tree, so leaving out a path the branch
+      // already holds would DELETE that document, not skip it. Such a
+      // refusal stands.
+      const onBranch = named.some((p) => p in serverFiles)
+      if (named.length > 0 && !onBranch && attempt < MAX_REFUSED_PATH_RETRIES) {
+        const reason = (err as ServerError).serverMessage ?? 'refused by the server'
+        for (const path of named) {
+          delete localFiles[path]
+          refused.push({ path, reason: named.length > 1 ? `Invalid file path: ${path}` : reason })
+        }
+        for (const [path, hash] of Object.entries(serverFiles)) {
+          if (!(path in localFiles)) {
+            localFiles[path] = hash
+            heldBack.push(path)
+          }
+        }
+        continue
+      }
+      // The push fails, but the paths already dropped were real refusals too.
+      if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused))
+      mapPostError(err)
     }
-    // ANY other 409 also surfaces-and-stops — we NEVER refetch-and-repush
-    // (that would clobber a concurrent writer). Post-PR2 the server only emits
-    // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
-    // user must reconcile, not an overwrite.
-    // A branch head an old switch to push left as the pull's git sha (Margins
-    // 0.77.1+). Re-pushing reads the same head, so the generic advice below
-    // would loop; the server's text names the one-time repair.
-    if (err instanceof ConflictError && err.code === 'PUSH_PARENT_PREDATES_SWITCH' && err.serverMessage) {
-      throw new ConflictError(err.serverMessage, err.code, err.serverMessage)
-    }
-    if (err instanceof ConflictError) {
-      throw new ConflictError(
-        'Your push conflicted with the server and was not applied. ' +
-        'Pull the latest, reconcile, and push again.',
-      )
-    }
-    mapSyncError(err)
   }
+  heldBack.sort()
+
+  if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused, heldBack))
+
+  // Counted against what was actually posted, refused paths excluded.
+  let added = 0
+  let changed = 0
+  for (const [filePath, hash] of Object.entries(localFiles)) {
+    const serverHash = serverFiles[filePath]
+    if (serverHash === undefined) added++
+    else if (serverHash !== hash) changed++
+  }
+  const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
 
   // Clean auto-merge (R4, KTD3): the server merged this push with a concurrent
   // edit. The CLI is push-only — it never writes document content (the working
@@ -451,7 +551,10 @@ export async function casSync(
     changed: merge ? merge.changed : changed,
     deleted: merge ? merge.deleted : deleted,
     uploaded,
-    skipped: files.length - added - changed,
+    // A held-back path was never collected; it is not a skipped blob.
+    skipped: Object.keys(localFiles).length - heldBack.length - added - changed,
     merged: merge !== null,
+    refused,
+    heldBack,
   }
 }

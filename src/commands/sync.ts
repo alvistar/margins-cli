@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient } from '../lib/api-client.js'
-import { ConflictError, ValidationError } from '../lib/errors.js'
+import { ConflictError, ValidationError, userMessageOf } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { fetchWorkspaceList, findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
@@ -22,7 +22,7 @@ import {
 } from '../lib/sync-mode.js'
 import { readRegistry, writeRegistry, addRepo, normalize } from '../lib/registry.js'
 import {
-  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
+  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag, printable,
   resolveContentMode, type ContentMode,
 } from '../lib/cas-sync.js'
 import {
@@ -263,7 +263,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         } else {
           // Non-conflict error (e.g. GITHUB_NOT_LINKED) — fall back to local
           if (!isJson) {
-            p.log.warn(`GitHub overlay failed, creating local workspace. (${(err as Error).message})`)
+            p.log.warn(`GitHub overlay failed, creating local workspace. (${printable(userMessageOf(err))})`)
           }
           const local = await createLocalWorkspace(client, dir)
           workspaceId = local.id
@@ -353,6 +353,9 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   pushResult.changed = casResult.changed
   pushResult.skipped = casResult.skipped
   pushResult.merged = casResult.merged // surface auto-merge in --json (parity with `workspace push`)
+  // Paths the server refused were already named on stderr by casSync.
+  const refused = casResult.refused ?? []
+  const heldBack = casResult.heldBack ?? []
 
   // Step 7: Write lastMtimes + add to repos.json
   const lastMtimes: Record<string, number> = {}
@@ -389,6 +392,8 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       ...(oversized.length > 0
         ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
         : {}),
+      ...(refused.length > 0 ? { skippedRefused: refused.length, refused } : {}),
+      ...(heldBack.length > 0 ? { heldBackDeletions: heldBack.length, heldBack } : {}),
       url,
     }))
   } else {
@@ -397,6 +402,12 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     }
     if (oversized.length > 0) {
       p.log.warn(`${oversized.length} oversized file(s) skipped (over the 2MB server blob cap)`)
+    }
+    if (refused.length > 0) {
+      p.log.warn(`${refused.length} path(s) refused by the server skipped`)
+    }
+    if (heldBack.length > 0) {
+      p.log.warn(`${heldBack.length} deletion(s) held back until the refused paths are fixed`)
     }
     p.log.success(`Synced: ${slug}`)
     p.log.info(url)

@@ -6,11 +6,11 @@ import { currentGitBranch } from '../../lib/git-branch.js'
 import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
-import { ValidationError } from '../../lib/errors.js'
+import { ValidationError, userMessageOf } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import {
-  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
-  resolveContentMode, type CasSyncResult,
+  casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag, printable,
+  resolveContentMode, type CasSyncResult, type RefusedPath,
 } from '../../lib/cas-sync.js'
 import { collectForMode, probeSyncSource, skipOversized } from '../../lib/collect-sync-files.js'
 import type { CollectedSyncFiles } from '../../lib/collect-sync-files.js'
@@ -51,7 +51,7 @@ export async function handlePush(
      */
     collect?: CollectForMode
   }
-): Promise<void> {
+): Promise<{ refused: RefusedPath[]; heldBack: string[] }> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
 
@@ -178,9 +178,14 @@ export async function handlePush(
     },
   )
 
+  // Paths the server refused were already named on stderr by casSync.
+  const { refused = [], heldBack = [], ...counts } = result
+
   if (cfg.json) {
     console.log(formatJson({
-      ...result,
+      ...counts,
+      ...(refused.length > 0 ? { skippedRefused: refused.length, refused } : {}),
+      ...(heldBack.length > 0 ? { heldBackDeletions: heldBack.length, heldBack } : {}),
       ...(oversized.length > 0
         ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
         : {}),
@@ -199,8 +204,15 @@ export async function handlePush(
     if (oversized.length > 0) {
       line += ` — ${oversized.length} oversized file(s) skipped`
     }
+    if (refused.length > 0) {
+      line += ` — ${refused.length} path(s) refused by the server skipped`
+    }
+    if (heldBack.length > 0) {
+      line += ` — ${heldBack.length} deletion(s) held back`
+    }
     console.log(line)
   }
+  return { refused, heldBack }
 }
 
 // ─── Hook orchestration ──────────────────────────────────────────────────────
@@ -224,6 +236,10 @@ export interface HookSyncResult {
   rev: string
   ok: boolean
   error?: string
+  /** Paths a successful sync left out because the server refused them. */
+  refused?: RefusedPath[]
+  /** Server paths that sync kept instead of deleting, because it refused a path. */
+  heldBack?: string[]
 }
 
 const ZERO_SHA = /^0+$/
@@ -336,10 +352,6 @@ async function withBranchLock<T>(dir: string, branch: string, fn: () => Promise<
   }
 }
 
-function causeOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 /**
  * One line per distinct cause, naming every branch it hit.
  *
@@ -356,7 +368,7 @@ function reportHookFailures(results: HookSyncResult[]): void {
     byCause.set(r.error!, branches)
   }
   for (const [cause, branches] of byCause) {
-    process.stderr.write(`margins: sync failed for ${branches.join(', ')} — ${cause}\n`)
+    process.stderr.write(`margins: sync failed for ${printable(branches.join(', '))} — ${printable(cause)}\n`)
   }
 }
 
@@ -398,12 +410,16 @@ export async function handleHookSync(
   for (const target of targets) {
     const branch = target.branch ?? currentGitBranch(cwd)
     try {
-      await withBranchLock(cwd, branch, () =>
+      const { refused, heldBack } = await withBranchLock(cwd, branch, () =>
         handlePush(cfg, { dir: cwd, branch, rev: target.rev, collect }))
-      results.push({ branch, rev: target.rev, ok: true })
+      results.push({
+        branch, rev: target.rev, ok: true,
+        ...(refused.length > 0 ? { refused } : {}),
+        ...(heldBack.length > 0 ? { heldBack } : {}),
+      })
     } catch (err) {
       // R17: this branch is done, the next one still runs.
-      results.push({ branch, rev: target.rev, ok: false, error: causeOf(err) })
+      results.push({ branch, rev: target.rev, ok: false, error: userMessageOf(err) })
     }
   }
 

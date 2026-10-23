@@ -293,6 +293,10 @@ margins workspace push --workspace <github-workspace-id> --dir ./docs
   ```json
   { "added": 2, "changed": 0, "skipped": 0 }
   ```
+- A path the server refuses is left out, not fatal: stderr names it with the server's
+  reason, and `--json` adds `skippedRefused` and `refused` (`[{ "path", "reason" }]`).
+  Deletions held back because of it appear as `heldBackDeletions` and `heldBack`. See
+  [`install-hook`](#install-hook) for the rule.
 - For local workspaces, content lands on the `main` branch.
 - For GitHub workspaces, content lands on the virtual `@local` branch — visible in the branch switcher alongside real git branches, but never pushed upstream.
 
@@ -724,8 +728,45 @@ margins: an earlier background sync did not reach Margins.
 
 Only the latest failure per project is kept — it is replaced, not appended.
 
-In CI there is no next command and no surviving filesystem, so no record is
-written: `margins workspace hook-sync` **exits non-zero** and names the cause in
+The same failure also waits for your next `git push` (or commit, with `--on commit`):
+it is written to `<git-dir>/margins-sync-failed.txt` (inside `.git`, so never in
+`git status`), and the hook prints it before it starts the next sync:
+
+```
+margins: the last background sync did not reach Margins.
+  main — <why it failed> (2026-07-19T12:00:00.000Z)
+  The next sync runs in the background; this notice clears once a sync of the branch succeeds.
+```
+
+A branch's line clears only once a hook sync of that branch succeeds, or once neither a
+local branch nor a remote-tracking ref carries its name; a `margins` command that reported the record does not clear it, and neither
+does another branch's sync. Hooks installed by an earlier CLI do not print it; re-run
+`margins install-hook --force`.
+
+A path the server refuses (an older server, or Margins Light, rejects names with a
+space or a non-ASCII letter) does not fail the branch: the sync leaves that path out,
+sends the rest, and names each skipped path with the server's reason. Once a path is
+refused, the push also holds back every deletion it would have made: a document you
+renamed to a refused name stays on Margins under its old name, with its discussions,
+instead of being deleted. The held-back deletions land on the first push with no
+refused path. A background
+sync that skipped a path writes `<git-dir>/margins-sync-skipped.txt`, and the hook
+prints it at your next push:
+
+```
+margins: the last background sync left files out of Margins.
+  main: docs/a b.md — the server refused it: Invalid file path: docs/a b.md (2026-07-19T12:00:00.000Z)
+  main: 1 deletion(s) held back until those paths are fixed: docs/a.md
+  Rename or remove them; this notice clears once a sync of the branch skips nothing.
+```
+
+A branch's lines clear when a later hook sync of that branch skips nothing, or once
+no local branch or remote-tracking ref carries its name; a failed sync leaves them as they were, and so does a manual
+`margins sync`. Control characters in a path are printed escaped. Hooks installed by
+an earlier CLI do not print it; re-run `margins install-hook --force`.
+
+In CI there is no next command and no surviving filesystem, so no failure record is
+written (a skip notice may be, but no one reads it there): `margins workspace hook-sync` **exits non-zero** and names the cause in
 the job log instead. A CI runner is detected from `CI` / `GITHUB_ACTIONS` /
 `GITLAB_CI` / `BUILDKITE` / `CIRCLECI` / `TF_BUILD` (`CI=false` counts as *not* CI).
 
@@ -753,6 +794,10 @@ fail silently on every push until you create it.
 # Margins CAS sync — non-blocking pre-push hook
 # Installed by: margins install-hook
 refs=$(cat)
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null)
+for notice in "$gitdir/margins-sync-failed.txt" "$gitdir/margins-sync-skipped.txt"; do
+  [ -s "$notice" ] && cat "$notice" >&2
+done
 margins workspace hook-sync --event pre-push --refs "$refs" &
 exit 0
 ```
@@ -960,6 +1005,26 @@ Example `.margins.json`:
 > credentials. For project-scoped API keys + server URL, use a `.margins/` directory
 > at the project root containing `config.json` and set `MARGINS_CONFIG_DIR` to point
 > at it. Add `.margins/` to `.gitignore` since it contains credentials.
+
+---
+
+## Excluding files (`.marginsignore`)
+
+A `.marginsignore` file at the repository root keeps files out of every push-mode sync
+(`workspace push`, `sync`, the git hooks). It uses `.gitignore` syntax: `*`, `**`, `?`,
+a trailing `/` for a directory, a leading `/` to anchor to the root, `!` to re-include,
+and `#` for comments. `node_modules/`, `.git/` and dotfiles are always ignored.
+
+```gitignore
+# drafts stay local
+drafts/
+**/*.private.md
+!notes/keep.private.md
+```
+
+In `committed` content mode the file is read from the commit being synced, not from
+disk, so an edit to `.marginsignore` takes effect once you commit it. In `working-tree`
+mode it is read from disk.
 
 ---
 

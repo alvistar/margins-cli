@@ -337,6 +337,27 @@ describe('handleAudit', () => {
     expect(rows[0]!.detail).toContain('repo id changed (bound 99999, now 12345)')
   })
 
+  // Value: protects=a refused binding check names the server's reason, escaped in the human table; fails_when=the note reverts to err.message ('Server error 400') or prints the server text raw; why_new=no audit test drove a 4xx through the binding check; seam=none; no_claim=the per-repo error catch (same helper)
+  it('a refused binding check names the server reason, escaped in the table', async () => {
+    const state = boundWorkspace()
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = new URL(String(url))
+      if (u.pathname === '/api/workspaces') return apiOk(state.workspaces)
+      return new Response(JSON.stringify({ error: 'VALIDATION_ERROR', message: 'not a\u001b[31m member' }), { status: 400 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const rows = await auditRows(cfg(), 'acme/docs')
+    expect(rows[0]!.detail).toContain('binding check failed: ')
+    expect(rows[0]!.detail).toContain('not a\u001b[31m member')
+    expect(rows[0]!.detail).not.toContain('Server error 400')
+
+    logSpy.mockClear()
+    await handleAudit(cfg(), 'acme/docs', {})
+    expect(output()).toContain('not a\\u001b[31m member')
+    expect(output()).not.toContain('\u001b')
+  })
+
   it('workflow present but no margins-sync-action pin → error row', async () => {
     mocked.getFileContent.mockResolvedValue(
       'jobs:\n  sync:\n    steps:\n      - uses: actions/checkout@v4\n',

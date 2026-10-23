@@ -223,6 +223,8 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
     head?: string | null
     /** `withBody` validation 400s: `{ details: [{ field, message }] }`. */
     details?: ServerErrorDetail[]
+    /** Sync VALIDATION_ERROR 400s: every manifest path the server refused. */
+    invalidPaths?: string[]
   }
 
   /**
@@ -274,7 +276,11 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
           }))
       : undefined
 
-    return { code, message, conflicts, head, details }
+    const invalidPaths = Array.isArray(parsed['invalidPaths'])
+      ? (parsed['invalidPaths'] as unknown[]).filter((x): x is string => typeof x === 'string')
+      : undefined
+
+    return { code, message, conflicts, head, details, invalidPaths }
   }
 
   /**
@@ -336,7 +342,7 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
       // A 4xx's userMessage carries the server's reason (and validation
       // details); a 5xx's stays generic — see ServerError.
       const body = await parseErrorBody(response)
-      throw new ServerError(response.status, body?.code, body?.message, body?.details)
+      throw new ServerError(response.status, body?.code, body?.message, body?.details, body?.invalidPaths)
     }
   }
 
