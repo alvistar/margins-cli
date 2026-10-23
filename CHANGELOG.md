@@ -2,6 +2,18 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **A path the server refuses no longer fails the whole branch.** An older server, and
+  the published Margins Light runtime, answer the manifest with 400 `Invalid file path`
+  for a name with a space or a non-ASCII letter. The push now drops each refused path,
+  re-posts the rest, and names every skipped path with the server's reason on stderr
+  (and in `--json` as `refused`). It reads `invalidPaths` from a newer server's 400, or
+  the one path an older server names; it stops after 50 retries. The CLI keeps no copy
+  of the server's path rule, so a server that accepts these names gets them.
+
 ## [0.24.0] - 2026-10-22
 
 A Claude Code session can now take a thread a writer sends to their agent, and answer

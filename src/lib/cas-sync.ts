@@ -17,6 +17,45 @@ export interface CasSyncResult {
   uploaded: number   // blobs actually transferred
   skipped: number    // blobs already on server
   merged: boolean    // server 3-way-merged this push with a concurrent edit
+  /** Paths the server refused, left out of this push, each with the server's reason. */
+  refused: RefusedPath[]
+}
+
+/** A path the server would not accept in a manifest, and why. */
+export interface RefusedPath {
+  path: string
+  reason: string
+}
+
+/**
+ * How many times one push re-posts its manifest after a refused path. A server
+ * that lists every refused path (`invalidPaths`) needs one retry; an older one
+ * names a single path per 400, so this cap is also the most refused paths one
+ * push can skip on such a server. Past it the last refusal stands: a tree with
+ * more names than this to skip wants a `.marginsignore` (or a newer server),
+ * not fifty more round trips.
+ */
+export const MAX_REFUSED_PATH_RETRIES = 50
+
+const INVALID_PATH_MESSAGE = /^Invalid file path: (.+)$/s
+
+/** One stderr line per refused path, naming the server's reason. */
+export function formatRefusedPaths(refused: RefusedPath[]): string {
+  return refused
+    .map((r) => `[margins] Skipped ${r.path} — the server refused it: ${r.reason}\n`)
+    .join('')
+}
+
+/**
+ * The manifest paths a 400 refused, or `[]` when the error is not such a
+ * refusal. A new server lists them all in `invalidPaths`; an old one names one
+ * path in its message as `Invalid file path: <path>`.
+ */
+function refusedPathsOf(err: unknown): string[] {
+  if (!(err instanceof ServerError) || err.status !== 400) return []
+  if (err.invalidPaths && err.invalidPaths.length > 0) return err.invalidPaths
+  const named = err.serverMessage ? INVALID_PATH_MESSAGE.exec(err.serverMessage) : null
+  return named ? [named[1]!] : []
 }
 
 /**
@@ -311,6 +350,34 @@ export interface CasSyncOptions {
   gitProvenance?: GitProvenance
 }
 
+/** Map a manifest POST failure to what the user is told (never returns). */
+function mapPostError(err: unknown): never {
+  // A server-side merge conflict: name the conflicting files + next step and
+  // STOP. (R1/R2/R3, KTD2)
+  if (err instanceof MergeConflictError) {
+    throw new MergeConflictError(
+      err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
+    )
+  }
+  // ANY other 409 also surfaces-and-stops — we NEVER refetch-and-repush
+  // (that would clobber a concurrent writer). Post-PR2 the server only emits
+  // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
+  // user must reconcile, not an overwrite.
+  // A branch head an old switch to push left as the pull's git sha (Margins
+  // 0.77.1+). Re-pushing reads the same head, so the generic advice below
+  // would loop; the server's text names the one-time repair.
+  if (err instanceof ConflictError && err.code === 'PUSH_PARENT_PREDATES_SWITCH' && err.serverMessage) {
+    throw new ConflictError(err.serverMessage, err.code, err.serverMessage)
+  }
+  if (err instanceof ConflictError) {
+    throw new ConflictError(
+      'Your push conflicted with the server and was not applied. ' +
+      'Pull the latest, reconcile, and push again.',
+    )
+  }
+  mapSyncError(err)
+}
+
 export async function casSync(
   client: ApiClient,
   workspaceId: string,
@@ -340,17 +407,16 @@ export async function casSync(
   // (wrong cwd, a removed working tree). Refuse it locally — uploading nothing,
   // committing nothing — unless the caller explicitly confirmed. Mirrors the
   // server's SYNC_FULL_DELETE_NOT_CONFIRMED guard so behaviour is identical
-  // whether or not the server is reached.
-  const wouldEmptyBranch =
-    Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
-  if (wouldEmptyBranch && !opts.confirmFullDelete) {
-    throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
+  // whether or not the server is reached. Checked again after the server
+  // refuses paths, since dropping them can empty the manifest too.
+  const guardFullDelete = () => {
+    const wouldEmptyBranch =
+      Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
+    if (wouldEmptyBranch && !opts.confirmFullDelete) {
+      throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
+    }
   }
-
-  // Determine what changed
-  let added = 0
-  let changed = 0
-  const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
+  guardFullDelete()
 
   // Collect hashes that need uploading (new or changed content)
   const hashesOnServer = new Set(Object.values(serverFiles))
@@ -358,17 +424,7 @@ export async function casSync(
 
   for (const [filePath, hash] of Object.entries(localFiles)) {
     const serverHash = serverFiles[filePath]
-    if (serverHash === undefined) {
-      added++
-      if (!hashesOnServer.has(hash)) {
-        hashesToUpload.add(hash)
-      }
-    } else if (serverHash !== hash) {
-      changed++
-      if (!hashesOnServer.has(hash)) {
-        hashesToUpload.add(hash)
-      }
-    }
+    if (serverHash !== hash && !hashesOnServer.has(hash)) hashesToUpload.add(hash)
   }
 
   // Step 3: Upload blobs concurrently, each declaring the collected mode
@@ -390,45 +446,59 @@ export async function casSync(
   // localFiles; parentSha is the server's headSha (CAS swap contract). The
   // response carries the clean-auto-merge signal (`merged: true` + the server's
   // merge counts); a plain fast-forward returns just `{ added, changed, deleted }`.
-  const commitSha = syntheticCommitSha(localFiles)
+  //
+  // A path the server refuses (an older server rejects spaces and non-ASCII
+  // letters) is dropped and the manifest re-posted, so one name does not fail
+  // the whole branch; each skip is reported with the server's reason. There is
+  // deliberately no local copy of the server's path rule: a newer server
+  // accepts these names, and only the server knows which rule it runs.
+  const refused: RefusedPath[] = []
   let postResp: unknown
-  try {
-    postResp = await client.post(`${basePath}/manifest`, {
-      branch,
-      commitSha,
-      parentSha: preflight.headSha,
-      files: localFiles,
-      ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
-      // Both fields together or neither — the server 400s a length/format
-      // contradiction, and omitting both is what a working-tree push does.
-      ...(opts.gitProvenance ?? {}),
-    }, declaration)
-  } catch (err) {
-    // A server-side merge conflict: name the conflicting files + next step and
-    // STOP. (R1/R2/R3, KTD2)
-    if (err instanceof MergeConflictError) {
-      throw new MergeConflictError(
-        err.conflicts, err.head, formatMergeConflictMessage(err.conflicts),
-      )
+  for (let attempt = 0; ; attempt++) {
+    try {
+      postResp = await client.post(`${basePath}/manifest`, {
+        branch,
+        commitSha: syntheticCommitSha(localFiles),
+        parentSha: preflight.headSha,
+        files: localFiles,
+        ...(opts.confirmFullDelete ? { confirmFullDelete: true } : {}),
+        // Both fields together or neither — the server 400s a length/format
+        // contradiction, and omitting both is what a working-tree push does.
+        ...(opts.gitProvenance ?? {}),
+      }, declaration)
+      break
+    } catch (err) {
+      const named = refusedPathsOf(err).filter((p) => p in localFiles)
+      // The manifest is the whole tree, so leaving out a path the branch
+      // already holds would DELETE that document, not skip it. Such a
+      // refusal stands.
+      const onBranch = named.some((p) => p in serverFiles)
+      if (named.length > 0 && !onBranch && attempt < MAX_REFUSED_PATH_RETRIES) {
+        const reason = (err as ServerError).serverMessage ?? 'refused by the server'
+        for (const path of named) {
+          delete localFiles[path]
+          refused.push({ path, reason: named.length > 1 ? `Invalid file path: ${path}` : reason })
+        }
+        guardFullDelete()
+        continue
+      }
+      // The push fails, but the paths already dropped were real refusals too.
+      if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused))
+      mapPostError(err)
     }
-    // ANY other 409 also surfaces-and-stops — we NEVER refetch-and-repush
-    // (that would clobber a concurrent writer). Post-PR2 the server only emits
-    // SYNC_MERGE_CONFLICT for a 409; an unrecognized 409 is still a conflict the
-    // user must reconcile, not an overwrite.
-    // A branch head an old switch to push left as the pull's git sha (Margins
-    // 0.77.1+). Re-pushing reads the same head, so the generic advice below
-    // would loop; the server's text names the one-time repair.
-    if (err instanceof ConflictError && err.code === 'PUSH_PARENT_PREDATES_SWITCH' && err.serverMessage) {
-      throw new ConflictError(err.serverMessage, err.code, err.serverMessage)
-    }
-    if (err instanceof ConflictError) {
-      throw new ConflictError(
-        'Your push conflicted with the server and was not applied. ' +
-        'Pull the latest, reconcile, and push again.',
-      )
-    }
-    mapSyncError(err)
   }
+
+  if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused))
+
+  // Counted against what was actually posted, refused paths excluded.
+  let added = 0
+  let changed = 0
+  for (const [filePath, hash] of Object.entries(localFiles)) {
+    const serverHash = serverFiles[filePath]
+    if (serverHash === undefined) added++
+    else if (serverHash !== hash) changed++
+  }
+  const deleted = Object.keys(serverFiles).filter(p => !(p in localFiles)).length
 
   // Clean auto-merge (R4, KTD3): the server merged this push with a concurrent
   // edit. The CLI is push-only — it never writes document content (the working
@@ -451,7 +521,8 @@ export async function casSync(
     changed: merge ? merge.changed : changed,
     deleted: merge ? merge.deleted : deleted,
     uploaded,
-    skipped: files.length - added - changed,
+    skipped: Object.keys(localFiles).length - added - changed,
     merged: merge !== null,
+    refused,
   }
 }

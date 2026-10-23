@@ -69,6 +69,12 @@ export class ServerError extends MarginsError {
     public readonly serverMessage?: string,
     /** Field-level validation details (`withBody` 400s), when the body carried them. */
     public readonly details?: ServerErrorDetail[],
+    /**
+     * Every manifest path a sync route refused (`{ invalidPaths: [...] }` on a
+     * VALIDATION_ERROR 400), when the server lists them. An older server names
+     * one path in `message` instead; `casSync` reads both.
+     */
+    public readonly invalidPaths?: string[],
   ) {
     super(`Server error ${status}`, serverErrorUserMessage(status, code, serverMessage, details), 1)
   }

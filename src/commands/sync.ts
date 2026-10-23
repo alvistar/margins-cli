@@ -353,6 +353,8 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
   pushResult.changed = casResult.changed
   pushResult.skipped = casResult.skipped
   pushResult.merged = casResult.merged // surface auto-merge in --json (parity with `workspace push`)
+  // Paths the server refused were already named on stderr by casSync.
+  const refused = casResult.refused ?? []
 
   // Step 7: Write lastMtimes + add to repos.json
   const lastMtimes: Record<string, number> = {}
@@ -389,6 +391,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
       ...(oversized.length > 0
         ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
         : {}),
+      ...(refused.length > 0 ? { skippedRefused: refused.length, refused } : {}),
       url,
     }))
   } else {
@@ -397,6 +400,9 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
     }
     if (oversized.length > 0) {
       p.log.warn(`${oversized.length} oversized file(s) skipped (over the 2MB server blob cap)`)
+    }
+    if (refused.length > 0) {
+      p.log.warn(`${refused.length} path(s) refused by the server skipped`)
     }
     p.log.success(`Synced: ${slug}`)
     p.log.info(url)

@@ -178,9 +178,13 @@ export async function handlePush(
     },
   )
 
+  // Paths the server refused were already named on stderr by casSync.
+  const { refused = [], ...counts } = result
+
   if (cfg.json) {
     console.log(formatJson({
-      ...result,
+      ...counts,
+      ...(refused.length > 0 ? { skippedRefused: refused.length, refused } : {}),
       ...(oversized.length > 0
         ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
         : {}),
@@ -198,6 +202,9 @@ export async function handlePush(
     }
     if (oversized.length > 0) {
       line += ` — ${oversized.length} oversized file(s) skipped`
+    }
+    if (refused.length > 0) {
+      line += ` — ${refused.length} path(s) refused by the server skipped`
     }
     console.log(line)
   }

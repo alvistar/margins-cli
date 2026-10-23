@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { createApiClient } from '../src/lib/api-client.js'
 import type { ResolvedConfig } from '../src/lib/config.js'
-import { casSync, fetchSyncPreflight, syntheticCommitSha } from '../src/lib/cas-sync.js'
+import { casSync, fetchSyncPreflight, syntheticCommitSha, MAX_REFUSED_PATH_RETRIES } from '../src/lib/cas-sync.js'
 import type { ApiClient } from '../src/lib/api-client.js'
 import type { CasSyncOptions } from '../src/lib/cas-sync.js'
 import { ConflictError, MergeConflictError, FullDeleteNotConfirmedError } from '../src/lib/errors.js'
@@ -469,3 +469,125 @@ describe('casSync — git provenance', () => {
 function sha256y(): string {
   return createHash('sha256').update(Buffer.from('y')).digest('hex')
 }
+
+// ─── Paths the server refuses (VALIDATION_ERROR "Invalid file path") ─────────
+//
+// An older server (and the published Margins Light runtime) refuses a path with
+// a space or a non-ASCII letter, and one such path used to fail the whole
+// branch. The push now drops each refused path, retries with the rest, and
+// reports every skip with the server's reason.
+
+describe('casSync — refused paths', () => {
+  const spaced = 'docs/a b.md'
+  const accented = 'docs/perché.md'
+  const files = () => [
+    { path: 'docs/ok.md', content: Buffer.from('ok'), contentType: 'text/markdown' },
+    { path: spaced, content: Buffer.from('spaced'), contentType: 'text/markdown' },
+    { path: accented, content: Buffer.from('accented'), contentType: 'text/markdown' },
+  ]
+  const posted = (calls: RecordedCall[]) => calls
+    .filter((c) => c.method === 'POST')
+    .map((c) => Object.keys((JSON.parse(c.body!) as { files: Record<string, string> }).files).sort())
+  const refuse400 = (body: Record<string, unknown>) =>
+    new Response(JSON.stringify({ error: 'VALIDATION_ERROR', ...body }), { status: 400 })
+
+  it('old server (one path per message): drops each named path, syncs the rest, reports every skip', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) return refuse400({ message: `Invalid file path: ${spaced}` })
+      if (n.post === 2) return refuse400({ message: `Invalid file path: ${accented}` })
+      return apiOk({ added: 1, changed: 0, deleted: 0 })
+    })
+
+    const result = await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files())
+
+    expect(posted(calls)).toEqual([
+      ['docs/a b.md', 'docs/ok.md', 'docs/perché.md'],
+      ['docs/ok.md', 'docs/perché.md'],
+      ['docs/ok.md'],
+    ])
+    expect(result.added).toBe(1)
+    expect(result.refused).toEqual([
+      { path: spaced, reason: `Invalid file path: ${spaced}` },
+      { path: accented, reason: `Invalid file path: ${accented}` },
+    ])
+  })
+
+  it('new server (invalidPaths): drops every listed path in one retry', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) {
+        return refuse400({ message: `Invalid file path: ${spaced}`, invalidPaths: [spaced, accented] })
+      }
+      return apiOk({ added: 1, changed: 0, deleted: 0 })
+    })
+
+    const result = await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files())
+
+    expect(posted(calls)).toEqual([
+      ['docs/a b.md', 'docs/ok.md', 'docs/perché.md'],
+      ['docs/ok.md'],
+    ])
+    expect(result.refused.map((r) => r.path)).toEqual([spaced, accented])
+  })
+
+  it('stops retrying after MAX_REFUSED_PATH_RETRIES, lets the last refusal stand, still names the skips', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const many = Array.from({ length: MAX_REFUSED_PATH_RETRIES + 5 }, (_, i) => ({
+      path: `docs/n ${i}.md`, content: Buffer.from(`n${i}`), contentType: 'text/markdown',
+    }))
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return refuse400({ message: `Invalid file path: docs/n ${n.post - 1}.md` })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', many))
+      .rejects.toMatchObject({ userMessage: expect.stringMatching(/Invalid file path: docs\/n 50\.md/) })
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(MAX_REFUSED_PATH_RETRIES + 1)
+    const said = stderr.mock.calls.map((c) => String(c[0])).join('')
+    expect(said).toContain('Skipped docs/n 0.md')
+    expect(said).toContain('Skipped docs/n 49.md')
+  })
+
+  it('a refused path the branch already holds is not dropped (that would delete it)', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { [spaced]: 'cd'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return refuse400({ message: `Invalid file path: ${spaced}` })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files()))
+      .rejects.toMatchObject({ userMessage: expect.stringMatching(/Invalid file path: docs\/a b\.md/) })
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+  })
+
+  it('a 400 naming a path the push does not carry is not retried', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return refuse400({ message: 'Invalid file path: elsewhere.md' })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files()))
+      .rejects.toMatchObject({ userMessage: expect.stringMatching(/Invalid file path: elsewhere\.md/) })
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+  })
+
+  it('refusing every file of a populated branch still meets the full-delete guard', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { 'old.md': 'cd'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return refuse400({ invalidPaths: [spaced], message: `Invalid file path: ${spaced}` })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [files()[1]!]))
+      .rejects.toBeInstanceOf(FullDeleteNotConfirmedError)
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+  })
+})
