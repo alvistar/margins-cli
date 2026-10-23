@@ -293,6 +293,10 @@ margins workspace push --workspace <github-workspace-id> --dir ./docs
   ```json
   { "added": 2, "changed": 0, "skipped": 0 }
   ```
+- A path the server refuses is left out, not fatal: stderr names it with the server's
+  reason, and `--json` adds `skippedRefused` and `refused` (`[{ "path", "reason" }]`).
+  Deletions held back because of it appear as `heldBackDeletions` and `heldBack`. See
+  [`install-hook`](#install-hook) for the rule.
 - For local workspaces, content lands on the `main` branch.
 - For GitHub workspaces, content lands on the virtual `@local` branch — visible in the branch switcher alongside real git branches, but never pushed upstream.
 
