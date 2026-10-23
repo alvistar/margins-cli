@@ -87,6 +87,8 @@ export interface HookSyncOutcome {
   error?: string
   /** Paths a successful sync left out because the server refused them. */
   refused?: RefusedPath[]
+  /** Server paths that sync kept instead of deleting, because it refused a path. */
+  heldBack?: string[]
 }
 
 /**
@@ -174,48 +176,6 @@ function causeByBranchOf(r: SyncFailureRecord): Record<string, string> {
     if (Object.keys(clean).length > 0) return clean
   }
   return Object.fromEntries(r.branches.map((b) => [b, r.cause]))
-}
-
-// ─── The hook's notice ───────────────────────────────────────────────────────
-
-/** The notice's name inside a repository's git directory. The hook scripts name it too. */
-export const SYNC_FAILURE_NOTICE = 'margins-sync-failed.txt'
-
-/** `<git-dir>/<name>` for `dir`, or undefined outside a git repository. */
-function gitDirFile(dir: string, name: string): string | undefined {
-  try {
-    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
-      cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO,
-    }).trim()
-    return gitDir ? path.join(gitDir, name) : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** The words the hook prints at the next push. */
-export function formatSyncFailureNotice(record: SyncFailureRecord): string {
-  return [
-    'margins: the last background sync did not reach Margins.',
-    `  ${printable(record.branches.join(', '))} — ${printable(record.cause)} (${record.at})`,
-    '  The next sync runs in the background; this notice clears once a sync succeeds.',
-  ].join('\n') + '\n'
-}
-
-/**
- * Make `dir`'s notice match its record: written when one is outstanding,
- * removed when none is. Best effort — a notice that cannot be written must
- * never fail the hook or the command that settles it.
- */
-function syncNotice(dir: string, record: SyncFailureRecord | undefined): void {
-  const file = gitDirFile(dir, SYNC_FAILURE_NOTICE)
-  if (!file) return
-  try {
-    if (record) fs.writeFileSync(file, formatSyncFailureNotice(record), 'utf-8')
-    else fs.rmSync(file, { force: true })
-  } catch {
-    // Best effort.
-  }
 }
 
 /** Read every record and clear the file — the report-once primitive. */
@@ -389,7 +349,6 @@ export function recordSyncFailure(record: SyncFailureRecord): void {
       causeByBranch: record.causeByBranch ?? causeByBranchOf(record),
     }
     writeAll(all)
-    syncNotice(dir, all[dir])
   })
 }
 
@@ -398,7 +357,6 @@ export function clearSyncFailure(dir: string): void {
   withRecordLock(() => {
     const all = currentByDir()
     const key = keyFor(dir)
-    syncNotice(key, undefined)
     if (!(key in all)) return
     delete all[key]
     writeAll(all)
@@ -436,7 +394,6 @@ function updateSyncFailures(
 
     const branches = Object.keys(causes)
     if (branches.length === 0) {
-      syncNotice(key, undefined)
       if (!(key in all)) return
       delete all[key]
       writeAll(all)
@@ -457,30 +414,96 @@ function updateSyncFailures(
       causeByBranch: causes,
     }
     writeAll(all)
-    syncNotice(key, all[key])
   })
 }
 
-// ─── The skip notice ─────────────────────────────────────────────────────────
+// ─── The hook's notices ──────────────────────────────────────────────────────
+
+/** The failure notice's name inside a repository's git directory. The hook scripts name it too. */
+export const SYNC_FAILURE_NOTICE = 'margins-sync-failed.txt'
 
 /** The skip notice's name inside a repository's git directory. The hook scripts name it too. */
 export const SYNC_SKIP_NOTICE = 'margins-sync-skipped.txt'
 
 /**
- * The per-branch skips behind the notice, beside it in the git directory. The
- * notice is the text the hook prints; this is what lets one branch's clean
- * sync clear that branch's lines and keep the others'.
+ * The per-branch entries behind each notice, beside it in the git directory.
+ * The notice is the text the hook prints; this is what lets one branch's sync
+ * settle that branch's lines and keep the others'. It is NOT the record: a
+ * foreground command takes (and so empties) the record, and the notice must
+ * outlive that.
  */
+const SYNC_FAILURE_STATE = 'margins-sync-failed.json'
 const SYNC_SKIP_STATE = 'margins-sync-skipped.json'
 
-interface BranchSkips {
-  refused: RefusedPath[]
+interface BranchFailure {
+  cause: string
   at: string
 }
 
-/** The stored skips, keyed by branch. A Map, so a branch named `__proto__` is an entry. */
-function readSkipState(file: string): Map<string, BranchSkips> {
-  const out = new Map<string, BranchSkips>()
+interface BranchSkips {
+  refused: RefusedPath[]
+  /** Deletions the sync held back because it refused a path. */
+  heldBack?: string[]
+  at: string
+}
+
+function parseFailure(v: unknown): BranchFailure | undefined {
+  const e = v as Partial<BranchFailure> | null
+  return e && typeof e.cause === 'string' && typeof e.at === 'string'
+    ? { cause: e.cause, at: e.at }
+    : undefined
+}
+
+function parseSkips(v: unknown): BranchSkips | undefined {
+  const e = v as Partial<BranchSkips> | null
+  if (!e || typeof e.at !== 'string' || !Array.isArray(e.refused)) return undefined
+  const refused = e.refused.filter((r): r is RefusedPath =>
+    !!r && typeof r.path === 'string' && typeof r.reason === 'string')
+  const heldBack = Array.isArray(e.heldBack) ? e.heldBack.filter((p): p is string => typeof p === 'string') : []
+  return refused.length > 0 ? { refused, ...(heldBack.length > 0 ? { heldBack } : {}), at: e.at } : undefined
+}
+
+/** The words the hook prints at the next push. */
+function formatSyncFailureNotice(failures: Map<string, BranchFailure>): string {
+  const lines = ['margins: the last background sync did not reach Margins.']
+  for (const [branch, { cause, at }] of failures) {
+    lines.push(`  ${printable(branch)} — ${printable(cause)} (${at})`)
+  }
+  lines.push('  The next sync runs in the background; this notice clears once a sync of the branch succeeds.')
+  return lines.join('\n') + '\n'
+}
+
+/** The words the hook prints at the next push. */
+function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
+  const lines = ['margins: the last background sync left files out of Margins.']
+  for (const [branch, { refused, heldBack, at }] of skips) {
+    for (const r of refused) {
+      lines.push(`  ${printable(branch)}: ${printable(r.path)} — the server refused it: ${printable(r.reason)} (${at})`)
+    }
+    if (heldBack && heldBack.length > 0) {
+      lines.push(`  ${printable(branch)}: ${heldBack.length} deletion(s) held back until those paths are fixed: ${heldBack.map(printable).join(', ')}`)
+    }
+  }
+  lines.push('  Rename or remove them; this notice clears once a sync of the branch skips nothing.')
+  return lines.join('\n') + '\n'
+}
+
+/** `dir`'s git directory and local branch names, or undefined outside a git repository. */
+function gitLayout(dir: string): { gitDir: string; branches: Set<string> } | undefined {
+  try {
+    const git = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO })
+    const gitDir = git(['rev-parse', '--absolute-git-dir']).trim()
+    if (!gitDir) return undefined
+    const branches = git(['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads'])
+    return { gitDir, branches: new Set(branches.split('\n').filter(Boolean)) }
+  } catch {
+    return undefined
+  }
+}
+
+/** The stored entries, keyed by branch. A Map, so a branch named `__proto__` is an entry. */
+function readBranchState<E>(file: string, parse: (v: unknown) => E | undefined): Map<string, E> {
+  const out = new Map<string, E>()
   let raw: unknown
   try {
     raw = JSON.parse(fs.readFileSync(file, 'utf-8'))
@@ -489,36 +512,10 @@ function readSkipState(file: string): Map<string, BranchSkips> {
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
   for (const [branch, v] of Object.entries(raw as Record<string, unknown>)) {
-    const e = v as Partial<BranchSkips> | null
-    if (!e || typeof e.at !== 'string' || !Array.isArray(e.refused)) continue
-    const refused = e.refused.filter((r): r is RefusedPath =>
-      !!r && typeof r.path === 'string' && typeof r.reason === 'string')
-    if (refused.length > 0) out.set(branch, { refused, at: e.at })
+    const e = parse(v)
+    if (e) out.set(branch, e)
   }
   return out
-}
-
-/** The words the hook prints at the next push. */
-function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
-  const lines = ['margins: the last background sync left files out of Margins.']
-  for (const [branch, { refused, at }] of skips) {
-    for (const r of refused) {
-      lines.push(`  ${printable(branch)}: ${printable(r.path)} — the server refused it: ${printable(r.reason)} (${at})`)
-    }
-  }
-  lines.push('  Rename or remove them; this notice clears once a sync of the branch skips nothing.')
-  return lines.join('\n') + '\n'
-}
-
-function localBranchExists(dir: string, branch: string): boolean {
-  try {
-    execFileSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
-      cwd: dir, stdio: GIT_STDIO,
-    })
-    return true
-  } catch {
-    return false
-  }
 }
 
 /** Staged and renamed, so the hook's `cat` never reads a half-written notice. */
@@ -532,38 +529,82 @@ function writeAtomic(file: string, content: string): void {
   }
 }
 
+interface BranchNotice<E> {
+  notice: string
+  state: string
+  parse: (v: unknown) => E | undefined
+  /** A branch's new entry, `null` to clear it, `undefined` to leave it as it was. */
+  update: (r: HookSyncOutcome) => E | null | undefined
+  format: (entries: Map<string, E>) => string
+}
+
 /**
- * Fold one hook invocation's skips into `dir`'s skip notice, PER BRANCH.
- *
- * A successful sync speaks for its branch: its skips replace that branch's
- * entry, and no skips removes it. A failed sync posted nothing, so it leaves
- * the branch's entry as it was. Only hook syncs settle it, as with the failure
- * notice. Written in CI too, where it is harmless and nobody reads it. Best
- * effort, like the failure notice.
+ * Fold one hook invocation into a per-branch notice. This run speaks for the
+ * branches it attempted and for no others. A stored branch that no longer
+ * exists locally gets no later sync to clear its lines, so it is dropped;
+ * a branch this run just settled stays even without a local ref of that name
+ * (a push to a differently named remote branch, a detached commit).
  */
-function settleSkipNotice(dir: string, results: HookSyncOutcome[], at: string): void {
-  const notice = gitDirFile(dir, SYNC_SKIP_NOTICE)
-  if (!notice) return
-  const state = path.join(path.dirname(notice), SYNC_SKIP_STATE)
+function settleBranchNotice<E>(
+  layout: { gitDir: string; branches: Set<string> },
+  results: HookSyncOutcome[],
+  n: BranchNotice<E>,
+): void {
+  const notice = path.join(layout.gitDir, n.notice)
+  const state = path.join(layout.gitDir, n.state)
+  const settled = new Set(results.map((r) => r.branch))
+  const entries = readBranchState(state, n.parse)
+  for (const r of results) {
+    const e = n.update(r)
+    if (e === null) entries.delete(r.branch)
+    else if (e !== undefined) entries.set(r.branch, e)
+  }
+  for (const branch of entries.keys()) {
+    if (!settled.has(branch) && !layout.branches.has(branch)) entries.delete(branch)
+  }
+  if (entries.size === 0) {
+    fs.rmSync(notice, { force: true })
+    fs.rmSync(state, { force: true })
+    return
+  }
+  writeAtomic(state, JSON.stringify(Object.fromEntries(entries), null, 2))
+  writeAtomic(notice, n.format(entries))
+}
+
+/**
+ * Settle `dir`'s two notices for one hook invocation, PER BRANCH.
+ *
+ * The failure notice: a failed sync writes its branch's cause, a successful
+ * one clears it. The skip notice: a successful sync's skips replace its
+ * branch's entry and no skips clear it; a failed sync posted nothing, so it
+ * leaves the branch's skips as they were. In CI only the skips are settled
+ * (a failure there throws instead). Only hook syncs settle them. Best effort:
+ * a notice that cannot be written must never fail the hook.
+ */
+function settleNotices(dir: string, results: HookSyncOutcome[], at: string, failures: boolean): void {
+  // The git calls run before the lock: it is sized for a few filesystem calls.
+  const layout = gitLayout(dir)
+  if (!layout) return
   try {
     withRecordLock(() => {
-      const skips = readSkipState(state)
-      for (const r of results) {
-        if (!r.ok) continue
-        if (r.refused && r.refused.length > 0) skips.set(r.branch, { refused: r.refused, at })
-        else skips.delete(r.branch)
-      }
-      // A deleted or renamed branch gets no later sync to clear its lines.
-      for (const branch of skips.keys()) {
-        if (!localBranchExists(dir, branch)) skips.delete(branch)
-      }
-      if (skips.size === 0) {
-        fs.rmSync(notice, { force: true })
-        fs.rmSync(state, { force: true })
-        return
-      }
-      writeAtomic(state, JSON.stringify(Object.fromEntries(skips), null, 2))
-      writeAtomic(notice, formatSyncSkipNotice(skips))
+      settleBranchNotice(layout, results, {
+        notice: SYNC_SKIP_NOTICE,
+        state: SYNC_SKIP_STATE,
+        parse: parseSkips,
+        update: (r) => !r.ok ? undefined
+          : r.refused && r.refused.length > 0
+            ? { refused: r.refused, ...(r.heldBack && r.heldBack.length > 0 ? { heldBack: r.heldBack } : {}), at }
+            : null,
+        format: formatSyncSkipNotice,
+      })
+      if (!failures) return
+      settleBranchNotice(layout, results, {
+        notice: SYNC_FAILURE_NOTICE,
+        state: SYNC_FAILURE_STATE,
+        parse: parseFailure,
+        update: (r) => r.ok ? null : { cause: r.error ?? 'unknown error', at },
+        format: formatSyncFailureNotice,
+      })
     })
   } catch {
     // Best effort — a notice that cannot be written must never fail the hook.
@@ -609,9 +650,10 @@ export function settleHookSyncOutcome(
   if (results.length === 0) return
 
   const at = (opts.now ?? new Date()).toISOString()
+  const ci = isNonInteractiveCi(opts.env)
   // Before the CI throw: a skip is not a failure, and the branches that
   // succeeded beside a failed one still settle their skips.
-  settleSkipNotice(dir, results, at)
+  settleNotices(dir, results, at, !ci)
 
   const failed = results.filter((r) => !r.ok)
   const branches = failed.map((r) => r.branch)
@@ -621,7 +663,7 @@ export function settleHookSyncOutcome(
   const causes = [...new Set(failed.map((r) => r.error ?? 'unknown error'))]
   const cause = causes.join('; ')
 
-  if (failed.length > 0 && isNonInteractiveCi(opts.env)) {
+  if (failed.length > 0 && ci) {
     throw new BackgroundSyncFailed(
       `Margins sync failed for ${printable(branches.join(', '))} in ${printable(dir)} — ${printable(cause)}\n` +
       'Nothing was sent to Margins. This step fails rather than passing quietly: a CI ' +

@@ -51,7 +51,7 @@ export async function handlePush(
      */
     collect?: CollectForMode
   }
-): Promise<{ refused: RefusedPath[] }> {
+): Promise<{ refused: RefusedPath[]; heldBack: string[] }> {
   const client = createApiClient(cfg)
   const cwd = opts.dir ?? process.cwd()
 
@@ -179,12 +179,13 @@ export async function handlePush(
   )
 
   // Paths the server refused were already named on stderr by casSync.
-  const { refused = [], ...counts } = result
+  const { refused = [], heldBack = [], ...counts } = result
 
   if (cfg.json) {
     console.log(formatJson({
       ...counts,
       ...(refused.length > 0 ? { skippedRefused: refused.length, refused } : {}),
+      ...(heldBack.length > 0 ? { heldBackDeletions: heldBack.length, heldBack } : {}),
       ...(oversized.length > 0
         ? { skippedOversized: oversized.length, oversizedPaths: oversized.map((f) => f.path) }
         : {}),
@@ -206,9 +207,12 @@ export async function handlePush(
     if (refused.length > 0) {
       line += ` — ${refused.length} path(s) refused by the server skipped`
     }
+    if (heldBack.length > 0) {
+      line += ` — ${heldBack.length} deletion(s) held back`
+    }
     console.log(line)
   }
-  return { refused }
+  return { refused, heldBack }
 }
 
 // ─── Hook orchestration ──────────────────────────────────────────────────────
@@ -234,6 +238,8 @@ export interface HookSyncResult {
   error?: string
   /** Paths a successful sync left out because the server refused them. */
   refused?: RefusedPath[]
+  /** Server paths that sync kept instead of deleting, because it refused a path. */
+  heldBack?: string[]
 }
 
 const ZERO_SHA = /^0+$/
@@ -404,9 +410,13 @@ export async function handleHookSync(
   for (const target of targets) {
     const branch = target.branch ?? currentGitBranch(cwd)
     try {
-      const { refused } = await withBranchLock(cwd, branch, () =>
+      const { refused, heldBack } = await withBranchLock(cwd, branch, () =>
         handlePush(cfg, { dir: cwd, branch, rev: target.rev, collect }))
-      results.push({ branch, rev: target.rev, ok: true, ...(refused.length > 0 ? { refused } : {}) })
+      results.push({
+        branch, rev: target.rev, ok: true,
+        ...(refused.length > 0 ? { refused } : {}),
+        ...(heldBack.length > 0 ? { heldBack } : {}),
+      })
     } catch (err) {
       // R17: this branch is done, the next one still runs.
       results.push({ branch, rev: target.rev, ok: false, error: userMessageOf(err) })

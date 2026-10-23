@@ -22,6 +22,7 @@ import { WORKFLOW_PATH } from '../templates/margins-sync.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
 import { userMessageOf } from '../lib/errors.js'
+import { printable } from '../lib/cas-sync.js'
 
 /** The public action repo whose releases define "latest". */
 export const ACTION_REPO = 'alvistar/margins-sync-action'
@@ -305,7 +306,8 @@ export async function handleAudit(
   } else {
     console.log(formatTable(
       ['Repo', 'Status', 'Detail'],
-      rows.map((r) => [r.repo, r.status, r.detail]),
+      // A detail can carry a server's words; the terminal gets them escaped.
+      rows.map((r) => [r.repo, r.status, printable(r.detail)]),
     ))
     const counts = new Map<AuditStatus, number>()
     for (const r of rows) counts.set(r.status, (counts.get(r.status) ?? 0) + 1)

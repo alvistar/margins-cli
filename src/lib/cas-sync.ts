@@ -19,6 +19,11 @@ export interface CasSyncResult {
   merged: boolean    // server 3-way-merged this push with a concurrent edit
   /** Paths the server refused, left out of this push, each with the server's reason. */
   refused: RefusedPath[]
+  /**
+   * Server paths this push would have deleted but kept, because it refused a
+   * path: a refused rename must not delete the original. Sorted.
+   */
+  heldBack: string[]
 }
 
 /** A path the server would not accept in a manifest, and why. */
@@ -40,20 +45,24 @@ export const MAX_REFUSED_PATH_RETRIES = 50
 const INVALID_PATH_MESSAGE = /^Invalid file path: (.+)$/s
 
 /**
- * `s` with its control and bidi-override characters escaped. A path is the
- * user's own name and reaches a terminal raw: a newline would forge a line, a
- * U+202E would reorder it, an escape sequence would drive the terminal.
+ * `s` with its control and bidi characters escaped. A path is the user's own
+ * name and reaches a terminal raw: a newline (or U+2028/2029) would forge a
+ * line, a U+202E or a directional mark would reorder it, an escape sequence
+ * would drive the terminal.
  */
 export function printable(s: string): string {
-  return s.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) =>
     c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
 
-/** One stderr line per refused path, naming the server's reason. */
-export function formatRefusedPaths(refused: RefusedPath[]): string {
+/** One stderr line per refused path, naming the server's reason, then one for the held-back deletions. */
+export function formatRefusedPaths(refused: RefusedPath[], heldBack: string[] = []): string {
   return refused
     .map((r) => `[margins] Skipped ${printable(r.path)} — the server refused it: ${printable(r.reason)}\n`)
-    .join('')
+    .join('') + (heldBack.length > 0
+    ? `[margins] Held back ${heldBack.length} deletion(s) until the refused paths are fixed: ` +
+      `${heldBack.map(printable).join(', ')}\n`
+    : '')
 }
 
 /**
@@ -417,16 +426,13 @@ export async function casSync(
   // (wrong cwd, a removed working tree). Refuse it locally — uploading nothing,
   // committing nothing — unless the caller explicitly confirmed. Mirrors the
   // server's SYNC_FULL_DELETE_NOT_CONFIRMED guard so behaviour is identical
-  // whether or not the server is reached. Checked again after the server
-  // refuses paths, since dropping them can empty the manifest too.
-  const guardFullDelete = () => {
-    const wouldEmptyBranch =
-      Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
-    if (wouldEmptyBranch && !opts.confirmFullDelete) {
-      throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
-    }
+  // whether or not the server is reached. (A refused path never empties the
+  // manifest afterwards: the deletions it would cause are held back below.)
+  const wouldEmptyBranch =
+    Object.keys(serverFiles).length > 0 && Object.keys(localFiles).length === 0
+  if (wouldEmptyBranch && !opts.confirmFullDelete) {
+    throw FullDeleteNotConfirmedError.forBranch(branch, Object.keys(serverFiles).length)
   }
-  guardFullDelete()
 
   // Collect hashes that need uploading (new or changed content)
   const hashesOnServer = new Set(Object.values(serverFiles))
@@ -462,7 +468,14 @@ export async function casSync(
   // the whole branch; each skip is reported with the server's reason. There is
   // deliberately no local copy of the server's path rule: a newer server
   // accepts these names, and only the server knows which rule it runs.
+  //
+  // Once a path is refused, every deletion in the push is held back: the
+  // manifest keeps those server paths at their server hash. A rename into a
+  // refused name would otherwise delete the original (and its discussions)
+  // while its replacement never arrives. The deletions land on the first push
+  // with no refusal.
   const refused: RefusedPath[] = []
+  const heldBack: string[] = []
   let postResp: unknown
   for (let attempt = 0; ; attempt++) {
     try {
@@ -489,7 +502,12 @@ export async function casSync(
           delete localFiles[path]
           refused.push({ path, reason: named.length > 1 ? `Invalid file path: ${path}` : reason })
         }
-        guardFullDelete()
+        for (const [path, hash] of Object.entries(serverFiles)) {
+          if (!(path in localFiles)) {
+            localFiles[path] = hash
+            heldBack.push(path)
+          }
+        }
         continue
       }
       // The push fails, but the paths already dropped were real refusals too.
@@ -497,8 +515,9 @@ export async function casSync(
       mapPostError(err)
     }
   }
+  heldBack.sort()
 
-  if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused))
+  if (refused.length > 0) process.stderr.write(formatRefusedPaths(refused, heldBack))
 
   // Counted against what was actually posted, refused paths excluded.
   let added = 0
@@ -531,8 +550,10 @@ export async function casSync(
     changed: merge ? merge.changed : changed,
     deleted: merge ? merge.deleted : deleted,
     uploaded,
-    skipped: Object.keys(localFiles).length - added - changed,
+    // A held-back path was never collected; it is not a skipped blob.
+    skipped: Object.keys(localFiles).length - heldBack.length - added - changed,
     merged: merge !== null,
     refused,
+    heldBack,
   }
 }

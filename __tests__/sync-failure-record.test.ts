@@ -349,11 +349,153 @@ describe('settleHookSyncOutcome — CI', () => {
     expect(readSyncFailureRecords()).toHaveLength(1)
   })
 
+  // Value: protects=in CI a failed branch still lets its successful siblings settle their skips, and the thrown message escapes control characters from the branch/cause; fails_when=settleSkipNotice moves after the CI throw (no skip notice written) or the CI message prints a raw newline/escape; why_new=CI tests only used non-git dirs and single failed branches; seam=none; no_claim=whether anyone reads the notice in CI
+  it('in CI, still settles the skips of branches that succeeded, and escapes the thrown cause', async () => {
+    const { settleHookSyncOutcome, SYNC_SKIP_NOTICE } = await import('../src/lib/sync-failure-record.js')
+    spawnSync('git', ['init', '-q', '-b', 'main', '.'], { cwd: projectDir })
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x'],
+      { cwd: projectDir })
+    const refused = [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }]
+
+    let thrown: Error | undefined
+    try {
+      settleHookSyncOutcome(projectDir, [
+        { ...ok('main'), refused },
+        fail('feature', 'Invalid file path: docs/\u001b[31mred\nforged.md'),
+      ], { env: { CI: 'true' } })
+    } catch (err) {
+      thrown = err as Error
+    }
+
+    expect(thrown?.message).toContain('Invalid file path: docs/\\u001b[31mred\\nforged.md')
+    expect(thrown?.message).not.toContain('\u001b')
+    const notice = fs.readFileSync(path.join(projectDir, '.git', SYNC_SKIP_NOTICE), 'utf-8')
+    expect(notice).toContain('main: docs/a b.md — the server refused it: Invalid file path: docs/a b.md')
+  })
+
   it('does not throw in CI when every branch succeeded', async () => {
     const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
     expect(() => settleHookSyncOutcome(
       projectDir, [ok('main')], { env: { CI: 'true' } },
     )).not.toThrow()
+  })
+})
+
+describe('escaping what a person reads', () => {
+  // Value: protects=the foreground report escapes control characters in a server's cause; fails_when=formatSyncFailureReport loses its printable() calls; why_new=escaping was tested only in the hook notices and the CI throw; seam=none; no_claim=none beyond protects
+  it('escapes control characters in the foreground report', async () => {
+    const { formatSyncFailureReport } = await import('../src/lib/sync-failure-record.js')
+    const out = formatSyncFailureReport([
+      { dir: projectDir, branches: ['main'], cause: 'bad\u001b[31m\nforged', at: new Date().toISOString() },
+    ])
+    expect(out).not.toContain('\u001b')
+    expect(out).toContain('bad\\u001b[31m\\nforged')
+    expect(out.trimEnd().split('\n')).toHaveLength(3)
+  })
+
+  // Value: protects=directional marks and line/paragraph separators are escaped too; fails_when=printable's class drops U+061C/200E/200F/2028/2029; why_new=only C0/C1 and the bidi overrides were tested; seam=none; no_claim=terminal rendering
+  it('escapes directional marks and Unicode line separators', async () => {
+    const { printable } = await import('../src/lib/cas-sync.js')
+    expect(printable('a‎b‏c؜d e f')).toBe('a\\u200eb\\u200fc\\u061cd\\u2028e\\u2029f')
+  })
+})
+
+// ─── The hook's notices: what the next push prints ───────────────────────────
+
+/** `projectDir` as a git repository holding `branches` (the first is checked out). */
+function gitRepo(...branches: string[]): void {
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: projectDir })
+  git('init', '-q', '-b', branches[0]!, '.')
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x')
+  for (const b of branches.slice(1)) git('branch', b)
+}
+
+function notice(name: string): string | undefined {
+  const file = path.join(projectDir, '.git', name)
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : undefined
+}
+
+describe('the hook notices — settled per branch, never by a foreground report', () => {
+  // Value: protects=the failure notice names a failed branch until a sync of THAT branch succeeds, even after a foreground command took the record; fails_when=the notice is rebuilt from the take-once record; why_new=notice tests never took the record before a later settle; seam=none; no_claim=the hook script's printing (install-hook e2e)
+  it('keeps a failed branch in the notice after a foreground report and another branch syncing clean', async () => {
+    const { settleHookSyncOutcome, takeSyncFailureRecords, SYNC_FAILURE_NOTICE } =
+      await import('../src/lib/sync-failure-record.js')
+    gitRepo('main', 'other')
+    settleHookSyncOutcome(projectDir, [fail('main', 'boom')], { env: {} })
+    takeSyncFailureRecords()
+
+    settleHookSyncOutcome(projectDir, [ok('other')], { env: {} })
+
+    expect(notice(SYNC_FAILURE_NOTICE)).toContain('main — boom')
+  })
+
+  // Value: protects=a second branch failing after a foreground report adds to the notice instead of replacing the first; fails_when=the notice is rebuilt from the take-once record; why_new=as above, for the failure path; seam=none; no_claim=none beyond protects
+  it('names both branches when another fails after a foreground report', async () => {
+    const { settleHookSyncOutcome, takeSyncFailureRecords, SYNC_FAILURE_NOTICE } =
+      await import('../src/lib/sync-failure-record.js')
+    gitRepo('main', 'feature')
+    settleHookSyncOutcome(projectDir, [fail('main', 'boom')], { env: {} })
+    takeSyncFailureRecords()
+
+    settleHookSyncOutcome(projectDir, [fail('feature', 'bang')], { env: {} })
+
+    const text = notice(SYNC_FAILURE_NOTICE)
+    expect(text).toContain('main — boom')
+    expect(text).toContain('feature — bang')
+  })
+
+  // Value: protects=a successful sync of the failed branch clears the notice; fails_when=the notice state is never pruned; why_new=pins the clearing rule on the notice's own state; seam=none; no_claim=none beyond protects
+  it('clears the failure notice once the failed branch syncs', async () => {
+    const { settleHookSyncOutcome, takeSyncFailureRecords, SYNC_FAILURE_NOTICE } =
+      await import('../src/lib/sync-failure-record.js')
+    gitRepo('main')
+    settleHookSyncOutcome(projectDir, [fail('main', 'boom')], { env: {} })
+    takeSyncFailureRecords()
+
+    settleHookSyncOutcome(projectDir, [ok('main')], { env: {} })
+
+    expect(notice(SYNC_FAILURE_NOTICE)).toBeUndefined()
+  })
+
+  // Value: protects=a deleted branch's failure stops printing on every push; fails_when=the failure notice has no prune for branches that are gone; why_new=only the skip notice was pruned; seam=none; no_claim=none beyond protects
+  it('drops a deleted branch from the failure notice at the next settle', async () => {
+    const { settleHookSyncOutcome, SYNC_FAILURE_NOTICE } = await import('../src/lib/sync-failure-record.js')
+    gitRepo('main', 'feature')
+    settleHookSyncOutcome(projectDir, [fail('feature', 'boom')], { env: {} })
+    spawnSync('git', ['branch', '-D', 'feature'], { cwd: projectDir })
+
+    settleHookSyncOutcome(projectDir, [ok('main')], { env: {} })
+
+    expect(notice(SYNC_FAILURE_NOTICE)).toBeUndefined()
+  })
+
+  // Value: protects=a push to a differently named remote branch (git push origin main:pages) keeps its skip lines; fails_when=the prune drops a branch this settle just recorded; why_new=no test settled a branch with no local ref; seam=none; no_claim=none beyond protects
+  it('keeps the skips of a branch this settle recorded even with no local ref of that name', async () => {
+    const { settleHookSyncOutcome, SYNC_SKIP_NOTICE, SYNC_FAILURE_NOTICE } =
+      await import('../src/lib/sync-failure-record.js')
+    gitRepo('main')
+    const refused = [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }]
+
+    settleHookSyncOutcome(projectDir, [
+      { ...ok('pages'), refused },
+      fail('site', 'boom'),
+    ], { env: {} })
+
+    expect(notice(SYNC_SKIP_NOTICE)).toContain('pages: docs/a b.md')
+    expect(notice(SYNC_FAILURE_NOTICE)).toContain('site — boom')
+  })
+
+  // Value: protects=the skip notice says which deletions a refusal held back; fails_when=the held-back paths are dropped between handleHookSync and the notice; why_new=D1 added heldBack; seam=none; no_claim=none beyond protects
+  it('names the deletions a refusal held back', async () => {
+    const { settleHookSyncOutcome, SYNC_SKIP_NOTICE } = await import('../src/lib/sync-failure-record.js')
+    gitRepo('main')
+    settleHookSyncOutcome(projectDir, [{
+      ...ok('main'),
+      refused: [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }],
+      heldBack: ['docs/a.md'],
+    }], { env: {} })
+
+    expect(notice(SYNC_SKIP_NOTICE)).toContain('main: 1 deletion(s) held back until those paths are fixed: docs/a.md')
   })
 })
 

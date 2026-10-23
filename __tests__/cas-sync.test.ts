@@ -509,6 +509,8 @@ describe('casSync — refused paths', () => {
       ['docs/ok.md'],
     ])
     expect(result.added).toBe(1)
+    // Value: protects=counts exclude refused paths; fails_when=skipped is computed from the collected files (2) instead of the posted manifest (0); why_new=no test read skipped after a refusal; seam=none; no_claim=merge-response counts
+    expect(result.skipped).toBe(0)
     expect(result.refused).toEqual([
       { path: spaced, reason: `Invalid file path: ${spaced}` },
       { path: accented, reason: `Invalid file path: ${accented}` },
@@ -532,7 +534,11 @@ describe('casSync — refused paths', () => {
       ['docs/a b.md', 'docs/ok.md', 'docs/perché.md'],
       ['docs/ok.md'],
     ])
-    expect(result.refused.map((r) => r.path)).toEqual([spaced, accented])
+    // Value: protects=each path of a multi-path refusal names itself as the reason; fails_when=every skip reuses the server message, so the accented path is reported as 'Invalid file path: docs/a b.md'; why_new=only the paths were asserted; seam=none; no_claim=server wording
+    expect(result.refused).toEqual([
+      { path: spaced, reason: `Invalid file path: ${spaced}` },
+      { path: accented, reason: `Invalid file path: ${accented}` },
+    ])
   })
 
   it('keys the drop on invalidPaths, not on the error code or the message', async () => {
@@ -606,6 +612,37 @@ describe('casSync — refused paths', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 
+  // Value: protects=a multi-path refusal that names a path the branch holds stands whole, so nothing is dropped or deleted; fails_when=the onBranch guard becomes per-path or `every`; why_new=the on-branch test uses the old single-path message; seam=none; no_claim=none beyond protects
+  it('a multi-path refusal naming a path the branch holds is not retried', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { [spaced]: 'cd'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return refuse400({ message: `Invalid file path: ${spaced}`, invalidPaths: [spaced, accented] })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files()))
+      .rejects.toMatchObject({ userMessage: expect.stringMatching(/Invalid file path: docs\/a b\.md/) })
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+  })
+
+  // Value: protects=a conflict on the re-post after a drop surfaces and stops, and still names the dropped path; fails_when=the retry loop swallows a non-refusal error or repushes; why_new=no test sent a refusal then a 409; seam=none; no_claim=merge-conflict wording (covered above)
+  it('a 409 on the re-post after a drop surfaces the conflict and still names the skip', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: {}, headSha: null })
+      if (method === 'PUT') return apiOk({ stored: true })
+      if (n.post === 1) return refuse400({ message: `Invalid file path: ${spaced}`, invalidPaths: [spaced] })
+      return new Response(JSON.stringify({
+        error: 'SYNC_MERGE_CONFLICT', message: 'conflict', conflicts: ['docs/ok.md'], head: HEAD_1,
+      }), { status: 409 })
+    })
+
+    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', files()))
+      .rejects.toBeInstanceOf(MergeConflictError)
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2)
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('Skipped docs/a b.md')
+  })
+
   it('a 400 naming a path the push does not carry is not retried', async () => {
     const calls = stubFetch((method) => {
       if (method === 'GET') return apiOk({ files: {}, headSha: null })
@@ -618,16 +655,44 @@ describe('casSync — refused paths', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
   })
 
-  it('refusing every file of a populated branch still meets the full-delete guard', async () => {
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    const calls = stubFetch((method) => {
-      if (method === 'GET') return apiOk({ files: { 'old.md': 'cd'.repeat(32) }, headSha: HEAD_1 })
+  // Value: protects=a rename into a refused name keeps the old document (and its discussions) on Margins; fails_when=the re-posted manifest omits the server paths the push would delete, so the old document is deleted and its replacement skipped; why_new=red team D1, no test covered a rename; seam=none; no_claim=server-side merge of the held paths
+  it('a rename into a refused name keeps the old document: deletions are held back', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const oldHash = 'cd'.repeat(32)
+    const calls = stubFetch((method, _url, n) => {
+      if (method === 'GET') return apiOk({ files: { 'old.md': oldHash, 'gone.md': 'ef'.repeat(32) }, headSha: HEAD_1 })
       if (method === 'PUT') return apiOk({ stored: true })
-      return refuse400({ invalidPaths: [spaced], message: `Invalid file path: ${spaced}` })
+      if (n.post === 1) return refuse400({ invalidPaths: [spaced], message: `Invalid file path: ${spaced}` })
+      return apiOk({ added: 1, changed: 0, deleted: 0 })
     })
 
-    await expect(preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [files()[1]!]))
-      .rejects.toBeInstanceOf(FullDeleteNotConfirmedError)
-    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1)
+    // old.md renamed to "docs/a b.md"; gone.md deleted on purpose; docs/ok.md added.
+    const result = await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [files()[0]!, files()[1]!])
+
+    const second = JSON.parse(calls.filter((c) => c.method === 'POST')[1]!.body!) as { files: Record<string, string> }
+    expect(second.files['old.md']).toBe(oldHash)
+    expect(second.files['gone.md']).toBe('ef'.repeat(32))
+    expect(second.files).not.toHaveProperty(spaced)
+    expect(result.heldBack).toEqual(['gone.md', 'old.md'])
+    expect(result.deleted).toBe(0)
+    expect(result.skipped).toBe(0)
+    const said = stderr.mock.calls.map((c) => String(c[0])).join('')
+    expect(said).toContain('Held back 2 deletion(s) until the refused paths are fixed: gone.md, old.md')
+  })
+
+  // Value: protects=with no refusal, a deletion lands as before; fails_when=deletions are held back even when nothing was refused; why_new=pins that holding back is tied to a refusal; seam=none; no_claim=none beyond protects
+  it('with no refusal, deletions land and nothing is held back', async () => {
+    const calls = stubFetch((method) => {
+      if (method === 'GET') return apiOk({ files: { 'gone.md': 'ef'.repeat(32) }, headSha: HEAD_1 })
+      if (method === 'PUT') return apiOk({ stored: true })
+      return apiOk({ added: 1, changed: 0, deleted: 1 })
+    })
+
+    const result = await preflightAndSync(createApiClient(baseConfig()), 'ws-1', 'main', [files()[0]!])
+
+    const first = JSON.parse(calls.filter((c) => c.method === 'POST')[0]!.body!) as { files: Record<string, string> }
+    expect(first.files).not.toHaveProperty('gone.md')
+    expect(result.heldBack).toEqual([])
+    expect(result.deleted).toBe(1)
   })
 })

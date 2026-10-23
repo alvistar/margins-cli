@@ -687,4 +687,28 @@ describe('pre-push hook — a failed background sync shows at the next push', ()
     expect(failed).not.toContain('\u202e')
   })
 
+  // Value: protects=the post-commit hook (install-hook --on commit) prints both notices too; fails_when=the notice loop is dropped from POST_COMMIT_HOOK or names the wrong file; why_new=every notice test drove the pre-push hook only; seam=none; no_claim=notice wording (covered above)
+  it('the post-commit hook prints the failure and skip notices at the next commit', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({ on: 'commit' })
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a b.md', reason: 'Invalid file path: docs/a b.md' }] },
+    ], { env: {} })
+    settleHookSyncOutcome(tmpDir, [{ branch: 'other', ok: false, error: 'cause Y' }], { env: {} })
+
+    write(tmpDir, 'a.md', '# two\n')
+    git(['add', '-A'], tmpDir)
+    const res = spawnSync('git', ['commit', '-q', '-m', 'second'], {
+      cwd: tmpDir, encoding: 'utf-8', env: { ...process.env, ...hookEnv },
+    })
+    expect(res.status).toBe(0)
+    expect(res.stderr).toContain('did not reach Margins')
+    expect(res.stderr).toContain('cause Y')
+    expect(res.stderr).toContain('docs/a b.md \u2014 the server refused it')
+  })
+
 })
