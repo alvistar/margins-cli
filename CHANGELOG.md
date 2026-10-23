@@ -13,6 +13,10 @@ All notable changes to margins-cli will be documented in this file.
   (and in `--json` as `refused`). It reads `invalidPaths` from a newer server's 400, or
   the one path an older server names; it stops after 50 retries. The CLI keeps no copy
   of the server's path rule, so a server that accepts these names gets them.
+- **A failed sync now says why.** `hook-sync` printed `sync failed for <branch> — Server
+  error 400` and recorded the same words; it now shows the server's reason (for example
+  `Margins refused the request (400 VALIDATION_ERROR): Invalid file path: …`). The
+  GitHub-overlay fallback in `margins sync` and the `audit` error rows had the same drop.
 
 ## [0.24.0] - 2026-10-22
 

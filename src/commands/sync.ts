@@ -13,7 +13,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { ResolvedConfig } from '../lib/config.js'
 import { createApiClient } from '../lib/api-client.js'
-import { ConflictError, ValidationError } from '../lib/errors.js'
+import { ConflictError, ValidationError, userMessageOf } from '../lib/errors.js'
 import { formatJson } from '../lib/output.js'
 import { detectGitRemote, sanitizeProjectName } from '../lib/detect-git-remote.js'
 import { fetchWorkspaceList, findWorkspaceByRepoUrl, type WorkspaceListItem } from '../lib/audit-checks.js'
@@ -263,7 +263,7 @@ export async function handleSync(cfg: ResolvedConfig, opts: SyncOpts): Promise<v
         } else {
           // Non-conflict error (e.g. GITHUB_NOT_LINKED) — fall back to local
           if (!isJson) {
-            p.log.warn(`GitHub overlay failed, creating local workspace. (${(err as Error).message})`)
+            p.log.warn(`GitHub overlay failed, creating local workspace. (${userMessageOf(err)})`)
           }
           const local = await createLocalWorkspace(client, dir)
           workspaceId = local.id

@@ -6,7 +6,7 @@ import { currentGitBranch } from '../../lib/git-branch.js'
 import type { ResolvedConfig, LocalConfig } from '../../lib/config.js'
 import { createApiClient } from '../../lib/api-client.js'
 import { formatJson } from '../../lib/output.js'
-import { ValidationError } from '../../lib/errors.js'
+import { ValidationError, userMessageOf } from '../../lib/errors.js'
 import { resolveSyncMode } from '../../lib/resolve-sync-mode.js'
 import {
   casSync, emptyCollectionMessage, fetchSyncPreflight, parseContentModeFlag,
@@ -343,10 +343,6 @@ async function withBranchLock<T>(dir: string, branch: string, fn: () => Promise<
   }
 }
 
-function causeOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 /**
  * One line per distinct cause, naming every branch it hit.
  *
@@ -410,7 +406,7 @@ export async function handleHookSync(
       results.push({ branch, rev: target.rev, ok: true })
     } catch (err) {
       // R17: this branch is done, the next one still runs.
-      results.push({ branch, rev: target.rev, ok: false, error: causeOf(err) })
+      results.push({ branch, rev: target.rev, ok: false, error: userMessageOf(err) })
     }
   }
 

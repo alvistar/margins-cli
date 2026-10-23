@@ -21,6 +21,7 @@ import { poolMap } from '../lib/pool.js'
 import { WORKFLOW_PATH } from '../templates/margins-sync.js'
 import * as gh from '../lib/gh.js'
 import { GhError } from '../lib/gh.js'
+import { userMessageOf } from '../lib/errors.js'
 
 /** The public action repo whose releases define "latest". */
 export const ACTION_REPO = 'alvistar/margins-sync-action'
@@ -138,7 +139,7 @@ async function checkBindingDrift(
   try {
     binding = (await client.get(`/api/workspaces/${workspace.id}/binding`) as { binding: Binding | null }).binding
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = userMessageOf(err)
     return { drifts: [], notes: [`binding check failed: ${message}`] }
   }
   if (binding === null) return { drifts: [], notes: ['workspace has no trust binding'] }
@@ -285,7 +286,7 @@ export async function handleAudit(
     try {
       return await auditRepo(drift, repo, latest)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = userMessageOf(err)
       return { repo, status: 'error' as const, detail: message }
     }
   })

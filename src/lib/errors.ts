@@ -11,6 +11,16 @@ export class MarginsError extends Error {
   }
 }
 
+/**
+ * What to tell a person about `err`: a Margins error's `userMessage` (which
+ * carries a 4xx's server reason), else the plain message. `err.message` on a
+ * ServerError is only `Server error 400` — the words that drop the reason.
+ */
+export function userMessageOf(err: unknown): string {
+  if (err instanceof MarginsError) return err.userMessage
+  return err instanceof Error ? err.message : String(err)
+}
+
 // ─── Auth errors ──────────────────────────────────────────────────────────────
 
 export class AuthMissing extends MarginsError {

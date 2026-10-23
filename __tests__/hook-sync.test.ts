@@ -254,6 +254,26 @@ describe('handleHookSync', () => {
     for (const b of ['one', 'two', 'three']) expect(lines).toContain(b)
   })
 
+  it("shows the server's reason for a refusal, not a bare status code", async () => {
+    const { handleHookSync } = await import('../src/commands/workspace/push.js')
+    const { ServerError } = await import('../src/lib/errors.js')
+    mockCasSync.mockRejectedValue(
+      new ServerError(400, 'VALIDATION_ERROR', 'Invalid file path: docs/a b.md'))
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const results = await handleHookSync(makeConfig(), {
+      event: 'pre-push',
+      dir: workDir,
+      refs: refLine('main', SHA_A, 'refs/heads/main'),
+    })
+
+    const lines = stderr.mock.calls.map((c) => String(c[0])).join('')
+    expect(lines).toContain('margins: sync failed for main — ')
+    expect(lines).toContain('Invalid file path: docs/a b.md')
+    // The record the next command reports carries the same reason.
+    expect(results[0]!.error).toContain('Invalid file path: docs/a b.md')
+  })
+
   it('reports two distinct causes separately', async () => {
     const { handleHookSync } = await import('../src/commands/workspace/push.js')
     mockCasSync.mockImplementation(async (_c: unknown, _w: unknown, branch: string) => {
