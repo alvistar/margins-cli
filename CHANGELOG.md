@@ -29,8 +29,10 @@ All notable changes to margins-cli will be documented in this file.
   that succeeded but left a refused path out said so only on the background process's
   stderr, so the file was missing on Margins with no word at the push. The skipped
   paths and the server's reason now go to `<git-dir>/margins-sync-skipped.txt`, which
-  the hooks print beside the failure notice. A branch's lines clear when a later sync of
-  that branch skips nothing; a failed sync leaves them. The failure notice is unchanged.
+  the hooks print beside the failure notice, with control characters escaped. A
+  branch's lines clear when a later hook sync of that branch skips nothing, or once the
+  branch is deleted; a failed sync leaves them. The failure notice is unchanged. Hooks
+  installed before this release do not print it: run `margins install-hook --force`.
 
 ### Documentation
 

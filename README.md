@@ -750,11 +750,13 @@ margins: the last background sync left files out of Margins.
   Rename or remove them; this notice clears once a sync of the branch skips nothing.
 ```
 
-A branch's lines clear when a later sync of that branch skips nothing; a failed sync
-leaves them as they were.
+A branch's lines clear when a later hook sync of that branch skips nothing, or once
+the branch is deleted; a failed sync leaves them as they were, and so does a manual
+`margins sync`. Control characters in a path are printed escaped. Hooks installed by
+an earlier CLI do not print it; re-run `margins install-hook --force`.
 
-In CI there is no next command and no surviving filesystem, so no record is
-written: `margins workspace hook-sync` **exits non-zero** and names the cause in
+In CI there is no next command and no surviving filesystem, so no failure record is
+written (a skip notice may be, but no one reads it there): `margins workspace hook-sync` **exits non-zero** and names the cause in
 the job log instead. A CI runner is detected from `CI` / `GITHUB_ACTIONS` /
 `GITLAB_CI` / `BUILDKITE` / `CIRCLECI` / `TF_BUILD` (`CI=false` counts as *not* CI).
 

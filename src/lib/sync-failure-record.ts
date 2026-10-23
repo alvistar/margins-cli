@@ -53,6 +53,7 @@ import { execFileSync } from 'node:child_process'
 import { registryPath } from './registry.js'
 import { GIT_STDIO } from './git-branch.js'
 import { MarginsError } from './errors.js'
+import type { RefusedPath } from './cas-sync.js'
 
 // ─── Shape ───────────────────────────────────────────────────────────────────
 
@@ -85,7 +86,7 @@ export interface HookSyncOutcome {
   ok: boolean
   error?: string
   /** Paths a successful sync left out because the server refused them. */
-  refused?: Array<{ path: string; reason: string }>
+  refused?: RefusedPath[]
 }
 
 /**
@@ -181,7 +182,7 @@ function causeByBranchOf(r: SyncFailureRecord): Record<string, string> {
 export const SYNC_FAILURE_NOTICE = 'margins-sync-failed.txt'
 
 /** `<git-dir>/<name>` for `dir`, or undefined outside a git repository. */
-function noticePathFor(dir: string, name: string = SYNC_FAILURE_NOTICE): string | undefined {
+function gitDirFile(dir: string, name: string): string | undefined {
   try {
     const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
       cwd: dir, encoding: 'utf-8', stdio: GIT_STDIO,
@@ -207,7 +208,7 @@ export function formatSyncFailureNotice(record: SyncFailureRecord): string {
  * never fail the hook or the command that settles it.
  */
 function syncNotice(dir: string, record: SyncFailureRecord | undefined): void {
-  const file = noticePathFor(dir)
+  const file = gitDirFile(dir, SYNC_FAILURE_NOTICE)
   if (!file) return
   try {
     if (record) fs.writeFileSync(file, formatSyncFailureNotice(record), 'utf-8')
@@ -473,7 +474,7 @@ export const SYNC_SKIP_NOTICE = 'margins-sync-skipped.txt'
 const SYNC_SKIP_STATE = 'margins-sync-skipped.json'
 
 interface BranchSkips {
-  refused: Array<{ path: string; reason: string }>
+  refused: RefusedPath[]
   at: string
 }
 
@@ -490,21 +491,55 @@ function readSkipState(file: string): Map<string, BranchSkips> {
   for (const [branch, v] of Object.entries(raw as Record<string, unknown>)) {
     const e = v as Partial<BranchSkips> | null
     if (!e || typeof e.at !== 'string' || !Array.isArray(e.refused)) continue
-    const refused = e.refused.filter((r): r is { path: string; reason: string } =>
+    const refused = e.refused.filter((r): r is RefusedPath =>
       !!r && typeof r.path === 'string' && typeof r.reason === 'string')
     if (refused.length > 0) out.set(branch, { refused, at: e.at })
   }
   return out
 }
 
+/**
+ * `s` with its control and bidi-override characters escaped. A path is the
+ * user's own name and the hook `cat`s the notice raw: a newline would forge a
+ * line of the notice, an escape sequence would reach the terminal.
+ */
+function printable(s: string): string {
+  return s.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+    c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
 /** The words the hook prints at the next push. */
-export function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
+function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
   const lines = ['margins: the last background sync left files out of Margins.']
   for (const [branch, { refused, at }] of skips) {
-    for (const r of refused) lines.push(`  ${branch}: ${r.path} — the server refused it: ${r.reason} (${at})`)
+    for (const r of refused) {
+      lines.push(`  ${printable(branch)}: ${printable(r.path)} — the server refused it: ${printable(r.reason)} (${at})`)
+    }
   }
   lines.push('  Rename or remove them; this notice clears once a sync of the branch skips nothing.')
   return lines.join('\n') + '\n'
+}
+
+function localBranchExists(dir: string, branch: string): boolean {
+  try {
+    execFileSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
+      cwd: dir, stdio: GIT_STDIO,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Staged and renamed, so the hook's `cat` never reads a half-written notice. */
+function writeAtomic(file: string, content: string): void {
+  const tmp = `${file}.${process.pid}.tmp`
+  try {
+    fs.writeFileSync(tmp, content, 'utf-8')
+    fs.renameSync(tmp, file)
+  } finally {
+    fs.rmSync(tmp, { force: true })
+  }
 }
 
 /**
@@ -512,12 +547,14 @@ export function formatSyncSkipNotice(skips: Map<string, BranchSkips>): string {
  *
  * A successful sync speaks for its branch: its skips replace that branch's
  * entry, and no skips removes it. A failed sync posted nothing, so it leaves
- * the branch's entry as it was. Best effort, like the failure notice.
+ * the branch's entry as it was. Only hook syncs settle it, as with the failure
+ * notice. Written in CI too, where it is harmless and nobody reads it. Best
+ * effort, like the failure notice.
  */
 function settleSkipNotice(dir: string, results: HookSyncOutcome[], at: string): void {
-  const notice = noticePathFor(dir, SYNC_SKIP_NOTICE)
-  const state = noticePathFor(dir, SYNC_SKIP_STATE)
-  if (!notice || !state) return
+  const notice = gitDirFile(dir, SYNC_SKIP_NOTICE)
+  if (!notice) return
+  const state = path.join(path.dirname(notice), SYNC_SKIP_STATE)
   try {
     withRecordLock(() => {
       const skips = readSkipState(state)
@@ -526,13 +563,17 @@ function settleSkipNotice(dir: string, results: HookSyncOutcome[], at: string): 
         if (r.refused && r.refused.length > 0) skips.set(r.branch, { refused: r.refused, at })
         else skips.delete(r.branch)
       }
+      // A deleted or renamed branch gets no later sync to clear its lines.
+      for (const branch of skips.keys()) {
+        if (!localBranchExists(dir, branch)) skips.delete(branch)
+      }
       if (skips.size === 0) {
         fs.rmSync(notice, { force: true })
         fs.rmSync(state, { force: true })
         return
       }
-      fs.writeFileSync(state, JSON.stringify(Object.fromEntries(skips), null, 2), 'utf-8')
-      fs.writeFileSync(notice, formatSyncSkipNotice(skips), 'utf-8')
+      writeAtomic(state, JSON.stringify(Object.fromEntries(skips), null, 2))
+      writeAtomic(notice, formatSyncSkipNotice(skips))
     })
   } catch {
     // Best effort — a notice that cannot be written must never fail the hook.

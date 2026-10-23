@@ -647,4 +647,34 @@ describe('pre-push hook — a failed background sync shows at the next push', ()
     expect(after).not.toContain('did not reach Margins')
   })
 
+  it('drops the lines of a branch that no longer exists, and escapes control characters in a path', async () => {
+    const { settleHookSyncOutcome } = await import('../src/lib/sync-failure-record.js')
+    useFakeMargins()
+    await handleInstallHook({})
+    addRemote(tmpDir)
+    write(tmpDir, 'a.md', '# one\n')
+    commit(tmpDir, 'first')
+    git(['branch', 'gone'], tmpDir)
+
+    settleHookSyncOutcome(tmpDir, [
+      { branch: 'gone', ok: true, refused: [{ path: 'docs/x y.md', reason: 'Invalid file path: docs/x y.md' }] },
+      { branch: 'main', ok: true, refused: [{ path: 'docs/a\nforged line.md', reason: 'bad\u001b[31m' }] },
+    ], { env: {} })
+    write(tmpDir, 'a.md', '# two\n')
+    commit(tmpDir, 'second')
+    const shown = pushStderr()
+    expect(shown).toContain('docs/x y.md')
+    expect(shown).toContain('docs/a\\nforged line.md')
+    expect(shown).not.toContain('\u001b')
+
+    // A deleted (or renamed) branch has no sync left to clear its lines.
+    git(['branch', '-D', 'gone'], tmpDir)
+    settleHookSyncOutcome(tmpDir, [{ branch: 'main', ok: false, error: 'down' }], { env: {} })
+    write(tmpDir, 'a.md', '# three\n')
+    commit(tmpDir, 'third')
+    const later = pushStderr()
+    expect(later).not.toContain('docs/x y.md')
+    expect(later).toContain('forged line.md')
+  })
+
 })
