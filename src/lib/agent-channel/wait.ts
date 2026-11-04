@@ -16,6 +16,7 @@ import {
   AuthExpired, ForbiddenError, MarginsError, NotFoundError, ResponseParseError, ServerError, ValidationError,
 } from '../errors.js'
 import {
+  AGENT_CAPABILITIES_HEADER,
   AGENT_CHANNEL_ERROR,
   AGENT_CHANNEL_PATHS,
   AGENT_CHANNEL_PROTOCOL_VERSION,
@@ -33,6 +34,11 @@ const BACKOFF_CAP_MS = 30_000
 const RETRY_AFTER_JITTER_MS = 5_000
 /** No event for three heartbeats: the connection is half-open, reconnect. */
 const DEFAULT_IDLE_TIMEOUT_MS = 3 * AGENT_STREAM_HEARTBEAT_MS
+/**
+ * What this client declares on the stream (#62): it runs `margins discuss edit`, so the
+ * server may put a send in edit mode. A client that declares nothing gets Proposal mode.
+ */
+const CLIENT_CAPABILITIES = { [AGENT_CAPABILITIES_HEADER]: 'edit' } as const
 
 export interface WaitForSendOptions {
   /** Its `openStream` resolves the bearer per connection (OIDC first, then the login, refreshed). */
@@ -94,7 +100,7 @@ async function connectOnce(opts: WaitForSendOptions, admit: () => void): Promise
     armIdle()
     let response: Response
     try {
-      response = await opts.client.openStream(path, controller.signal)
+      response = await opts.client.openStream(path, controller.signal, CLIENT_CAPABILITIES)
     } catch (err) {
       // A login that cannot be refreshed (AuthExpired) or any other refusal of ours
       // will not change on a retry; a network failure or the idle abort will.

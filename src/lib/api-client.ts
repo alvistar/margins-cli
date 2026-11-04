@@ -45,7 +45,7 @@ export interface ApiClient {
    * (the caller reads the status; only a 401 throws AuthExpired, after the OIDC
    * re-mint). A network failure rejects with the fetch error itself.
    */
-  openStream(path: string, signal: AbortSignal): Promise<Response>
+  openStream(path: string, signal: AbortSignal, headers?: ExtraHeaders): Promise<Response>
 }
 
 // ─── Token refresh ────────────────────────────────────────────────────────────
@@ -221,6 +221,8 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
     message?: string
     conflicts?: SyncConflictEntry[]
     head?: string | null
+    /** A merge-conflict 409's current text, when the route sends it (the agent `edit`). */
+    text?: string
     /** `withBody` validation 400s: `{ details: [{ field, message }] }`. */
     details?: ServerErrorDetail[]
     /** Sync VALIDATION_ERROR 400s: every manifest path the server refused. */
@@ -266,6 +268,8 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
     const head = typeof parsed['head'] === 'string' ? parsed['head'] as string
       : parsed['head'] === null ? null : undefined
 
+    const text = typeof parsed['text'] === 'string' ? parsed['text'] as string : undefined
+
     const details = Array.isArray(parsed['details'])
       ? (parsed['details'] as unknown[])
           .filter((d): d is { field?: unknown; message: string } =>
@@ -280,7 +284,7 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
       ? (parsed['invalidPaths'] as unknown[]).filter((x): x is string => typeof x === 'string')
       : undefined
 
-    return { code, message, conflicts, head, details, invalidPaths }
+    return { code, message, conflicts, head, text, details, invalidPaths }
   }
 
   /**
@@ -319,7 +323,7 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
       // never auto-overwrite) apart from a generic/legacy 409.
       const body = await parseErrorBody(response)
       if (body?.code === 'SYNC_MERGE_CONFLICT') {
-        throw new MergeConflictError(body.conflicts ?? [], body.head ?? null, body.message)
+        throw new MergeConflictError(body.conflicts ?? [], body.head ?? null, body.message, body.text)
       }
       if (body?.code === 'SYNC_FULL_DELETE_NOT_CONFIRMED') {
         throw new FullDeleteNotConfirmedError(
@@ -491,13 +495,14 @@ export function createApiClient(config: ResolvedConfig, clientOpts: ApiClientOpt
     return parseBody(response)
   }
 
-  async function openStream(path: string, signal: AbortSignal): Promise<Response> {
+  async function openStream(path: string, signal: AbortSignal, headers: ExtraHeaders = {}): Promise<Response> {
     const url = buildUrl(path)
     return sendWithOidcRemint(async () => {
       const bearer = await resolveRequestBearer()
       log(`GET ${url} (stream, key: ${maskKey(bearer ?? undefined)})`)
       const sent = await fetch(url, {
         headers: {
+          ...headers,
           ...authorization(bearer),
           Accept: 'text/event-stream',
           'X-Margins-Client': CLIENT_HEADER,

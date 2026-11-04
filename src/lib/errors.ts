@@ -199,6 +199,8 @@ export class MergeConflictError extends ConflictError {
     public readonly conflicts: SyncConflictEntry[],
     public readonly head: string | null,
     message = 'Your push conflicts with a newer change and was not applied.',
+    /** The document's text at `head`, when the route sends it (the agent `edit`, #62). */
+    public readonly text?: string,
   ) {
     super(message)
   }
