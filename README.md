@@ -596,6 +596,7 @@ margins discuss propose --send snd_abc --attempt 1 \
   --replacement "is 15 minutes" --body "Covers slow tools."
 margins discuss done --send snd_abc --attempt 1 --note "Answered in the thread."
 margins discuss resolve --send snd_abc --attempt 1 --summary "Settled: 10 minutes."
+margins discuss edit --send snd_abc --attempt 1 --base sha_abc --format markdown --file /tmp/doc.md
 ```
 
 | Command | Flags |
@@ -605,9 +606,30 @@ margins discuss resolve --send snd_abc --attempt 1 --summary "Settled: 10 minute
 | `propose` | `--anchor-text`, `--anchor-prefix`, `--anchor-suffix` (the exact passage and the words just before and after it; the prefix or suffix is `""` for a passage at the start or end of the document), `--replacement <text>` (empty deletes the passage), all required; `--anchor-heading`, `--body <rationale>` |
 | `done` | `--note <text>`; answers the send without resolving the thread |
 | `resolve --send` | `--summary <text>`; resolves the thread, which answers the send |
+| `edit` | `--base <sha>`, `--format <markdown\|html>`, `--file <path>` (all required); edit mode only, see below |
 
 Every action takes `--send <id>` and `--attempt <n>` (required) and `--workspace <id>`
 (default: the Workspace `discuss wait` recorded for the send). Needs Node 22.13+.
+
+#### Edit mode
+
+`discuss wait` tells the server this CLI can edit (the `Margins-Agent-Capabilities: edit`
+stream header). The server then puts a send in edit mode when the document is a Stash
+(Markdown or an HTML design) the sender may edit, and the payload prints the `edit` command
+with `--base` and `--format` filled in. Otherwise the send stays in Proposal mode. An agent
+key stored by an older CLI is minted again once, since a key minted before `edit` existed
+cannot edit.
+
+`discuss edit` sends the whole text of `--file` with the base and the format, once per send.
+On success it writes the text Margins stored back to `--file` (the merged text, when the
+server merged it over a change made since `--base`), then prints the new head and the diff
+link. On a 409 `SYNC_MERGE_CONFLICT` nothing is written and `--file` is unchanged: it prints
+the current head and the current text (`--json`: `head`, `conflicts`, `text`); redo the
+change on that text and run `edit` once more with that head as `--base`.
+
+On a Margins Light document edit mode has no `edit` command: the payload names the local
+file, and the agent edits that file in place. An `edit` call on it is refused with
+`AGENT_SEND_EDIT_NOT_ALLOWED` and the server's sentence to edit the local file.
 
 ---
 

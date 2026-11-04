@@ -84,3 +84,31 @@ describe('discuss propose: empty anchor context on the command line (#38)', () =
     expect(result.status).not.toBe(0)
   })
 })
+
+describe('discuss edit: --format on the command line (#62)', () => {
+  // An unreachable server, as above: the command fails after option parsing.
+  function runEdit(args: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'margins-edit-'))
+    try {
+      return spawnSync('node', [join(ROOT, 'bin/margins.js'), 'discuss', 'edit', '--send', 'snd_1', '--attempt', '1', '--workspace', 'ws_1', '--base', 'sha_1', '--file', join(ROOT, 'package.json'), ...args], {
+        encoding: 'utf-8',
+        env: { ...process.env, NO_COLOR: '1', MARGINS_CONFIG_DIR: dir, MARGINS_SERVER_URL: 'http://127.0.0.1:9', MARGINS_API_KEY: 'mk_test' },
+        cwd: ROOT,
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('refuses a missing --format', () => {
+    const result = runEdit([])
+    expect(result.stderr).toMatch(/required option '--format <format>' not specified/)
+    expect(result.status).not.toBe(0)
+  })
+
+  it('takes --format html and sends the edit', () => {
+    const result = runEdit(['--format', 'html'])
+    expect(result.stderr).toMatch(/Cannot reach http:\/\/127\.0\.0\.1:9/)
+    expect(result.stderr).toMatch(/The edit stays in the outbox/)
+  })
+})

@@ -33,7 +33,7 @@ const NO_AUTH_COMMANDS = new Set(['config', 'completions', 'help', 'auth', 'inst
 // The agent channel under `discuss`: `wait`, the actions, and `reply`/`resolve` with --send.
 // Against a live Margins Light daemon none needs a login or an API key: the agent key is
 // minted on the daemon's capability token (#39), and every request after that sends only it.
-const AGENT_CHANNEL_SUBCOMMANDS = new Set(['wait', 'propose', 'progress', 'done'])
+const AGENT_CHANNEL_SUBCOMMANDS = new Set(['wait', 'propose', 'progress', 'done', 'edit'])
 
 function isAgentChannel(rootName: string, actionCommand: { name(): string; opts(): Record<string, unknown> }): boolean {
   if (rootName !== 'discuss') return false
@@ -550,6 +550,21 @@ discussCmd
   .requiredOption('--text <line>', 'The progress line')
   .option('--workspace <id>', SEND_WORKSPACE_HELP)
   .action(async (opts, cmd) => runAgentAction('progress', opts, cmd))
+
+discussCmd
+  .command('edit')
+  .description('Edit the sent thread\'s document yourself, on a send in edit mode: publishes a new version')
+  .requiredOption('--send <id>', SEND_HELP)
+  .requiredOption('--attempt <n>', ATTEMPT_HELP)
+  .requiredOption('--base <sha>', 'The version you read: the --base the send prints, or the head a 409 printed')
+  .requiredOption('--format <format>', 'The document format the send prints: markdown or html')
+  .requiredOption('--file <path>', 'A file holding the whole new document text; on success it gets the text Margins stored (merged, if it merged)')
+  .option('--workspace <id>', SEND_WORKSPACE_HELP)
+  .action(async (opts, cmd) => {
+    const cfg = getConfig(cmd)
+    const { handleAgentEdit } = await import('./commands/discuss/edit.js')
+    await handleAgentEdit(cfg, opts)
+  })
 
 discussCmd
   .command('done')

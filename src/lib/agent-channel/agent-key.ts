@@ -14,6 +14,10 @@
  *   `x-margins-token` and no `Authorization`, since Light has no `/api/keys` and refuses
  *   a mint that presents an API key.
  *
+ * The server fixes a key's actions at the mint, and edit mode needs `edit` among them (#62,
+ * alvistar/margins#357). A stored key with no recorded actions was minted by an older CLI,
+ * maybe before `edit` existed: it is minted again once, and kept when that mint fails.
+ *
  * The key is a credential, so it lives in the CLI credential store beside
  * `config.json` (`agent-keys.json`, owner-only), never in the agent channel's SQLite
  * store, which holds machine state only (D11).
@@ -38,6 +42,8 @@ export interface StoredAgentKey {
   serverUrl: string
   /** ISO 8601. */
   expiresAt: string
+  /** The actions the server minted it with; absent on a key an older CLI stored. */
+  actions?: string[]
 }
 
 type KeyFile = Record<string, StoredAgentKey>
@@ -135,7 +141,9 @@ export async function mintAgentKey(cfg: ResolvedConfig, workspaceId: string): Pr
   if (!m || typeof m.id !== 'string' || typeof m.key !== 'string' || typeof m.expiresAt !== 'string') {
     throw new ResponseParseError()
   }
-  const stored: StoredAgentKey = { id: m.id, key: m.key, workspaceId, serverUrl: cfg.serverUrl, expiresAt: m.expiresAt }
+  // A mint answer with no list records none: the key is not minted again for it.
+  const actions = Array.isArray(m.actions) ? m.actions.filter((a): a is string => typeof a === 'string') : []
+  const stored: StoredAgentKey = { id: m.id, key: m.key, workspaceId, serverUrl: cfg.serverUrl, expiresAt: m.expiresAt, actions }
   const file = readKeyFile()
   file[slot(cfg.serverUrl, workspaceId)] = stored
   writeKeyFile(file)
@@ -145,6 +153,22 @@ export async function mintAgentKey(cfg: ResolvedConfig, workspaceId: string): Pr
 /** An API client that sends the agent key and nothing else. */
 function agentClient(cfg: ResolvedConfig, key: StoredAgentKey): ApiClient {
   return createApiClient(cfg, { fixedBearer: key.key })
+}
+
+/**
+ * The stored key, else a new one. A key an older CLI stored (no `actions`) is minted again
+ * once, so a key minted before `edit` existed does not keep its sends in Proposal mode; if
+ * that mint fails, the old key still answers in Proposal mode.
+ */
+async function upToDate(cfg: ResolvedConfig, workspaceId: string, stored: StoredAgentKey | undefined): Promise<StoredAgentKey> {
+  if (!stored) return mintAgentKey(cfg, workspaceId)
+  if (stored.actions) return stored
+  try {
+    return await mintAgentKey(cfg, workspaceId)
+  } catch (err) {
+    if (err instanceof MarginsError) return stored
+    throw err
+  }
 }
 
 /**
@@ -159,7 +183,7 @@ export async function withAgentKey<T>(
   workspaceId: string,
   use: (client: ApiClient) => Promise<T>,
 ): Promise<T> {
-  const key = readAgentKey(cfg.serverUrl, workspaceId) ?? await mintAgentKey(cfg, workspaceId)
+  const key = await upToDate(cfg, workspaceId, readAgentKey(cfg.serverUrl, workspaceId))
   try {
     return await use(agentClient(cfg, key))
   } catch (err) {

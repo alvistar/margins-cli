@@ -86,6 +86,9 @@ function actionBody(action: AgentAction, opts: AgentActionOpts): AgentActionRequ
       }
       return { ...(opts.body ? { text: opts.body } : {}), proposal }
     }
+    case 'edit':
+      // It reads and writes a file: `discuss edit` (edit.ts) sends it.
+      throw new ValidationError('edit is `margins discuss edit --file <path> --format <markdown|html> --base <sha>`.')
   }
 }
 
