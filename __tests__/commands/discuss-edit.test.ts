@@ -230,6 +230,34 @@ describe('discuss edit --file --format --base', () => {
     expect(server!.documents.get('snd_1')?.text).toBe('<html><body>b</body></html>')
   })
 
+  it('a stored text that differs from the one sent is written back, and the output says so', async () => {
+    await claimed({ ...STASH_MD, onStaleBase: (sent) => sent.replace('<script>x</script>', '') })
+    server!.documents.set('snd_1', { ...server!.documents.get('snd_1')!, head: 'sha_concurrent' })
+    const file = writeDraft('b<script>x</script>')
+
+    await edit({ file, base: 'sha_base', format: 'markdown' })
+
+    expect(fs.readFileSync(file, 'utf8')).toBe('b')
+    expect(logs.join('\n')).toContain(`the stored text is now in ${file}`)
+  })
+
+  it('a write-back that fails after Margins published says the edit is published and names the head', async () => {
+    await claimed({ ...STASH_MD, onStaleBase: (sent) => `${sent}merged\n` })
+    server!.documents.set('snd_1', { ...server!.documents.get('snd_1')!, head: 'sha_concurrent' })
+    const dir = fs.mkdtempSync(path.join(projectDir, 'ro-'))
+    const file = path.join(dir, 'draft.md')
+    fs.writeFileSync(file, 'mine\n')
+    fs.chmodSync(dir, 0o555)
+    try {
+      const err = await edit({ file, base: 'sha_base', format: 'markdown' }).catch((e: unknown) => e) as { userMessage?: string }
+
+      expect(err.userMessage).toMatch(/Margins published the edit \(head sha_edit_1\)/)
+      expect(err.userMessage).toMatch(/Do not run edit again/)
+    } finally {
+      fs.chmodSync(dir, 0o755)
+    }
+  })
+
   it('refuses a missing or unknown --format before any request', async () => {
     await claimed()
     const file = writeDraft('x\n')

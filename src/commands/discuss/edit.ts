@@ -132,7 +132,18 @@ export async function handleAgentEdit(
   const edit = answer.edit
   // The file takes the stored text before the head is reported: the agent's next base is that text's.
   const wrote = edit?.text !== undefined && edit.text !== content
-  if (wrote) replaceFile(file, edit!.text!)
+  if (wrote) {
+    try {
+      replaceFile(file, edit!.text!)
+    } catch (err) {
+      throw new MarginsError(
+        `agent edit: published, write-back failed: ${(err as Error).message}`,
+        `Margins published the edit (head ${edit!.head}), but its stored text could not be written to ${file}: ${(err as Error).message}. `
+          + 'Do not run edit again: the send has made its edit. Reply in the thread with what you changed, and mark the send done.',
+        1,
+      )
+    }
+  }
 
   if (cfg.json) {
     console.log(formatJson({ ...answer, file }))
@@ -140,8 +151,7 @@ export async function handleAgentEdit(
   }
   const what = !edit ? 'accepted'
     : !edit.changed ? 'nothing to change (the text equals the document)'
-      : edit.merged ? `merged with a change made since --base ${opts.base}${wrote ? `; the merged text is now in ${file}` : ''}`
-        : 'published as a new version'
+      : `${edit.merged ? `merged with a change made since --base ${opts.base}` : 'published as a new version'}${wrote ? `; the stored text is now in ${file}` : ''}`
   console.log([
     `edit on send ${answer.sendId} (attempt ${answer.attempt}, now ${answer.state}): ${what}.`,
     ...(edit ? [`head ${edit.head}`] : []),
