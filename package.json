@@ -1,6 +1,6 @@
 {
   "name": "margins-cli",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "description": "CLI for Margins \u2014 sync and review Markdown in Git",
   "type": "module",
   "bin": {

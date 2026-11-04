@@ -2,6 +2,41 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.25.0] - 2026-11-04
+
+An agent can now edit a document in place instead of only proposing changes:
+`margins discuss edit` sends the whole new text of a file, and `discuss wait` tells
+Margins the client can edit, so the server may hand the agent Edit mode. Ships #62.
+
+### Added
+
+- **`margins discuss edit --send --attempt --base <sha> --format <fmt> --file <path>`.**
+  Sends the whole new text of the file with the base sha and the format
+  (alvistar/margins#357). On success the text Margins stored (the merged text, after a
+  merge) is written back to the file, the output says when that text differs from the
+  one sent, and the new head is printed. On 409 `SYNC_MERGE_CONFLICT` the file is left
+  unchanged and the current head and text are printed (in a `MARGINS-DATA` block;
+  `--json`: `head`, `conflicts`, `text`) for one retry on that head. If the write-back
+  fails after Margins published, the output names the head, says the edit is published
+  and tells the agent not to edit again. On a Margins Light document the server's 403
+  `AGENT_SEND_EDIT_NOT_ALLOWED` sentence (edit the local file) is printed and nothing
+  is written.
+- **The edit capability.** `discuss wait` sends `Margins-Agent-Capabilities: edit`; a
+  client without the header stays in Proposal mode. `protocol.ts` is recopied from the
+  server.
+
+### Changed
+
+- **Agent keys from 0.24.x are minted again, once.** A stored agent key with no
+  recorded actions (minted before edit existed) is replaced by a new mint on first use;
+  when that mint fails, the old key stays in use.
+
+### Known issues
+
+- The 0.24.x agent key stays valid on the server after the re-mint (#63).
+- The `discuss edit` write-back renames a temp file over the target, which drops the
+  file's mode and replaces a symlink with a regular file (#65).
+
 ## [0.24.1] - 2026-10-23
 
 A push no longer fails a whole branch over a path the server refuses: it skips the path,
