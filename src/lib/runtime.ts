@@ -309,6 +309,8 @@ interface DaemonRecord {
   port?: unknown
   token?: unknown
   runtimeDir?: unknown
+  /** The store folder the daemon serves: what stays the same across its restarts (#72). */
+  store?: unknown
 }
 
 /** A record that is ours (the marker) and whose PID is alive, else null. */
@@ -371,6 +373,17 @@ export interface LiveDaemon {
  * warns about.
  */
 export function liveDaemonAt(serverUrl: string): LiveDaemon | null {
+  const port = loopbackPort(serverUrl)
+  if (port === null) return null
+  for (const rec of liveDaemonRecords()) {
+    if (Number(rec.port) !== port) continue
+    return { port, token: typeof rec.token === 'string' && rec.token ? rec.token : undefined }
+  }
+  return null
+}
+
+/** The port of a loopback `http:` URL, else null: only there may the capability token go. */
+function loopbackPort(serverUrl: string): number | null {
   let url: URL
   try {
     url = new URL(serverUrl)
@@ -378,12 +391,24 @@ export function liveDaemonAt(serverUrl: string): LiveDaemon | null {
     return null
   }
   if (url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname)) return null
-  const port = Number(url.port || 80)
+  return Number(url.port || 80)
+}
+
+type LiveDaemonEntry = LiveDaemon & { url: string; store: string | undefined }
+
+function liveDaemonEntries(): LiveDaemonEntry[] {
+  const daemons = new Map<number, LiveDaemonEntry>()
   for (const rec of liveDaemonRecords()) {
-    if (Number(rec.port) !== port) continue
-    return { port, token: typeof rec.token === 'string' && rec.token ? rec.token : undefined }
+    const port = typeof rec.port === 'number' ? rec.port : NaN
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || daemons.has(port)) continue
+    daemons.set(port, {
+      url: `http://127.0.0.1:${port}`,
+      port,
+      token: typeof rec.token === 'string' && rec.token ? rec.token : undefined,
+      store: typeof rec.store === 'string' && rec.store ? rec.store : undefined,
+    })
   }
-  return null
+  return [...daemons.values()]
 }
 
 /**
@@ -393,13 +418,23 @@ export function liveDaemonAt(serverUrl: string): LiveDaemon | null {
  * loopback port a live record names. A record whose port is not a port names no daemon.
  */
 export function liveDaemons(): (LiveDaemon & { url: string })[] {
-  const daemons = new Map<number, LiveDaemon & { url: string }>()
-  for (const rec of liveDaemonRecords()) {
-    const port = typeof rec.port === 'number' ? rec.port : NaN
-    if (!Number.isInteger(port) || port < 1 || port > 65535 || daemons.has(port)) continue
-    daemons.set(port, { url: `http://127.0.0.1:${port}`, port, token: typeof rec.token === 'string' && rec.token ? rec.token : undefined })
-  }
-  return [...daemons.values()]
+  return liveDaemonEntries().map(({ url, port, token }) => ({ url, port, token }))
+}
+
+/**
+ * The store the live daemon at `serverUrl` serves, or null (#72). A daemon takes a new port
+ * at every start, so a port can pass to another store's daemon: the store says whether the
+ * daemon at a URL is still the one the CLI picked.
+ */
+export function liveDaemonStoreAt(serverUrl: string): string | null {
+  const port = loopbackPort(serverUrl)
+  return liveDaemonEntries().find((d) => d.port === port)?.store ?? null
+}
+
+/** The live daemon that serves `store`, wherever it listens now, or null (#72). */
+export function liveDaemonOfStore(store: string): (LiveDaemon & { url: string }) | null {
+  const found = liveDaemonEntries().find((d) => d.store === store)
+  return found ? { url: found.url, port: found.port, token: found.token } : null
 }
 
 /**

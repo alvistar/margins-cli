@@ -22,7 +22,7 @@
  */
 import type { ResolvedConfig } from '../config.js'
 import { MarginsError } from '../errors.js'
-import { liveDaemons } from '../runtime.js'
+import { liveDaemonOfStore, liveDaemonStoreAt, liveDaemons } from '../runtime.js'
 import { AgentKeyMintRefused, mintAgentKey, readAgentKey } from './agent-key.js'
 import { openAgentChannelStore } from './store.js'
 
@@ -93,7 +93,7 @@ async function holds(cfg: ResolvedConfig, workspaceId: string): Promise<{ holds:
  * mint again.
  */
 export async function resolveLightServer(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
-  const daemons = liveDaemons().map((d) => ({ ...d, cfg: { ...cfg, serverUrl: d.url } }))
+  const daemons = liveDaemons().map((d) => ({ ...d, cfg: lightCfg(cfg, d.url) }))
 
   const only = daemons.length === 1 ? daemons[0]! : undefined
   if (only && readAgentKey(only.url, workspaceId)) return only.cfg
@@ -104,4 +104,30 @@ export async function resolveLightServer(cfg: ResolvedConfig, workspaceId: strin
   if (holders.length > 1) throw new LightWorkspaceAmbiguous(workspaceId, holders.map((d) => d.port))
   const notes = answers.flatMap((a) => (!a.answer.holds && a.answer.note ? [a.answer.note] : []))
   throw new LightWorkspaceNotOpen(workspaceId, notes)
+}
+
+function lightCfg(cfg: ResolvedConfig, url: string): ResolvedConfig {
+  const store = liveDaemonStoreAt(url)
+  const { lightStore: _old, ...rest } = cfg
+  return store ? { ...rest, serverUrl: url, lightStore: store } : { ...rest, serverUrl: url }
+}
+
+/**
+ * Whether the daemon at `cfg.serverUrl` is still the one `resolveLightServer` picked (#72):
+ * a live record for the same store names that port. A daemon takes a new port at every
+ * start, so after a restart the old port is dead or another store's.
+ */
+export function isPickedLightServer(cfg: ResolvedConfig): boolean {
+  return cfg.lightStore !== undefined && liveDaemonStoreAt(cfg.serverUrl) === cfg.lightStore
+}
+
+/**
+ * The live daemon for `workspaceId` again, after the picked one went away (#72): the same
+ * store's daemon wherever it listens now, with no probe, so no other store's daemon is
+ * asked; else the rule of the preAction hook (`resolveLightServer`).
+ */
+export async function findLightServerAgain(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
+  const same = cfg.lightStore ? liveDaemonOfStore(cfg.lightStore) : null
+  if (same) return lightCfg(cfg, same.url)
+  return resolveLightServer(cfg, workspaceId)
 }

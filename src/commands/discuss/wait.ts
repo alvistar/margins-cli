@@ -1,10 +1,15 @@
 import type { ResolvedConfig } from '../../lib/config.js'
 import { formatJson } from '../../lib/output.js'
-import { waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
+import { backoffMs, StreamServerGone, waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
 import { openAgentChannelStore, SqliteUnavailableError, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
 import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
 import { assertPlainId } from '../../lib/agent-channel/actions.js'
+import {
+  findLightServerAgain, isLocalWorkspaceId, isPickedLightServer, LightWorkspaceNotOpen,
+} from '../../lib/agent-channel/light-target.js'
+import { AuthExpired } from '../../lib/errors.js'
+import type { SendEventPayload } from '../../lib/agent-channel/protocol.js'
 
 /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
 export type DiscussWaitDeps = Pick<WaitForSendOptions, 'sleep' | 'random' | 'idleTimeoutMs'>
@@ -62,6 +67,48 @@ function turnChannelOff(): void {
 }
 
 /**
+ * The wait on a `local-` Workspace whose daemon the CLI picked (#72). Margins Light takes a
+ * new port at every start, so when the picked daemon is no longer at its URL (a dead port,
+ * or another store's daemon there) the wait finds the daemon that holds the Workspace again
+ * and goes on there, with that URL's agent key. While none does, it keeps trying with
+ * backoff and says so once.
+ */
+async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps: DiscussWaitDeps): Promise<SendEventPayload> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const random = deps.random ?? Math.random
+  let target = cfg
+  let linked = false
+  const onAdmitted = () => {
+    if (!linked) turnChannelOff()
+    linked = true
+  }
+  for (;;) {
+    const reachable = () => isPickedLightServer(target)
+    try {
+      return await withAgentKey(target, workspaceId, (client) =>
+        waitForSend({ client, workspaceId, ...deps, onAdmitted, reachable }), { mayMint: reachable })
+    } catch (err) {
+      if (!(err instanceof StreamServerGone) && !(err instanceof AuthExpired && !reachable())) throw err
+    }
+    let failures = 0
+    let said = false
+    for (;;) {
+      try {
+        target = await findLightServerAgain(target, workspaceId)
+        break
+      } catch (err) {
+        if (!(err instanceof LightWorkspaceNotOpen)) throw err
+        if (!said) {
+          process.stderr.write(`margins: Margins Light is not running for Workspace ${workspaceId}; waiting for it to open.\n`)
+          said = true
+        }
+        await sleep(backoffMs(++failures, random))
+      }
+    }
+  }
+}
+
+/**
  * `margins discuss wait --workspace <id>`: hold the agent stream, claim one send,
  * print its payload, return (exit 0). The harness that ran it in the background
  * wakes the session with the output. The local store records the link and which
@@ -78,8 +125,10 @@ export async function handleDiscussWait(
   await withStore('link this session', (store) => store.linkSession(sessionId, opts.workspace), { requireSqlite: true })
 
   // The stream sends the agent key, minted on the first wait in this Workspace.
-  const payload = await withAgentKey(cfg, opts.workspace, (client) =>
-    waitForSend({ client, workspaceId: opts.workspace, ...deps, onAdmitted: turnChannelOff }))
+  const payload = cfg.lightStore !== undefined && isLocalWorkspaceId(opts.workspace)
+    ? await waitFollowingLight(cfg, opts.workspace, deps)
+    : await withAgentKey(cfg, opts.workspace, (client) =>
+      waitForSend({ client, workspaceId: opts.workspace, ...deps, onAdmitted: turnChannelOff }))
 
   // Print first: the payload is what the session needs; the record is bookkeeping.
   console.log(cfg.json ? formatJson(payload) : payload.prompt)
