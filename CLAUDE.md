@@ -58,7 +58,7 @@ src/
   completions/
     dynamic.js          # Runtime completions (workspace slugs, discussion IDs)
   lib/
-    agent-channel/      # protocol.ts (verbatim copy of the server's), SSE reader, `wait` reconnect loop, SQLite store (no secrets), actions.ts (outbox + Idempotency-Key resend), agent-key.ts (agent-keys.json, minted via the login), mcp-config.ts (removes channel.mjs from the repo's .mcp.json)
+    agent-channel/      # protocol.ts (verbatim copy of the server's), SSE reader, `wait` reconnect loop, SQLite store (no secrets), actions.ts (outbox + Idempotency-Key resend), agent-key.ts (agent-keys.json, minted via the login), light-target.ts (the live Light daemon that holds a `local-` Workspace), mcp-config.ts (removes channel.mjs from the repo's .mcp.json)
     api-client.ts       # HTTP client; bearer resolver prefers OIDC over API key
     auth-env.ts         # hasOidcAuth() — OIDC token / mintable-env detection for the auth gate
     cas-sync.ts         # Content-addressable push protocol (manifest diff + blob upload)
@@ -94,7 +94,11 @@ are present. Commands in `NO_AUTH_COMMANDS` (`config`, `completions`, `help`, `a
 `install-hook`, `audit`, `open`, `runtime`, `stop`) skip the gate — `audit` is exempt so
 it can run in gh-only mode; `workspace unsync` is exempt as a local-only subcommand. The
 agent channel (`discuss wait`, the agent actions) also passes with no credential when
-`liveDaemonAt` finds a live Light daemon at the server URL (#40).
+`liveDaemonAt` finds a live Light daemon at the server URL (#40). When the server URL is
+not a live daemon and the agent-channel command's Workspace (`--workspace`, else the held
+send's) is a `local-` id, the hook first sets `cfg.serverUrl` to the live daemon that holds it
+(`resolveLightServer` in `light-target.ts`, which asks each daemon with the mint), so the
+gate, the mint, the stream and the actions all reach that daemon (#67).
 
 One request carries neither: the agent key mint against a Margins Light daemon
 (`agent-key.ts`) sends the daemon's capability token in `x-margins-token` and no
