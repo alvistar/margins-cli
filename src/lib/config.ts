@@ -48,6 +48,12 @@ export interface ResolvedConfig {
   accessTokenExpiresAt?: number
   keycloakIssuer?: string
   keycloakClientId?: string
+  /**
+   * The store of the Margins Light daemon the CLI picked for a `local-` Workspace (#67): set
+   * by `resolveLightServer` only, so a `wait` follows that daemon when it restarts on a new
+   * port (#72). Absent when the server URL was given or configured.
+   */
+  lightStore?: string
 }
 
 export interface CliOpts {

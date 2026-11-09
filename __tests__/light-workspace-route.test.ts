@@ -27,11 +27,15 @@ const API_KEY = 'mrgn_synthetic_key_0000'
 
 let tmp: string
 let servers: FakeAgentServer[] = []
+/** A `wait` that never ends must not outlive its test. */
+let children: ReturnType<typeof spawn>[] = []
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'margins-light-route-'))
 })
 afterEach(async () => {
+  for (const c of children) c.kill()
+  children = []
   await Promise.all(servers.map((s) => s.close()))
   servers = []
   fs.rmSync(tmp, { recursive: true, force: true })
@@ -62,6 +66,7 @@ function cli(args: string[], serverUrl: string, apiKey = ''): Promise<Run> {
         },
       },
     )
+    children.push(child)
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (d) => { stdout += d })
@@ -71,12 +76,12 @@ function cli(args: string[], serverUrl: string, apiKey = ''): Promise<Run> {
 }
 
 /** The record a running Light daemon publishes (margins/scripts/lib/daemon.mjs), one per store. */
-function publishDaemon(store: string, port: unknown, token: string): void {
+function publishDaemon(store: string, port: unknown, token: string, ready = true): void {
   const dir = path.join(tmp, 'home', 'daemons')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, `${store}.json`), JSON.stringify({
     v: 2, marker: 'margins-daemon', store: `/synthetic/${store}`, pid: process.pid,
-    startedAt: Date.now(), port, token, ready: true,
+    startedAt: Date.now(), port, token, ready,
   }), { mode: 0o600 })
 }
 
@@ -216,6 +221,189 @@ describe('a local- Workspace with the default (cloud) server URL (#67)', () => {
     expect(wait.status).toBe(1)
     expect(wait.stderr).toMatch(LOGIN)
     expect([...cloud.requests, ...daemon.requests]).toEqual([])
+  }, 60_000)
+})
+
+/** Resolve once `check` holds, polling; fail after `ms`. */
+async function until(check: () => boolean, ms = 20_000): Promise<void> {
+  const end = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > end) throw new Error('timed out')
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+const mintsOn = (s: FakeAgentServer) => s.requests.filter((r) => r.method === 'POST' && r.path === '/api/local/agent-keys')
+const NOT_RUNNING = /Margins Light is not running for Workspace/g
+
+describe('`wait` follows a Margins Light restart (#72)', () => {
+  /** The holder's daemon on port A, holding the stream open until the test restarts it. */
+  async function holdingDaemon(store: string): Promise<FakeAgentServer> {
+    const token = `capability_token_${store}`
+    const s = await startFakeAgentServer({ workspaceId: LOCAL_WS, light: { token, holds: [LOCAL_WS] }, script: [{ kind: 'hold' }] })
+    servers.push(s)
+    publishDaemon(store, portOf(s), token)
+    return s
+  }
+
+  it('the record moves from port A to port B: `wait` reconnects to B and claims the send there, in the same process', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+
+    await a.stop()
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await wait
+    expect(run.stderr).not.toMatch(LOGIN)
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('snd_1')
+    expect(b.streamRequests).toHaveLength(1)
+    expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('no live daemon holds it: `wait` keeps retrying, says once that Margins Light is not running, then claims on the next daemon', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+
+    await a.stop()
+    fs.rmSync(path.join(tmp, 'home', 'daemons', 'store_a.json'))
+    // A daemon that does not hold it: each attempt asks it, so its mints count the attempts.
+    const other = await fakeDaemon('store_c', ['local-someotherfolder'])
+    await until(() => mintsOn(other).length >= 2)
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await wait
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('snd_1')
+    expect(run.stderr.match(NOT_RUNNING)).toHaveLength(1)
+    expect(b.streamRequests).toHaveLength(1)
+  }, 60_000)
+
+  it('another store\'s daemon takes the old port and refuses the key: no mint for this Workspace reaches it', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+    const mintsBefore = mintsOn(a).length
+
+    await a.stop()
+    // Store C's daemon now listens on port A, and the old key means nothing there; the
+    // holder is not back yet, so for a while C is the only live daemon.
+    for (const k of a.minted) a.revoke(k.key)
+    fs.rmSync(path.join(tmp, 'home', 'daemons', 'store_a.json'))
+    publishDaemon('store_c', portOf(a), 'capability_token_store_a')
+    await a.start()
+    await new Promise((r) => setTimeout(r, 4_000))
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await wait
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('snd_1')
+    expect(b.streamRequests).toHaveLength(1)
+    expect(mintsOn(a)).toHaveLength(mintsBefore)
+  }, 60_000)
+
+  it('the restarted daemon publishes its record before it listens: `wait` keeps trying there and claims once it serves', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+
+    // The new daemon took its port and wrote its record (ready: false), but serves nothing yet.
+    const b = await startFakeAgentServer({ workspaceId: LOCAL_WS, light: { token: 'capability_token_b', holds: [LOCAL_WS] }, script: deliver(LOCAL_WS) })
+    servers.push(b)
+    await b.stop()
+    await a.stop()
+    publishDaemon('store_a', portOf(b), 'capability_token_b', false)
+    await new Promise((r) => setTimeout(r, 3_000))
+    await b.start()
+
+    const run = await wait
+    expect(run.stderr).not.toMatch(/Cannot reach|not running/)
+    expect(run.stderr.match(/does not answer yet for Workspace/g)).toHaveLength(1)
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('snd_1')
+    expect(b.streamRequests).toHaveLength(1)
+  }, 60_000)
+
+  it('after a move to a new port, the old port keeps no key: another store\'s daemon there is never taken for the holder', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+    await a.stop()
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
+    expect((await wait).status).toBe(0)
+
+    // The holder closes; store C's daemon takes port A and is the only live daemon.
+    await b.stop()
+    fs.rmSync(path.join(tmp, 'home', 'daemons', 'store_a.json'))
+    for (const k of a.minted) a.revoke(k.key)
+    publishDaemon('store_c', portOf(a), 'capability_token_store_c')
+    await a.start()
+
+    const next = await cli(['discuss', 'done', '--workspace', LOCAL_WS, '--send', 'snd_2', '--attempt', '1'], cloud.url)
+    expect(next.status).not.toBe(0)
+    expect(next.stderr).toMatch(/No running Margins Light holds Workspace/)
+  }, 60_000)
+})
+
+describe('a --send-only action whose send the local store does not hold (#68)', () => {
+  const action = ['discuss', 'done', '--send', 'snd_unknown_7', '--attempt', '1']
+
+  it('a live daemon, no login, an empty store: fails naming the send, never the login', async () => {
+    const cloud = await fakeCloud()
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli(action, cloud.url)
+    expect(run.status).not.toBe(0)
+    expect(run.stderr).not.toMatch(LOGIN)
+    expect(run.stderr).toContain('snd_unknown_7')
+    expect(run.stderr).toContain('--workspace')
+    expect([...cloud.requests, ...daemon.requests]).toEqual([])
+  }, 60_000)
+
+  it('with --workspace local-<id>: resolves the daemon that holds it, as before', async () => {
+    const cloud = await fakeCloud()
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli([...action, '--workspace', LOCAL_WS], cloud.url)
+    expect(run.stderr).not.toMatch(LOGIN)
+    expect(daemon.minted).toHaveLength(1)
+    expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('no live daemon, no login: the cloud gate still says to log in', async () => {
+    const cloud = await fakeCloud()
+
+    const run = await cli(action, cloud.url)
+    expect(run.status).toBe(1)
+    expect(run.stderr).toMatch(LOGIN)
+    expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('a logged-in user, a live daemon, an empty store: the same unknown-send error, no request', async () => {
+    const cloud = await fakeCloud(CLOUD_WS)
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli(action, cloud.url, API_KEY)
+    expect(run.status).not.toBe(0)
+    expect(run.stderr).toContain('No Workspace on record for send snd_unknown_7')
+    expect([...cloud.requests, ...daemon.requests]).toEqual([])
+  }, 60_000)
+
+  it('a logged-in user on a cloud Workspace: the action goes to the cloud, as before', async () => {
+    const cloud = await fakeCloud(CLOUD_WS)
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli([...action, '--workspace', CLOUD_WS], cloud.url, API_KEY)
+    expect(cloud.requests.filter((r) => r.method === 'POST').map((r) => r.path)[0]).toBe('/api/keys')
+    expect(daemon.requests).toEqual([])
+    expect(run.stderr).not.toMatch(LOGIN)
   }, 60_000)
 })
 

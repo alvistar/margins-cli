@@ -50,6 +50,25 @@ export interface WaitForSendOptions {
   idleTimeoutMs?: number
   /** Called once, when a stream first passes admission: a heartbeat, or a send it can read. */
   onAdmitted?: () => void
+  /**
+   * Asked before each reconnect: false ends the wait with `StreamServerGone`, so the caller
+   * can find the server again (a Margins Light daemon that restarted on a new port, #72).
+   */
+  reachable?: () => boolean
+}
+
+/** `reachable` answered false: the server this wait used is gone. */
+export class StreamServerGone extends Error {
+  constructor() {
+    super('The agent stream server is gone')
+    this.name = 'StreamServerGone'
+  }
+}
+
+/** The jittered delay after `failures` failed attempts in a row: half the ceiling, plus up to half again. */
+export function backoffMs(failures: number, random: () => number): number {
+  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1))
+  return ceiling / 2 + random() * (ceiling / 2)
 }
 
 type Attempt =
@@ -58,7 +77,7 @@ type Attempt =
   /** `admitted`: the stream passed admission (a heartbeat arrived) before it ended. */
   | { kind: 'dropped'; admitted: boolean }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+export const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPayload> {
   const sleep = opts.sleep ?? defaultSleep
@@ -80,8 +99,8 @@ export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPa
     // A stream that was admitted and then dropped is the normal long-poll cycle:
     // start the backoff over. Failures in a row (server down) back off further.
     failures = attempt.admitted ? 1 : failures + 1
-    const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1))
-    await sleep(ceiling / 2 + random() * (ceiling / 2))
+    await sleep(backoffMs(failures, random))
+    if (opts.reachable && !opts.reachable()) throw new StreamServerGone()
   }
 }
 
