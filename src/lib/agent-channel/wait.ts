@@ -77,7 +77,7 @@ type Attempt =
   /** `admitted`: the stream passed admission (a heartbeat arrived) before it ended. */
   | { kind: 'dropped'; admitted: boolean }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+export const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 export async function waitForSend(opts: WaitForSendOptions): Promise<SendEventPayload> {
   const sleep = opts.sleep ?? defaultSleep

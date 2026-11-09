@@ -291,11 +291,14 @@ describe('`wait` follows a Margins Light restart (#72)', () => {
     const mintsBefore = mintsOn(a).length
 
     await a.stop()
-    const b = await fakeDaemon('store_a', [LOCAL_WS])
-    // Store C's daemon now listens on port A, and the old key means nothing there.
+    // Store C's daemon now listens on port A, and the old key means nothing there; the
+    // holder is not back yet, so for a while C is the only live daemon.
     for (const k of a.minted) a.revoke(k.key)
+    fs.rmSync(path.join(tmp, 'home', 'daemons', 'store_a.json'))
     publishDaemon('store_c', portOf(a), 'capability_token_store_a')
     await a.start()
+    await new Promise((r) => setTimeout(r, 4_000))
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
 
     const run = await wait
     expect(run.status).toBe(0)
@@ -337,6 +340,16 @@ describe('a --send-only action whose send the local store does not hold (#68)', 
     expect(run.status).toBe(1)
     expect(run.stderr).toMatch(LOGIN)
     expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('a logged-in user, a live daemon, an empty store: the same unknown-send error, no request', async () => {
+    const cloud = await fakeCloud(CLOUD_WS)
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli(action, cloud.url, API_KEY)
+    expect(run.status).not.toBe(0)
+    expect(run.stderr).toContain('No Workspace on record for send snd_unknown_7')
+    expect([...cloud.requests, ...daemon.requests]).toEqual([])
   }, 60_000)
 
   it('a logged-in user on a cloud Workspace: the action goes to the cloud, as before', async () => {

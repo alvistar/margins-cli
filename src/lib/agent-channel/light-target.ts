@@ -23,7 +23,7 @@
 import type { ResolvedConfig } from '../config.js'
 import { MarginsError } from '../errors.js'
 import { liveDaemonOfStore, liveDaemonStoreAt, liveDaemons } from '../runtime.js'
-import { AgentKeyMintRefused, mintAgentKey, readAgentKey } from './agent-key.js'
+import { AgentKeyMintRefused, forgetAgentKey, mintAgentKey, readAgentKey } from './agent-key.js'
 import { openAgentChannelStore } from './store.js'
 
 /** The Workspace ids Margins Light issues: `local-` and the hash of the source folder. */
@@ -92,8 +92,12 @@ async function holds(cfg: ResolvedConfig, workspaceId: string): Promise<{ holds:
  * fresh agent key is stored on the way (the probe is the mint), so the command does not
  * mint again.
  */
-export async function resolveLightServer(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
-  const daemons = liveDaemons().map((d) => ({ ...d, cfg: lightCfg(cfg, d.url) }))
+export async function resolveLightServer(
+  cfg: ResolvedConfig,
+  workspaceId: string,
+  { skipUrl }: { skipUrl?: string } = {},
+): Promise<ResolvedConfig> {
+  const daemons = liveDaemons().filter((d) => d.url !== skipUrl).map((d) => ({ ...d, cfg: lightCfg(cfg, d.url) }))
 
   const only = daemons.length === 1 ? daemons[0]! : undefined
   if (only && readAgentKey(only.url, workspaceId)) return only.cfg
@@ -123,11 +127,14 @@ export function isPickedLightServer(cfg: ResolvedConfig): boolean {
 
 /**
  * The live daemon for `workspaceId` again, after the picked one went away (#72): the same
- * store's daemon wherever it listens now, with no probe, so no other store's daemon is
- * asked; else the rule of the preAction hook (`resolveLightServer`).
+ * store's daemon wherever it listens now, with no probe; else the rule of the preAction hook
+ * (`resolveLightServer`) without the URL just left. That port may now be another store's
+ * daemon, which must get no mint for this Workspace, and the key stored for it is dropped,
+ * so it cannot pick that daemon either.
  */
 export async function findLightServerAgain(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
   const same = cfg.lightStore ? liveDaemonOfStore(cfg.lightStore) : null
   if (same) return lightCfg(cfg, same.url)
-  return resolveLightServer(cfg, workspaceId)
+  forgetAgentKey(cfg.serverUrl, workspaceId)
+  return resolveLightServer(cfg, workspaceId, { skipUrl: cfg.serverUrl })
 }

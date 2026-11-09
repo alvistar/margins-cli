@@ -1,6 +1,6 @@
 import type { ResolvedConfig } from '../../lib/config.js'
 import { formatJson } from '../../lib/output.js'
-import { backoffMs, StreamServerGone, waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
+import { backoffMs, defaultSleep, StreamServerGone, waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
 import { openAgentChannelStore, SqliteUnavailableError, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
 import { removeChannelServer } from '../../lib/agent-channel/mcp-config.js'
@@ -8,7 +8,6 @@ import { assertPlainId } from '../../lib/agent-channel/actions.js'
 import {
   findLightServerAgain, isLocalWorkspaceId, isPickedLightServer, LightWorkspaceNotOpen,
 } from '../../lib/agent-channel/light-target.js'
-import { AuthExpired } from '../../lib/errors.js'
 import type { SendEventPayload } from '../../lib/agent-channel/protocol.js'
 
 /** Test seams: the backoff sleep, the jitter source, the silent-stream timeout. */
@@ -74,7 +73,7 @@ function turnChannelOff(): void {
  * backoff and says so once.
  */
 async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps: DiscussWaitDeps): Promise<SendEventPayload> {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const sleep = deps.sleep ?? defaultSleep
   const random = deps.random ?? Math.random
   let target = cfg
   let linked = false
@@ -83,12 +82,19 @@ async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps
     linked = true
   }
   for (;;) {
+    // A daemon whose record names no store cannot be followed: the plain wait, as before.
+    if (target.lightStore === undefined) {
+      return withAgentKey(target, workspaceId, (client) => waitForSend({ client, workspaceId, ...deps, onAdmitted }))
+    }
     const reachable = () => isPickedLightServer(target)
     try {
       return await withAgentKey(target, workspaceId, (client) =>
         waitForSend({ client, workspaceId, ...deps, onAdmitted, reachable }), { mayMint: reachable })
     } catch (err) {
-      if (!(err instanceof StreamServerGone) && !(err instanceof AuthExpired && !reachable())) throw err
+      // Whatever the URL answered (a dead port, another store's 401, 403 or 404, a mint that
+      // failed), it is not the picked daemon any more: find it again. Else the error stands.
+      if (reachable()) throw err
+      if (!(err instanceof StreamServerGone)) await sleep(backoffMs(1, random))
     }
     let failures = 0
     let said = false
