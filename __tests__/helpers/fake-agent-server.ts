@@ -12,6 +12,8 @@
  *   `POST /api/local/agent-keys { workspaceId, label?, expiresAt? }` mints behind the
  *   daemon's capability token in `x-margins-token`; a Bearer that is an API key is refused
  *   with 403 `KEY_CANNOT_MANAGE_KEYS`, a wrong or absent token with 403 `FORBIDDEN_TOKEN`.
+ *   With `holds`, a Workspace outside it answers 403 `NOT_A_MEMBER`, as `requireRole`
+ *   answers for a Workspace another store holds (#67).
  * - `POST /api/workspaces/{w}/agent-channel/sends/{s}/{action}`: judged by the
  *   protocol's own reference model (`applySendEvent`), so the fake fences, replays and
  *   refuses as the server does. A delivered send is claimed through the same model.
@@ -182,7 +184,7 @@ export async function startFakeAgentServer(opts: {
   workspaceId: string
   script?: StreamStep[]
   /** Answer as the published Margins Light runtime, whose capability token is `token`. */
-  light?: { token: string }
+  light?: { token: string; holds?: string[] }
   /** The actions a minted key carries (default: all of `AGENT_ACTIONS`). */
   mintActions?: AgentAction[]
 }): Promise<FakeAgentServer> {
@@ -232,7 +234,7 @@ export async function startFakeAgentServer(opts: {
   }
 
   /** `POST /api/local/agent-keys` as `margins/src/app/api/local/agent-keys/route.ts` answers it. */
-  const handleLocalMint = (req: http.IncomingMessage, res: http.ServerResponse, body: Record<string, unknown>, token: string) => {
+  const handleLocalMint = (req: http.IncomingMessage, res: http.ServerResponse, body: Record<string, unknown>, token: string, holds?: string[]) => {
     if (req.headers['x-margins-token'] !== token) {
       json(res, 403, { error: 'FORBIDDEN_TOKEN', message: 'Missing or invalid capability token.' })
       return
@@ -245,6 +247,10 @@ export async function startFakeAgentServer(opts: {
     }
     if (typeof body['workspaceId'] !== 'string' || body['workspaceId'].length === 0) {
       json(res, 400, { error: 'VALIDATION_ERROR', message: 'workspaceId is required.' })
+      return
+    }
+    if (holds && !holds.includes(body['workspaceId'])) {
+      json(res, 403, { error: 'NOT_A_MEMBER', message: "You don't have access to this workspace." })
       return
     }
     const n = minted.length + 1
@@ -420,7 +426,7 @@ export async function startFakeAgentServer(opts: {
       at: Date.now(),
     })
     if (opts.light && req.method === 'POST' && req.url === '/api/local/agent-keys') {
-      handleLocalMint(req, res, body ?? {}, opts.light.token)
+      handleLocalMint(req, res, body ?? {}, opts.light.token, opts.light.holds)
       return
     }
     if (!opts.light && req.method === 'POST' && req.url === '/api/keys') {

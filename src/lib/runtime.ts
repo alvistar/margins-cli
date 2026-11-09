@@ -387,6 +387,22 @@ export function liveDaemonAt(serverUrl: string): LiveDaemon | null {
 }
 
 /**
+ * Every live Margins Light daemon, at the loopback URL its record's port names (#67): the
+ * sibling of `liveDaemonAt` for a caller that has a Workspace id rather than a URL. The URL
+ * is built here, never read from the record, so the capability token still goes only to a
+ * loopback port a live record names. A record whose port is not a port names no daemon.
+ */
+export function liveDaemons(): (LiveDaemon & { url: string })[] {
+  const daemons = new Map<number, LiveDaemon & { url: string }>()
+  for (const rec of liveDaemonRecords()) {
+    const port = typeof rec.port === 'number' ? rec.port : NaN
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || daemons.has(port)) continue
+    daemons.set(port, { url: `http://127.0.0.1:${port}`, port, token: typeof rec.token === 'string' && rec.token ? rec.token : undefined })
+  }
+  return [...daemons.values()]
+}
+
+/**
  * Every runtime dir a currently-live daemon booted from.
  *
  * PLURAL since runtime 0.15.0. There used to be one global `~/.margins/daemon.json`, so one

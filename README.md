@@ -571,6 +571,12 @@ store (`agent-channel.sqlite` beside the global config) records which local sess
 linked to which Workspace and which session holds which send. It holds no
 credential and no comment text. Needs Node 22.13+.
 
+A `local-` Workspace id (Margins Light or the desktop app) needs no `--server-url`: when
+the server URL is not a live Light daemon, `wait` and every action ask each live daemon
+and use the one that holds the Workspace. If none holds it, the command exits 1 and asks
+you to open Margins Light on that folder. If two hold it, it names their ports: pick one
+with `--server-url http://127.0.0.1:<port>`.
+
 | Flag | Required | Description |
 |---|---|---|
 | `--workspace <id>` | yes | Workspace id |
