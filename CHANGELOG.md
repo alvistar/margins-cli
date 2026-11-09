@@ -2,6 +2,29 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.25.2] - 2026-11-09
+
+An agent session linked to Margins Light survives a restart of Margins Light, and a send-only
+action no longer sends a Light user to log in. Ships #72 and #68; they were the known issues
+of 0.25.1.
+
+### Fixed
+
+- **`margins discuss wait` on a `local-` Workspace follows Margins Light when it restarts on a
+  new port (#72).** It reconnects to the daemon that holds the Workspace, drops the key of the
+  old port, and never mints a key on another store's daemon that took that port. While no
+  daemon holds the Workspace it keeps waiting and says so once.
+- **An agent action given only `--send`, for a send this machine has no record of, names the
+  send and asks for `--workspace` when Margins Light runs (#68),** instead of saying
+  `margins auth login`.
+
+### Known issues
+
+- #69: with two running Margins Light daemons, every agent action mints a new key on each
+  daemon that holds the Workspace.
+- #81: a `discuss wait` that follows Margins Light retries, with no limit, a daemon that never
+  serves.
+
 ## [0.25.1] - 2026-11-09
 
 The "Link a session" command that Margins Light prints now works as printed. Ships #67.
