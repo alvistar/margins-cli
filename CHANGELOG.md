@@ -2,6 +2,30 @@
 
 All notable changes to margins-cli will be documented in this file.
 
+## [0.25.1] - 2026-11-09
+
+The "Link a session" command that Margins Light prints now works as printed. Ships #67.
+
+### Fixed
+
+- **`margins discuss wait --workspace local-<id>` reaches Margins Light with no
+  `--server-url` and no login (#67).** For a `local-` Workspace, the CLI finds the running
+  Margins Light that holds it and uses it for the whole command: the auth check, the agent
+  key, the stream and the agent's answers. Before, it asked the cloud for the agent key and
+  failed with `NOT_A_MEMBER` and a message to log in again.
+- When two running Margins Light daemons both hold the Workspace, the command stops and
+  names both ports (pass `--server-url` to choose). When none holds it, the message says to
+  open Margins Light on that folder, not to run `margins auth login`.
+- An explicit `--server-url`, and every non-`local-` Workspace, behave as before.
+
+### Known issues
+
+- #72: a `discuss wait` that is already waiting does not find Margins Light again after it
+  restarts on a new port.
+- #69: with two running Margins Light daemons, every agent action mints a new key on each
+  daemon that holds the Workspace.
+- #68: an agent action whose send is not in the local store still gets the login message.
+
 ## [0.25.0] - 2026-11-04
 
 An agent can now edit a document in place instead of only proposing changes:
