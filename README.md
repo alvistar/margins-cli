@@ -575,7 +575,9 @@ A `local-` Workspace id (Margins Light or the desktop app) needs no `--server-ur
 the server URL is not a live Light daemon, `wait` and every action ask each live daemon
 and use the one that holds the Workspace. If none holds it, the command exits 1 and asks
 you to open Margins Light on that folder. If two hold it, it names their ports: pick one
-with `--server-url http://127.0.0.1:<port>`.
+with `--server-url http://127.0.0.1:<port>`. When that daemon restarts on a new port,
+`wait` follows it there and goes on; while the restarted daemon does not answer yet, it
+keeps trying and says so once on stderr.
 
 | Flag | Required | Description |
 |---|---|---|
@@ -615,7 +617,9 @@ margins discuss edit --send snd_abc --attempt 1 --base sha_abc --format markdown
 | `edit` | `--base <sha>`, `--format <markdown\|html>`, `--file <path>` (all required); edit mode only, see below |
 
 Every action takes `--send <id>` and `--attempt <n>` (required) and `--workspace <id>`
-(default: the Workspace `discuss wait` recorded for the send). Needs Node 22.13+.
+(default: the Workspace `discuss wait` recorded for the send). A send with no such record
+and no `--workspace` exits 1 with `No Workspace on record for send <id>`, also with no
+login when Margins Light runs. Needs Node 22.13+.
 
 #### Edit mode
 
