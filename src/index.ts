@@ -6,6 +6,7 @@ import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
 import { liveDaemonAt } from './lib/runtime.js'
+import { agentWorkspaceOf, isLocalWorkspaceId, resolveLightServer } from './lib/agent-channel/light-target.js'
 import { reportPendingSyncFailures } from './lib/sync-failure-record.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ function isAgentChannel(rootName: string, actionCommand: { name(): string; opts(
 const NO_AUTH_SUBCOMMANDS = new Set(['unsync', 'hook-sync'])
 
 
-program.hook('preAction', (_thisCommand, actionCommand) => {
+program.hook('preAction', async (_thisCommand, actionCommand) => {
   // Commander passes (rootProgram, leafCommand) — use actionCommand (the leaf)
   // to identify which command group is running. Walk up to the top-level subcommand
   // (one level below root) so 'auth login' → 'auth', 'workspace sync' → 'workspace'.
@@ -78,13 +79,27 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   if (NO_AUTH_SUBCOMMANDS.has(actionCommand.name())) return
 
   const globalOpts = program.opts()
-  const cfg = resolveConfig({
+  let cfg = resolveConfig({
     apiKey: globalOpts.apiKey,
     serverUrl: globalOpts.serverUrl,
     json: globalOpts.json,
     verbose: globalOpts.verbose,
     noColor: !(globalOpts.color as boolean | undefined ?? true),
   })
+
+  // A `local-` Workspace lives on a Margins Light daemon (#67): unless the server URL already
+  // is a live daemon, the one that holds it serves the whole command, gate included.
+  if (isAgentChannel(rootName, actionCommand) && liveDaemonAt(cfg.serverUrl) === null) {
+    const workspaceId = await agentWorkspaceOf(actionCommand.opts())
+    if (workspaceId && isLocalWorkspaceId(workspaceId)) {
+      try {
+        cfg = await resolveLightServer(cfg, workspaceId)
+      } catch (err) {
+        process.stderr.write(formatError(err, cfg.json) + '\n')
+        process.exit(1)
+      }
+    }
+  }
 
   // A Light-only person has no credential at all (#40). The discovery record decides that
   // the target is a Light daemon, as it does for the mint (#39); the cloud gate is unchanged.
