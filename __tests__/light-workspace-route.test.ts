@@ -324,6 +324,7 @@ describe('`wait` follows a Margins Light restart (#72)', () => {
 
     const run = await wait
     expect(run.stderr).not.toMatch(/Cannot reach|not running/)
+    expect(run.stderr.match(/does not answer yet for Workspace/g)).toHaveLength(1)
     expect(run.status).toBe(0)
     expect(run.stdout).toContain('snd_1')
     expect(b.streamRequests).toHaveLength(1)

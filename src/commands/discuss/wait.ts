@@ -98,12 +98,17 @@ async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps
         // it listens and while its store migrates. Try it again; any other answer stands.
         const unservedYet = err instanceof NetworkError || err instanceof TimeoutError || (err instanceof ServerError && err.status >= 500)
         if (!unservedYet) throw err
+        if (unserved === 0) {
+          process.stderr.write(`margins: Margins Light at ${target.serverUrl} does not answer yet for Workspace ${workspaceId}; waiting for it.\n`)
+        }
         await sleep(backoffMs(++unserved, random))
-        continue
+        // It may have moved during the sleep: only the picked daemon gets the next mint.
+        if (reachable()) continue
+      } else if (!(err instanceof StreamServerGone)) {
+        // Whatever the URL answered (a dead port, another store's 401, 403 or 404, a mint that
+        // failed), it is not the picked daemon any more: find it again.
+        await sleep(backoffMs(1, random))
       }
-      // Whatever the URL answered (a dead port, another store's 401, 403 or 404, a mint that
-      // failed), it is not the picked daemon any more: find it again.
-      if (!(err instanceof StreamServerGone)) await sleep(backoffMs(1, random))
     }
     unserved = 0
     let failures = 0
