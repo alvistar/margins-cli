@@ -10,9 +10,12 @@
  * that does not answers 403 `NOT_A_MEMBER`), and uses the one that holds the Workspace for
  * the whole command: the auth gate, the mint, the stream and every agent action.
  *
- * A daemon this CLI already holds an agent key for answers without a mint, so an agent
- * action (one process each) does not mint a key per call; a stale key there is minted
- * again on that daemon by `withAgentKey`.
+ * When only one daemon is live and this CLI holds an agent key for it, that daemon is
+ * used without a mint, so an agent action (one process each) does not mint a key per call;
+ * a stale key there is minted again on it by `withAgentKey`. With two live daemons every
+ * one is asked: a stored key names a URL, and a port can pass to another store's daemon at
+ * a restart, so it proves nothing about which daemon holds the Workspace now. A holder
+ * keeps the key its probe minted, also when two hold it and the command fails.
  *
  * An explicit `--server-url`, or a configured one, that is a live daemon is never
  * overridden: the caller only asks when `liveDaemonAt(cfg.serverUrl)` is null.
@@ -72,14 +75,14 @@ export class LightWorkspaceAmbiguous extends MarginsError {
   }
 }
 
-/** Ask one daemon with the mint whether it holds the Workspace, and why not when it is not a plain no. */
+/** Ask one daemon with the mint (which stores the key) whether it holds the Workspace, and why not when it is not a plain no. */
 async function holds(cfg: ResolvedConfig, workspaceId: string): Promise<{ holds: true } | { holds: false; note?: string }> {
   try {
     await mintAgentKey(cfg, workspaceId)
     return { holds: true }
   } catch (err) {
     // NOT_A_MEMBER is the plain "another store holds it" answer: nothing to report.
-    if (err instanceof AgentKeyMintRefused && err.message.endsWith(': NOT_A_MEMBER')) return { holds: false }
+    if (err instanceof AgentKeyMintRefused && err.reason === 'NOT_A_MEMBER') return { holds: false }
     return { holds: false, note: `${cfg.serverUrl}: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
@@ -92,9 +95,8 @@ async function holds(cfg: ResolvedConfig, workspaceId: string): Promise<{ holds:
 export async function resolveLightServer(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
   const daemons = liveDaemons().map((d) => ({ ...d, cfg: { ...cfg, serverUrl: d.url } }))
 
-  const known = daemons.filter((d) => readAgentKey(d.url, workspaceId))
-  if (known.length === 1) return known[0]!.cfg
-  if (known.length > 1) throw new LightWorkspaceAmbiguous(workspaceId, known.map((d) => d.port))
+  const only = daemons.length === 1 ? daemons[0]! : undefined
+  if (only && readAgentKey(only.url, workspaceId)) return only.cfg
 
   const answers = await Promise.all(daemons.map(async (d) => ({ d, answer: await holds(d.cfg, workspaceId) })))
   const holders = answers.filter((a) => a.answer.holds).map((a) => a.d)

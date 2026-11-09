@@ -49,7 +49,7 @@ export interface StoredAgentKey {
 type KeyFile = Record<string, StoredAgentKey>
 
 export class AgentKeyMintRefused extends MarginsError {
-  constructor(reason: string, light = false) {
+  constructor(readonly reason: string, light = false) {
     super(
       `Agent key mint refused: ${reason}`,
       light

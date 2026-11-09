@@ -136,6 +136,26 @@ describe('a local- Workspace with the default (cloud) server URL (#67)', () => {
     expect(cloud.requests).toEqual([])
   }, 60_000)
 
+  it('two live daemons: a key stored for the one that does not hold it does not pick it', async () => {
+    const cloud = await fakeCloud()
+    const stale = await fakeDaemon('store_a', ['local-someotherfolder'])
+    const holder = await fakeDaemon('store_b', [LOCAL_WS])
+    // A key from an earlier daemon on the port `stale` now has: the slot is the URL.
+    const slot = `http://127.0.0.1:${portOf(stale)} ${LOCAL_WS}`
+    fs.mkdirSync(path.join(tmp, 'config'), { recursive: true })
+    fs.writeFileSync(path.join(tmp, 'config', 'agent-keys.json'), JSON.stringify({
+      [slot]: {
+        id: 'key_old', key: 'mrgn_agent_synthetic_old', workspaceId: LOCAL_WS, serverUrl: `http://127.0.0.1:${portOf(stale)}`,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(), actions: ['reply', 'done'],
+      },
+    }), { mode: 0o600 })
+
+    const wait = await cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    expect(wait.status).toBe(0)
+    expect(holder.streamRequests).toHaveLength(1)
+    expect(stale.streamRequests).toEqual([])
+  }, 60_000)
+
   it('two live daemons that both hold it: fails and names both ports, never picks one', async () => {
     const cloud = await fakeCloud()
     const a = await fakeDaemon('store_a', [LOCAL_WS])
