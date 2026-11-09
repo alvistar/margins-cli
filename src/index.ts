@@ -5,8 +5,9 @@ import type { AgentAction } from './lib/agent-channel/protocol.js'
 import { formatError } from './lib/output.js'
 import { CLI_VERSION } from './lib/version.js'
 import { hasOidcAuth } from './lib/auth-env.js'
-import { liveDaemonAt } from './lib/runtime.js'
+import { liveDaemonAt, liveDaemons } from './lib/runtime.js'
 import { agentWorkspaceOf, isLocalWorkspaceId, resolveLightServer } from './lib/agent-channel/light-target.js'
+import { noWorkspaceOnRecord } from './lib/agent-channel/actions.js'
 import { reportPendingSyncFailures } from './lib/sync-failure-record.js'
 
 // ─── Root program ─────────────────────────────────────────────────────────────
@@ -98,6 +99,13 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
         process.stderr.write(formatError(err, cfg.json) + '\n')
         process.exit(1)
       }
+    }
+    // A send the local store does not hold names no Workspace (#68). With Margins Light
+    // running, the login is not what is missing: say the send is unknown, as the action would.
+    const send = actionCommand.opts()['send']
+    if (!workspaceId && typeof send === 'string' && liveDaemons().length > 0) {
+      process.stderr.write(formatError(noWorkspaceOnRecord(send), cfg.json) + '\n')
+      process.exit(1)
     }
   }
 

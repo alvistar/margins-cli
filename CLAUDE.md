@@ -98,7 +98,11 @@ agent channel (`discuss wait`, the agent actions) also passes with no credential
 not a live daemon and the agent-channel command's Workspace (`--workspace`, else the held
 send's) is a `local-` id, the hook first sets `cfg.serverUrl` to the live daemon that holds it
 (`resolveLightServer` in `light-target.ts`, which asks each daemon with the mint), so the
-gate, the mint, the stream and the actions all reach that daemon (#67).
+gate, the mint, the stream and the actions all reach that daemon (#67). A `wait` there follows
+that daemon's store (`cfg.lightStore`) when it restarts on a new port, never minting on
+another store's daemon at the old one (#72). An action given only a `--send` the local store
+lacks, with a live daemon, fails with the unknown-send error before the gate, never
+`margins auth login` (#68).
 
 One request carries neither: the agent key mint against a Margins Light daemon
 (`agent-key.ts`) sends the daemon's capability token in `x-margins-token` and no

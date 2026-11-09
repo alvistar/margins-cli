@@ -176,18 +176,21 @@ async function upToDate(cfg: ResolvedConfig, workspaceId: string, stored: Stored
  * one minted now (`mintAgentKey`: the daemon's capability token on Margins Light, else
  * the login). A 401 to the key (revoked, or expired early; a
  * `wait` can hold one for hours) mints a new key once and runs `use` again; a second
- * 401 is the end.
+ * 401 is the end. With `mayMint`, a 401 when it answers false is thrown as is: the server
+ * at the URL is no longer the one the key was for (#72), so nothing is minted there.
  */
 export async function withAgentKey<T>(
   cfg: ResolvedConfig,
   workspaceId: string,
   use: (client: ApiClient) => Promise<T>,
+  { mayMint }: { mayMint?: () => boolean } = {},
 ): Promise<T> {
   const key = await upToDate(cfg, workspaceId, readAgentKey(cfg.serverUrl, workspaceId))
   try {
     return await use(agentClient(cfg, key))
   } catch (err) {
     if (!(err instanceof AuthExpired)) throw err
+    if (mayMint && !mayMint()) throw err
     forgetAgentKey(cfg.serverUrl, workspaceId)
     return use(agentClient(cfg, await mintAgentKey(cfg, workspaceId)))
   }
