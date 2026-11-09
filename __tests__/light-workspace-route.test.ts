@@ -76,12 +76,12 @@ function cli(args: string[], serverUrl: string, apiKey = ''): Promise<Run> {
 }
 
 /** The record a running Light daemon publishes (margins/scripts/lib/daemon.mjs), one per store. */
-function publishDaemon(store: string, port: unknown, token: string): void {
+function publishDaemon(store: string, port: unknown, token: string, ready = true): void {
   const dir = path.join(tmp, 'home', 'daemons')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, `${store}.json`), JSON.stringify({
     v: 2, marker: 'margins-daemon', store: `/synthetic/${store}`, pid: process.pid,
-    startedAt: Date.now(), port, token, ready: true,
+    startedAt: Date.now(), port, token, ready,
   }), { mode: 0o600 })
 }
 
@@ -305,6 +305,49 @@ describe('`wait` follows a Margins Light restart (#72)', () => {
     expect(run.stdout).toContain('snd_1')
     expect(b.streamRequests).toHaveLength(1)
     expect(mintsOn(a)).toHaveLength(mintsBefore)
+  }, 60_000)
+
+  it('the restarted daemon publishes its record before it listens: `wait` keeps trying there and claims once it serves', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+
+    // The new daemon took its port and wrote its record (ready: false), but serves nothing yet.
+    const b = await startFakeAgentServer({ workspaceId: LOCAL_WS, light: { token: 'capability_token_b', holds: [LOCAL_WS] }, script: deliver(LOCAL_WS) })
+    servers.push(b)
+    await b.stop()
+    await a.stop()
+    publishDaemon('store_a', portOf(b), 'capability_token_b', false)
+    await new Promise((r) => setTimeout(r, 3_000))
+    await b.start()
+
+    const run = await wait
+    expect(run.stderr).not.toMatch(/Cannot reach|not running/)
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('snd_1')
+    expect(b.streamRequests).toHaveLength(1)
+  }, 60_000)
+
+  it('after a move to a new port, the old port keeps no key: another store\'s daemon there is never taken for the holder', async () => {
+    const cloud = await fakeCloud()
+    const a = await holdingDaemon('store_a')
+    const wait = cli(['discuss', 'wait', '--workspace', LOCAL_WS, '--session', 'sess-a'], cloud.url)
+    await until(() => a.streamRequests.length === 1)
+    await a.stop()
+    const b = await fakeDaemon('store_a', [LOCAL_WS])
+    expect((await wait).status).toBe(0)
+
+    // The holder closes; store C's daemon takes port A and is the only live daemon.
+    await b.stop()
+    fs.rmSync(path.join(tmp, 'home', 'daemons', 'store_a.json'))
+    for (const k of a.minted) a.revoke(k.key)
+    publishDaemon('store_c', portOf(a), 'capability_token_store_c')
+    await a.start()
+
+    const next = await cli(['discuss', 'done', '--workspace', LOCAL_WS, '--send', 'snd_2', '--attempt', '1'], cloud.url)
+    expect(next.status).not.toBe(0)
+    expect(next.stderr).toMatch(/No running Margins Light holds Workspace/)
   }, 60_000)
 })
 

@@ -129,12 +129,12 @@ export function isPickedLightServer(cfg: ResolvedConfig): boolean {
  * The live daemon for `workspaceId` again, after the picked one went away (#72): the same
  * store's daemon wherever it listens now, with no probe; else the rule of the preAction hook
  * (`resolveLightServer`) without the URL just left. That port may now be another store's
- * daemon, which must get no mint for this Workspace, and the key stored for it is dropped,
- * so it cannot pick that daemon either.
+ * daemon, which must get no mint for this Workspace. The key stored for the URL left is
+ * dropped in both cases, so no later command takes that daemon for the holder.
  */
 export async function findLightServerAgain(cfg: ResolvedConfig, workspaceId: string): Promise<ResolvedConfig> {
+  forgetAgentKey(cfg.serverUrl, workspaceId)
   const same = cfg.lightStore ? liveDaemonOfStore(cfg.lightStore) : null
   if (same) return lightCfg(cfg, same.url)
-  forgetAgentKey(cfg.serverUrl, workspaceId)
   return resolveLightServer(cfg, workspaceId, { skipUrl: cfg.serverUrl })
 }

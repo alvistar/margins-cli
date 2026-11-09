@@ -1,5 +1,6 @@
 import type { ResolvedConfig } from '../../lib/config.js'
 import { formatJson } from '../../lib/output.js'
+import { NetworkError, ServerError, TimeoutError } from '../../lib/errors.js'
 import { backoffMs, defaultSleep, StreamServerGone, waitForSend, type WaitForSendOptions } from '../../lib/agent-channel/wait.js'
 import { openAgentChannelStore, SqliteUnavailableError, type AgentChannelStore } from '../../lib/agent-channel/store.js'
 import { withAgentKey } from '../../lib/agent-channel/agent-key.js'
@@ -77,6 +78,7 @@ async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps
   const random = deps.random ?? Math.random
   let target = cfg
   let linked = false
+  let unserved = 0
   const onAdmitted = () => {
     if (!linked) turnChannelOff()
     linked = true
@@ -91,11 +93,19 @@ async function waitFollowingLight(cfg: ResolvedConfig, workspaceId: string, deps
       return await withAgentKey(target, workspaceId, (client) =>
         waitForSend({ client, workspaceId, ...deps, onAdmitted, reachable }), { mayMint: reachable })
     } catch (err) {
+      if (reachable()) {
+        // The picked daemon serves nothing yet: a restarted daemon publishes its record before
+        // it listens and while its store migrates. Try it again; any other answer stands.
+        const unservedYet = err instanceof NetworkError || err instanceof TimeoutError || (err instanceof ServerError && err.status >= 500)
+        if (!unservedYet) throw err
+        await sleep(backoffMs(++unserved, random))
+        continue
+      }
       // Whatever the URL answered (a dead port, another store's 401, 403 or 404, a mint that
-      // failed), it is not the picked daemon any more: find it again. Else the error stands.
-      if (reachable()) throw err
+      // failed), it is not the picked daemon any more: find it again.
       if (!(err instanceof StreamServerGone)) await sleep(backoffMs(1, random))
     }
+    unserved = 0
     let failures = 0
     let said = false
     for (;;) {
