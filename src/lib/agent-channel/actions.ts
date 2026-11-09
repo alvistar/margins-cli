@@ -47,6 +47,13 @@ export interface AgentActionDeps {
   sleep?: (ms: number) => Promise<void>
 }
 
+/** The local store holds no row for this send, and no `--workspace` names its Workspace. */
+export function noWorkspaceOnRecord(sendId: string): ValidationError {
+  return new ValidationError(
+    `No Workspace on record for send ${sendId}. Pass --workspace <id> (the id \`margins discuss wait\` was run with).`,
+  )
+}
+
 /** The session must stop acting on this send: a newer claim holds it, or it is closed. */
 export class SendNoLongerHeldError extends MarginsError {
   constructor(sendId: string, code: string) {
@@ -133,9 +140,7 @@ export async function sendAgentAction(
     const workspaceId = req.workspaceId
       ?? store.heldSends().find((h) => h.sendId === req.sendId)?.workspaceId
     if (!workspaceId) {
-      throw new ValidationError(
-        `No Workspace on record for send ${req.sendId}. Pass --workspace <id> (the id \`margins discuss wait\` was run with).`,
-      )
+      throw noWorkspaceOnRecord(req.sendId)
     }
     const pending = store.pendingAction(workspaceId, req.sendId, req.action, req.attempt, bodyJson)
     if (pending) return pending

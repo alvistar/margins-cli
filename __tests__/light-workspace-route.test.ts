@@ -219,6 +219,51 @@ describe('a local- Workspace with the default (cloud) server URL (#67)', () => {
   }, 60_000)
 })
 
+describe('a --send-only action whose send the local store does not hold (#68)', () => {
+  const action = ['discuss', 'done', '--send', 'snd_unknown_7', '--attempt', '1']
+
+  it('a live daemon, no login, an empty store: fails naming the send, never the login', async () => {
+    const cloud = await fakeCloud()
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli(action, cloud.url)
+    expect(run.status).not.toBe(0)
+    expect(run.stderr).not.toMatch(LOGIN)
+    expect(run.stderr).toContain('snd_unknown_7')
+    expect(run.stderr).toContain('--workspace')
+    expect([...cloud.requests, ...daemon.requests]).toEqual([])
+  }, 60_000)
+
+  it('with --workspace local-<id>: resolves the daemon that holds it, as before', async () => {
+    const cloud = await fakeCloud()
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli([...action, '--workspace', LOCAL_WS], cloud.url)
+    expect(run.stderr).not.toMatch(LOGIN)
+    expect(daemon.minted).toHaveLength(1)
+    expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('no live daemon, no login: the cloud gate still says to log in', async () => {
+    const cloud = await fakeCloud()
+
+    const run = await cli(action, cloud.url)
+    expect(run.status).toBe(1)
+    expect(run.stderr).toMatch(LOGIN)
+    expect(cloud.requests).toEqual([])
+  }, 60_000)
+
+  it('a logged-in user on a cloud Workspace: the action goes to the cloud, as before', async () => {
+    const cloud = await fakeCloud(CLOUD_WS)
+    const daemon = await fakeDaemon('store_a', [LOCAL_WS])
+
+    const run = await cli([...action, '--workspace', CLOUD_WS], cloud.url, API_KEY)
+    expect(cloud.requests.filter((r) => r.method === 'POST').map((r) => r.path)[0]).toBe('/api/keys')
+    expect(daemon.requests).toEqual([])
+    expect(run.stderr).not.toMatch(LOGIN)
+  }, 60_000)
+})
+
 describe('liveDaemons: the capability token goes to a loopback URL a live record names', () => {
   it('names each live daemon at 127.0.0.1 on its port, and skips a record whose port is not a port', async () => {
     const home = path.join(tmp, 'home')
